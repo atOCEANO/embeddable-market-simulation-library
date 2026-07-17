@@ -1,0 +1,22 @@
+[package]
+name = "bar-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+emsl-core = { path = "../emsl-core" }
+rayon = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+proptest = { workspace = true }
+
+[[bench]]
+name = "step"
+harness = false
+
+[[bench]]
+name = "sweep"
+harness = false

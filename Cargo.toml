@@ -1,0 +1,20 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/emsl-core",
+    "crates/bar-engine",
+    "crates/emsl-py",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/atOCEANO/embeddable-market-simulation-library"
+
+[workspace.dependencies]
+pyo3 = "0.22"
+numpy = "0.22"
+rayon = "1"
+criterion = "0.5"
+proptest = "1"

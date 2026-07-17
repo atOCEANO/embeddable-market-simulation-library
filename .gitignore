@@ -1,0 +1,15 @@
+# Rust
+/target
+**/*.rs.bk
+
+# Python and wheels
+/dist
+*.so
+*.pyd
+*.pdb
+*.egg-info/
+__pycache__/
+.pytest_cache/
+.venv/
+
+# Cargo.lock is committed: the deliverable is a wheel, not a crates.io library.

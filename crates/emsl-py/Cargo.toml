@@ -1,0 +1,16 @@
+[package]
+name = "emsl-py"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "_emsl"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { workspace = true, features = ["abi3-py39", "extension-module"] }
+numpy = { workspace = true }
+emsl-core = { path = "../emsl-core" }
+bar-engine = { path = "../bar-engine" }

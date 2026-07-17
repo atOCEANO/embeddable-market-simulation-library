@@ -1,0 +1,9 @@
+[package]
+name = "emsl-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dev-dependencies]
+proptest = { workspace = true }

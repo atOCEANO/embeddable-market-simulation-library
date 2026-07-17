@@ -1,0 +1,369 @@
+//! The next-bar fill model. An order decided at the close of one bar fills on the
+//! NEXT bar, so a fill is never priced off information the decision could not have
+//! seen. Market fills are takers, limit fills are makers, and a stop triggers and
+//! then fills as a taker. See ADR 0004 (slippage) and ADR 0005 (volume cap).
+
+use emsl_core::{Bps, Candle, Fill, Order, Price, Qty, Side};
+
+/// The cost side of execution: how far a market order slips and how much of a bar
+/// one order may consume.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FillModel {
+    /// Adverse slippage on a taker fill, in basis points off the reference price.
+    pub slippage_bps: Bps,
+    /// The most of a bar's volume one order may take, as a fraction (1.0 is the
+    /// whole bar), so a fill can never exceed what the bar actually traded.
+    pub max_fill_fraction: f64,
+    /// Market-impact coefficient: extra adverse slippage equal to `impact` times
+    /// the fill's fraction of the bar volume, so a larger order pays more. Zero
+    /// disables it. See ADR 0013.
+    pub impact: f64,
+}
+
+impl FillModel {
+    /// The fillable size: the order's remaining, capped at the volume fraction. A
+    /// non-finite remaining fills nothing: `f64::min` keeps the other operand when
+    /// one side is NaN, which would otherwise launder a NaN size into a full-cap
+    /// fill (ADR 0001).
+    fn cap(&self, order: &Order, bar: &Candle) -> f64 {
+        let remaining = order.remaining().get();
+        if !remaining.is_finite() {
+            return 0.0;
+        }
+        remaining.min(self.max_fill_fraction * bar.volume)
+    }
+
+    /// Fill a market order against `bar` (the bar after the decision). Priced off
+    /// the bar open, lifted on a buy and dropped on a sell by the slippage, sized
+    /// at the remaining capped to the volume fraction. `None` if the bar gives no
+    /// volume.
+    pub fn fill_market(&self, order: &Order, bar: &Candle) -> Option<Fill> {
+        let size = self.cap(order, bar);
+        if size <= 0.0 {
+            return None;
+        }
+        let slip = self.slippage_bps.as_fraction() + self.impact * (size / bar.volume);
+        let price = match order.side {
+            Side::Buy => bar.open * (1.0 + slip),
+            Side::Sell => bar.open * (1.0 - slip),
+        };
+        Some(taker(order.side, size, price))
+    }
+
+    /// Fill a resting limit against `bar`. A buy fills if the bar trades at or
+    /// below its price, a sell if at or above. It fills AT the limit price, never
+    /// better (a bar that gaps through still fills at the limit), pays no slippage
+    /// (a maker), and is capped at the volume fraction. `None` if untouched or the
+    /// bar gives no volume.
+    pub fn fill_limit(&self, order: &Order, bar: &Candle) -> Option<Fill> {
+        let limit = order.price?.get();
+        let touched = match order.side {
+            Side::Buy => bar.low <= limit,
+            Side::Sell => bar.high >= limit,
+        };
+        if !touched {
+            return None;
+        }
+        let size = self.cap(order, bar);
+        if size <= 0.0 {
+            return None;
+        }
+        Some(Fill {
+            side: order.side,
+            size: Qty(size),
+            price: Price(limit),
+            is_taker: false,
+        })
+    }
+
+    /// Trigger a stop against `bar`. A buy stop triggers when the bar reaches its
+    /// trigger from below, a sell stop from above. Once triggered it fills as a
+    /// taker at the worse of the trigger and the bar open (so a gap through the
+    /// stop fills at the gap), then takes slippage. `None` if not triggered or the
+    /// bar gives no volume.
+    pub fn fill_stop(&self, order: &Order, bar: &Candle) -> Option<Fill> {
+        let trigger = order.trigger?.get();
+        let triggered = match order.side {
+            Side::Buy => bar.high >= trigger,
+            Side::Sell => bar.low <= trigger,
+        };
+        if !triggered {
+            return None;
+        }
+        let size = self.cap(order, bar);
+        if size <= 0.0 {
+            return None;
+        }
+        let slip = self.slippage_bps.as_fraction() + self.impact * (size / bar.volume);
+        let price = match order.side {
+            Side::Buy => bar.open.max(trigger) * (1.0 + slip),
+            Side::Sell => bar.open.min(trigger) * (1.0 - slip),
+        };
+        Some(taker(order.side, size, price))
+    }
+
+    /// Would a limit at `price` on `side` cross immediately against `reference`,
+    /// making it a taker? A post_only order that would cross is rejected at
+    /// placement rather than turned taker.
+    pub fn limit_crosses(&self, side: Side, price: Price, reference: Price) -> bool {
+        match side {
+            Side::Buy => price.get() >= reference.get(),
+            Side::Sell => price.get() <= reference.get(),
+        }
+    }
+}
+
+/// Build a taker fill on `side` of `size` at `price`.
+fn taker(side: Side, size: f64, price: f64) -> Fill {
+    Fill {
+        side,
+        size: Qty(size),
+        price: Price(price),
+        is_taker: true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FillModel;
+    use emsl_core::{Bps, Candle, Order, OrderId, Price, Qty, Side, TimeInForce};
+
+    fn ohlc(open: f64, high: f64, low: f64, close: f64, volume: f64) -> Candle {
+        Candle {
+            open,
+            high,
+            low,
+            close,
+            volume,
+        }
+    }
+
+    /// A bar whose extremes sit far from the open, for the market no-lookahead test.
+    fn bar(open: f64, volume: f64) -> Candle {
+        ohlc(open, open + 50.0, open - 50.0, open + 30.0, volume)
+    }
+
+    fn model(slip_bps: f64, cap: f64) -> FillModel {
+        FillModel {
+            slippage_bps: Bps(slip_bps),
+            max_fill_fraction: cap,
+            impact: 0.0,
+        }
+    }
+
+    fn market(side: Side, size: f64) -> Order {
+        Order::market(OrderId(0), side, Qty(size), false)
+    }
+
+    fn limit(side: Side, size: f64, price: f64) -> Order {
+        Order::limit(
+            OrderId(0),
+            side,
+            Qty(size),
+            Price(price),
+            TimeInForce::Gtc,
+            false,
+            false,
+        )
+    }
+
+    fn stop(side: Side, size: f64, trigger: f64) -> Order {
+        Order::stop(OrderId(0), side, Qty(size), Price(trigger), false)
+    }
+
+    fn approx(a: f64, b: f64) -> bool {
+        (a - b).abs() < 1e-9
+    }
+
+    // market
+
+    #[test]
+    fn buy_market_fills_at_open_plus_slippage() {
+        let f = model(10.0, 1.0)
+            .fill_market(&market(Side::Buy, 1.0), &bar(100.0, 1000.0))
+            .unwrap();
+        assert!(approx(f.price.get(), 100.1));
+        assert!(f.is_taker);
+    }
+
+    #[test]
+    fn sell_market_fills_at_open_minus_slippage() {
+        let f = model(10.0, 1.0)
+            .fill_market(&market(Side::Sell, 1.0), &bar(100.0, 1000.0))
+            .unwrap();
+        assert!(approx(f.price.get(), 99.9));
+    }
+
+    #[test]
+    fn market_uses_open_not_intrabar_extremes() {
+        let b = bar(100.0, 1000.0); // high 150, low 50, close 130
+        let buy = model(0.0, 1.0)
+            .fill_market(&market(Side::Buy, 1.0), &b)
+            .unwrap();
+        let sell = model(0.0, 1.0)
+            .fill_market(&market(Side::Sell, 1.0), &b)
+            .unwrap();
+        assert_eq!(buy.price.get(), 100.0);
+        assert_eq!(sell.price.get(), 100.0);
+    }
+
+    #[test]
+    fn volume_cap_limits_market_size() {
+        let f = model(0.0, 0.1)
+            .fill_market(&market(Side::Buy, 250.0), &bar(100.0, 1000.0))
+            .unwrap();
+        assert_eq!(f.size, Qty(100.0));
+    }
+
+    #[test]
+    fn market_impact_scales_slippage_with_the_volume_fraction() {
+        // impact 0.5, no flat slippage: a buy of 100 into a 1000-volume bar takes
+        // 10% of it, so slip = 0.5 * 0.1 = 0.05; price = 100 * 1.05 = 105.
+        let f = FillModel {
+            slippage_bps: Bps(0.0),
+            max_fill_fraction: 1.0,
+            impact: 0.5,
+        };
+        let fill = f
+            .fill_market(&market(Side::Buy, 100.0), &bar(100.0, 1000.0))
+            .unwrap();
+        assert!(approx(fill.price.get(), 105.0));
+    }
+
+    #[test]
+    fn zero_volume_bar_fills_nothing() {
+        assert!(model(0.0, 1.0)
+            .fill_market(&market(Side::Buy, 1.0), &bar(100.0, 0.0))
+            .is_none());
+    }
+
+    // limit
+
+    #[test]
+    fn buy_limit_fills_when_bar_dips_to_it() {
+        let f = model(50.0, 1.0)
+            .fill_limit(
+                &limit(Side::Buy, 1.0, 100.0),
+                &ohlc(101.0, 102.0, 98.0, 101.0, 1000.0),
+            )
+            .unwrap();
+        assert_eq!(f.price.get(), 100.0); // at the limit
+        assert!(!f.is_taker); // maker, no slippage despite slippage_bps
+    }
+
+    #[test]
+    fn buy_limit_untouched_does_not_fill() {
+        assert!(model(0.0, 1.0)
+            .fill_limit(
+                &limit(Side::Buy, 1.0, 100.0),
+                &ohlc(102.0, 103.0, 101.0, 102.0, 1000.0)
+            )
+            .is_none());
+    }
+
+    #[test]
+    fn sell_limit_fills_when_bar_rises_to_it() {
+        let f = model(0.0, 1.0)
+            .fill_limit(
+                &limit(Side::Sell, 1.0, 100.0),
+                &ohlc(99.0, 101.0, 98.0, 100.0, 1000.0),
+            )
+            .unwrap();
+        assert_eq!(f.price.get(), 100.0);
+    }
+
+    #[test]
+    fn buy_limit_gap_through_still_fills_at_limit_never_better() {
+        // limit 100; bar gaps down, opens 95 (low 90). Fills at 100, not 95.
+        let f = model(0.0, 1.0)
+            .fill_limit(
+                &limit(Side::Buy, 1.0, 100.0),
+                &ohlc(95.0, 96.0, 90.0, 95.0, 1000.0),
+            )
+            .unwrap();
+        assert_eq!(f.price.get(), 100.0);
+    }
+
+    #[test]
+    fn volume_cap_limits_limit_size() {
+        let f = model(0.0, 0.1)
+            .fill_limit(
+                &limit(Side::Buy, 250.0, 100.0),
+                &ohlc(101.0, 102.0, 98.0, 101.0, 1000.0),
+            )
+            .unwrap();
+        assert_eq!(f.size, Qty(100.0));
+    }
+
+    // stop
+
+    #[test]
+    fn sell_stop_triggers_and_fills_at_trigger_with_slippage() {
+        // sell stop 90; bar low 88 triggers, no gap (open 95). Fill at 90 - slip.
+        let f = model(10.0, 1.0)
+            .fill_stop(
+                &stop(Side::Sell, 1.0, 90.0),
+                &ohlc(95.0, 96.0, 88.0, 92.0, 1000.0),
+            )
+            .unwrap();
+        assert!(approx(f.price.get(), 90.0 * 0.999));
+        assert!(f.is_taker);
+    }
+
+    #[test]
+    fn sell_stop_gap_fills_at_the_worse_open() {
+        // sell stop 90; bar gaps down, opens 85 (worse). Fill at 85 - slip.
+        let f = model(10.0, 1.0)
+            .fill_stop(
+                &stop(Side::Sell, 1.0, 90.0),
+                &ohlc(85.0, 86.0, 84.0, 85.0, 1000.0),
+            )
+            .unwrap();
+        assert!(approx(f.price.get(), 85.0 * 0.999));
+    }
+
+    #[test]
+    fn buy_stop_triggers_at_trigger_with_slippage() {
+        // buy stop 110; bar high 112 triggers, no gap (open 105). Fill at 110 + slip.
+        let f = model(10.0, 1.0)
+            .fill_stop(
+                &stop(Side::Buy, 1.0, 110.0),
+                &ohlc(105.0, 112.0, 104.0, 111.0, 1000.0),
+            )
+            .unwrap();
+        assert!(approx(f.price.get(), 110.0 * 1.001));
+    }
+
+    #[test]
+    fn buy_stop_gap_fills_at_the_worse_open() {
+        // buy stop 110; bar gaps up, opens 115. Fill at 115 + slip.
+        let f = model(10.0, 1.0)
+            .fill_stop(
+                &stop(Side::Buy, 1.0, 110.0),
+                &ohlc(115.0, 116.0, 114.0, 115.0, 1000.0),
+            )
+            .unwrap();
+        assert!(approx(f.price.get(), 115.0 * 1.001));
+    }
+
+    #[test]
+    fn untriggered_stop_does_not_fill() {
+        assert!(model(0.0, 1.0)
+            .fill_stop(
+                &stop(Side::Sell, 1.0, 90.0),
+                &ohlc(95.0, 96.0, 92.0, 94.0, 1000.0)
+            )
+            .is_none());
+    }
+
+    // post_only cross check
+
+    #[test]
+    fn limit_crosses_detects_marketable_orders() {
+        let m = model(0.0, 1.0);
+        assert!(m.limit_crosses(Side::Buy, Price(105.0), Price(100.0))); // buy above market
+        assert!(!m.limit_crosses(Side::Buy, Price(95.0), Price(100.0))); // buy below: maker
+        assert!(m.limit_crosses(Side::Sell, Price(95.0), Price(100.0))); // sell below market
+        assert!(!m.limit_crosses(Side::Sell, Price(105.0), Price(100.0))); // sell above: maker
+    }
+}

@@ -1,0 +1,76 @@
+# Release: build the abi3 wheels and the sdist on a version tag, then publish to
+# PyPI. One stable-ABI wheel per platform covers Python 3.9+.
+#
+# Draft, wire it up before the first tag:
+#   1. Enable PyPI trusted publishing for this project (OIDC), or swap the publish
+#      step for a token; the publish job authenticates by OIDC as written.
+#   2. macOS builds the runner's arch (arm64 on macos-latest); add an x86_64 target
+#      or a second runner if Intel-mac wheels are wanted.
+#   3. Gate publish on the tests: add a job that builds the wheel and runs the suite
+#      (or reuses the Docker gate) and make `publish` `needs:` it, so a tag never
+#      publishes an untested artifact. Until then, only cut a tag from a green main.
+# Nothing here runs until a v* tag is pushed (or the workflow is dispatched).
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  wheels:
+    name: wheel on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11" # pyo3 needs a >=3.9 interpreter to build
+      - uses: dtolnay/rust-toolchain@1.88.0
+      - name: build abi3 wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          command: build
+          args: --release --out dist
+          manylinux: auto
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}
+          path: dist/*.whl
+
+  sdist:
+    name: sdist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+
+  publish:
+    name: publish to PyPI
+    needs: [wheels, sdist]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    environment: pypi
+    permissions:
+      id-token: write # PyPI trusted publishing (OIDC)
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: pypa/gh-action-pypi-publish@release/v1
