@@ -1,5 +1,6 @@
 [package]
 name = "bar-engine"
+description = "Bar-level market simulation over emsl-core: the next-bar fill model, the step state machine, performance stats, and the parallel batch runner."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -16,12 +16,12 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends curl build-essential \
     && rm -rf /var/lib/apt/lists/*
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-    | sh -s -- -y --default-toolchain 1.88 --profile minimal
+    | sh -s -- -y --default-toolchain 1.88.0 --profile minimal
 ENV PATH="/root/.cargo/bin:${PATH}"
 RUN pip install --no-cache-dir maturin
 WORKDIR /src
 COPY . .
-RUN maturin build --release --out /wheels
+RUN maturin build --release --locked --out /wheels
 
 FROM python:3.9-slim AS test39
 COPY --from=builder /wheels /wheels

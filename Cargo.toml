@@ -19,3 +19,10 @@ numpy = "0.22"
 rayon = "1"
 criterion = "0.5"
 proptest = "1"
+
+# The shipped wheel and the benches are release builds; the hot loop is deliberately
+# split across crates, so cross-crate inlining is where the speed is. panic stays
+# unwind (the default), which pyo3 requires.
+[profile.release]
+lto = "thin"
+codegen-units = 1

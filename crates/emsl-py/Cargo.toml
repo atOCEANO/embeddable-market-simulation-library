@@ -1,5 +1,6 @@
 [package]
 name = "emsl-py"
+description = "PyO3 bindings for the emsl bar-level market simulator, compiled to the emsl._emsl extension module."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
