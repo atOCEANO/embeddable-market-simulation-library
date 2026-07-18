@@ -1,10 +1,12 @@
-"""Compiled-strategy parameter sweep.
+"""Compiled-strategy parameter sweep: the engine's fast reference path.
 
 ``BatchRunner`` runs a built-in compiled strategy over a grid of parameter rows in
 parallel, with the GIL released, and returns a dict of final-stat arrays aligned to
-the rows. Use it for brute-force search over a built-in strategy; a Python
-``Strategy`` subclass runs one at a time through ``emsl.backtest`` instead, at
-Python speed.
+the rows. Because the strategy is compiled Rust, the whole grid runs with no Python
+in the loop, which is what makes it fast; the cost is that it can only run the
+built-in strategies, not one written in Python. To search a strategy of your own,
+use ``emsl.tune``, which runs each trial as a full backtest across worker processes
+(and, for a single run, ``emsl.backtest``).
 
 ```python
 import numpy as np
