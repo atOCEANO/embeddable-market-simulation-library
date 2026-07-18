@@ -59,3 +59,13 @@ COPY --from=builder /wheels /wheels
 RUN pip install --no-cache-dir /wheels/*.whl numpy gymnasium optuna cloudpickle
 COPY benchmarks /benchmarks
 CMD ["python", "/benchmarks/surfaces.py"]
+
+# Stable-Baselines3 integration: install torch and sb3 and run the adapter tests.
+# torch is heavy, so this is opt-in and kept out of the correctness gate:
+#   docker build --target test-sb3 .
+FROM python:3.11-slim AS test-sb3
+COPY --from=builder /wheels /wheels
+COPY tests /tests
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu \
+    && pip install --no-cache-dir /wheels/*.whl numpy gymnasium stable-baselines3 pytest \
+    && pytest -q /tests/test_sb3.py
