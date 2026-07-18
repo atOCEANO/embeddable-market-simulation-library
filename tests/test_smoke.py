@@ -191,13 +191,14 @@ def test_batch_rejects_mismatched_action_length():
         b.step_all(np.array([1.0, 2.0], dtype=np.float64))  # length 2 != 3 envs
 
 
-def test_batch_observe_features_rejects_a_short_matrix():
+def test_batch_set_features_rejects_a_short_matrix():
     # features must carry one row per candle; a shorter matrix would index out of
-    # bounds in the gather, so it is rejected rather than panicking across the FFI
+    # bounds in the gather, so set_features rejects it rather than panicking across
+    # the FFI
     b = emsl.Batch(series(), num_envs=2)  # series() has 3 bars
     b.reset_all()
     with pytest.raises(ValueError):
-        b.observe_features(np.zeros((2, 4), dtype=np.float64), 2)  # 2 rows != 3 bars
+        b.set_features(np.zeros((2, 4), dtype=np.float64))  # 2 rows != 3 bars
 
 
 class BuyAndHold:

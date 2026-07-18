@@ -571,6 +571,11 @@ impl Engine {
 #[pyclass]
 struct Batch {
     inner: EnvBatch,
+    // the feature matrix, cached once by set_features (ADR 0010): observe_features
+    // gathers from this buffer each step rather than recopying the whole (T, F)
+    // matrix from numpy, matching how the candles are copied once and shared
+    features: Vec<f64>,
+    n_features: usize,
 }
 
 #[pymethods]
@@ -664,7 +669,11 @@ impl Batch {
             EnvBatch::new(num_envs, series, config)
         };
 
-        Ok(Batch { inner })
+        Ok(Batch {
+            inner,
+            features: Vec::new(),
+            n_features: 0,
+        })
     }
 
     /// Number of envs.
@@ -810,15 +819,10 @@ impl Batch {
         PyArray1::from_vec_bound(py, self.inner.busts())
     }
 
-    /// Batched feature observation: the `window` most recent rows of the shared
-    /// `(T, F)` feature matrix per env, as `(num_envs, window, F)` float64. The
-    /// gather runs on the Rayon pool; the feature buffer is read in place.
-    fn observe_features<'py>(
-        &self,
-        py: Python<'py>,
-        features: PyReadonlyArray2<'_, f64>,
-        window: usize,
-    ) -> PyResult<Bound<'py, PyArray3<f64>>> {
+    /// Cache the shared `(T, F)` feature matrix once, so `observe_features` gathers
+    /// from it each step instead of recopying the whole matrix from numpy. Call it
+    /// once before observing; the matrix must have one row per candle (ADR 0010).
+    fn set_features(&mut self, features: PyReadonlyArray2<'_, f64>) -> PyResult<()> {
         let n_features = features.as_array().ncols();
         let n_rows = features.as_array().nrows();
         let num_bars = self.inner.num_bars();
@@ -827,15 +831,31 @@ impl Batch {
                 "features must have one row per candle: got {n_rows} rows for {num_bars} bars"
             )));
         }
-        // Copy the feature buffer to an owned Vec under the GIL so the parallel
-        // gather can run with the GIL released, like observe; the numpy array must
-        // not be touched once the GIL is dropped.
-        let owned: Vec<f64> = features
+        self.features = features
             .as_slice()
             .map_err(|_| PyValueError::new_err("features must be a contiguous 2-D float64 array"))?
             .to_vec();
+        self.n_features = n_features;
+        Ok(())
+    }
+
+    /// Batched feature observation: the `window` most recent rows of the feature
+    /// matrix set by `set_features` per env, as `(num_envs, window, F)` float64. The
+    /// gather runs on the Rayon pool over the cached buffer with the GIL released.
+    fn observe_features<'py>(
+        &self,
+        py: Python<'py>,
+        window: usize,
+    ) -> PyResult<Bound<'py, PyArray3<f64>>> {
+        if self.n_features == 0 {
+            return Err(PyValueError::new_err(
+                "no features set; call set_features before observe_features",
+            ));
+        }
         let n = self.inner.len();
-        let out = py.allow_threads(|| self.inner.observe_features_all(window, &owned, n_features));
+        let n_features = self.n_features;
+        let out = py
+            .allow_threads(|| self.inner.observe_features_all(window, &self.features, n_features));
         let array = Array3::from_shape_vec((n, window, n_features), out)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
         Ok(PyArray3::from_owned_array_bound(py, array))

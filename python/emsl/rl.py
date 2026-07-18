@@ -98,7 +98,7 @@ class VectorEnv(gym.vector.VectorEnv):
             if features.ndim != 2 or features.shape[0] != self._num_bars:
                 raise ValueError("features must be (T, F) with T matching the candles")
             n_features = int(features.shape[1])
-        self._features = features
+        self._has_features = features is not None
 
         # independent streams: the per-env cost draw and the start offsets come from
         # separate generators, so a fixed seed gives the same offsets whether or not
@@ -133,6 +133,9 @@ class VectorEnv(gym.vector.VectorEnv):
             slippage_bps_per_env=slippage_bps_per_env,
             impact_per_env=impact_per_env,
         )
+
+        if features is not None:
+            self._batch.set_features(features)     # cache once; observe_features gathers from it
 
         self.single_observation_space = spaces.Box(
             low=-np.inf, high=np.inf, shape=(self.window, n_features), dtype=np.float32
@@ -171,8 +174,8 @@ class VectorEnv(gym.vector.VectorEnv):
         return self._rng.integers(lo, hi, size=n, dtype=np.int64)
 
     def _obs(self):
-        if self._features is not None:
-            arr = self._batch.observe_features(self._features, self.window)
+        if self._has_features:
+            arr = self._batch.observe_features(self.window)
         else:
             arr = self._batch.observe(self.window)
         return arr.astype(np.float32)
