@@ -212,3 +212,15 @@ def test_custom_action_space_and_continuous_actions():
     env.reset(seed=0)
     obs, rewards, term, trunc, infos = env.step(np.zeros((2, 1), dtype=np.float64))
     assert rewards.shape == (2,)
+
+
+def test_metadata_declares_same_step_autoreset_when_supported():
+    # gymnasium's newer vector API has AutoresetMode; when present, the env declares
+    # SAME_STEP so a vector wrapper does not assume the next-step default and misread
+    # the same-step reset (ADR 0010). Older gymnasium has no enum, so the tag is absent
+    try:
+        from gymnasium.vector import AutoresetMode
+    except ImportError:
+        pytest.skip("gymnasium without AutoresetMode")
+    env = VectorEnv(make_data(), num_envs=2, window=4, seed=0)
+    assert env.metadata.get("autoreset_mode") == AutoresetMode.SAME_STEP

@@ -39,6 +39,16 @@ from gymnasium.vector.utils import batch_space
 from ._data import to_float2d, to_ohlcv
 from ._emsl import Batch
 
+# gymnasium's newer vector API tags a vector env's autoreset style so wrappers
+# treat it correctly; emsl resets on the same step (ADR 0010), which older
+# gymnasium has no enum to name, so declare it when present and skip it otherwise
+try:
+    from gymnasium.vector import AutoresetMode as _AutoresetMode
+
+    _SAME_STEP = _AutoresetMode.SAME_STEP
+except ImportError:
+    _SAME_STEP = None
+
 
 class VectorEnv(gym.vector.VectorEnv):
     """Vectorized bar-level trading env over the Rust batch."""
@@ -134,7 +144,7 @@ class VectorEnv(gym.vector.VectorEnv):
         self.action_space = batch_space(self.single_action_space, self.num_envs)
 
         # set directly rather than via the version-sensitive base __init__
-        self.metadata = {}
+        self.metadata = {"autoreset_mode": _SAME_STEP} if _SAME_STEP is not None else {}
         self.render_mode = None
         self.closed = False
 
@@ -155,7 +165,7 @@ class VectorEnv(gym.vector.VectorEnv):
     def _random_offsets(self, n):
         # start at or after the warmup so the window is full, and leave at least one
         # bar to step into; the constructor guarantees num_bars >= window + 1, so
-        # this range is always non-empty
+        # lo < hi always holds and the range always has a value to draw
         lo = self.window - 1
         hi = self._num_bars - 1
         return self._rng.integers(lo, hi, size=n, dtype=np.int64)
