@@ -22,9 +22,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.88.0
         with:
           components: rustfmt, clippy
-      - run: cargo test -p emsl-core -p bar-engine
+      - run: cargo test --locked -p emsl-core -p bar-engine
       - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
   build-wheel:
     name: build abi3 wheel
@@ -36,7 +36,7 @@ jobs:
           python-version: "3.11"
       - uses: dtolnay/rust-toolchain@1.88.0
       - run: pip install maturin
-      - run: maturin build --release --out dist
+      - run: maturin build --release --locked --out dist
       - uses: actions/upload-artifact@v4
         with:
           name: wheel
@@ -58,6 +58,6 @@ jobs:
         with:
           name: wheel
           path: dist
-      - run: pip install --find-links dist emsl numpy gymnasium pandas pyarrow pytest
+      - run: pip install dist/*.whl numpy gymnasium pandas pyarrow pytest
       - run: python -c "import emsl; print(emsl.__version__)"
       - run: pytest -q tests

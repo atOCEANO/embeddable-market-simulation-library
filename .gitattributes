@@ -1,0 +1,6 @@
+# Normalize all text to LF in the repository and on checkout, so the working tree
+# matches the Linux gate on every platform.
+* text=auto eol=lf
+
+# Binary assets: never touch their bytes (a PNG signature even contains 0x0D 0x0A).
+*.png binary
