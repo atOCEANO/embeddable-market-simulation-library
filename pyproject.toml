@@ -11,7 +11,7 @@ authors = [{ name = "Dinis Martinho" }]
 dynamic = ["version"]
 dependencies = [
     "numpy>=1.21",
-    "gymnasium>=0.28,<2.0",
+    "gymnasium>=1.0,<2.0",
 ]
 classifiers = [
     "Programming Language :: Rust",
