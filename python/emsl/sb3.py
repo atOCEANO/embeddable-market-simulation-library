@@ -7,7 +7,7 @@ on it without giving up the batch. The mapping is a straight remap rather than a
 re-vectorization: emsl's same-step autoreset (a finished env's step returns the next
 episode's first observation, the true final in ``infos``) is exactly the SB3
 ``VecEnv`` contract, so a done env's final observation becomes SB3's
-``terminal_observation`` (ADR 0010).
+``terminal_observation`` (ADR 0022).
 
 ```python
 from stable_baselines3 import PPO
