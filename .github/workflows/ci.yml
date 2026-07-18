@@ -58,6 +58,6 @@ jobs:
         with:
           name: wheel
           path: dist
-      - run: pip install dist/*.whl numpy gymnasium pandas pyarrow pytest
+      - run: pip install dist/*.whl numpy gymnasium pandas pyarrow optuna cloudpickle pytest
       - run: python -c "import emsl; print(emsl.__version__)"
       - run: pytest -q tests

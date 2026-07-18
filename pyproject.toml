@@ -23,6 +23,7 @@ classifiers = [
 
 [project.optional-dependencies]
 data = ["pandas", "pyarrow"]
+tune = ["optuna>=3.0", "cloudpickle>=2.0"]
 
 [project.urls]
 Repository = "https://github.com/atOCEANO/embeddable-market-simulation-library"
