@@ -7,6 +7,11 @@
 #   docker build --target test311 -t emsl-gate311 .
 #   docker build --target test312 -t emsl-gate312 .
 #
+# The rust-checks stage is the other half of the same gate: it runs the pure-Rust
+# format, lint, and test commands CI runs, so a Rust change is verified the same
+# way a Python one is, with no toolchain on the host:
+#   docker build --target rust-checks .
+#
 # The bench stage is opt-in and prints throughput; it is not a correctness gate,
 # so its timing never fails a test build:
 #   docker build --target bench   .
@@ -22,6 +27,25 @@ RUN pip install --no-cache-dir maturin
 WORKDIR /src
 COPY . .
 RUN maturin build --release --locked --out /wheels
+
+# The pure-Rust half of CI. rust-toolchain.toml pins only the channel, so the two
+# components are added here; declaring them in that file makes rustup install them
+# into an already-provisioned toolchain, which conflicts on some CI runners. The
+# base carries Python because clippy over emsl-py needs an interpreter for pyo3's
+# build config.
+FROM python:3.11-slim AS rust-checks
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl build-essential \
+    && rm -rf /var/lib/apt/lists/*
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+    | sh -s -- -y --default-toolchain 1.88.0 --profile minimal
+ENV PATH="/root/.cargo/bin:${PATH}"
+RUN rustup component add rustfmt clippy
+WORKDIR /src
+COPY . .
+RUN cargo fmt --all --check \
+    && cargo clippy --locked --workspace --all-targets -- -D warnings \
+    && cargo test --locked -p emsl-core -p bar-engine
 
 FROM python:3.9-slim AS test39
 COPY --from=builder /wheels /wheels
