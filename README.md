@@ -235,21 +235,13 @@ These move with hardware and workload, so treat them as shape, not a promise. Ru
 
 ## Install
 
-The extension compiles from source, so you need the Rust toolchain ([rustup](https://rustup.rs)); pip drives the build itself. Prebuilt wheels for Linux, macOS, and Windows are planned, which will drop the compiler requirement.
-
-Straight from the repository, which is the short way:
+Every [release](https://github.com/atOCEANO/embeddable-market-simulation-library/releases) carries prebuilt wheels for Linux (x86_64 and aarch64), macOS (Intel and Apple silicon in one universal2 file), and Windows. Installing from those needs no compiler, and pip picks the one matching your machine:
 
 ```bash
-pip install "git+https://github.com/atOCEANO/embeddable-market-simulation-library.git"
+pip install --find-links https://github.com/atOCEANO/embeddable-market-simulation-library/releases/expanded_assets/v0.1.0 emsl
 ```
 
-Pin it to a tag when a build has to be reproducible:
-
-```bash
-pip install "git+https://github.com/atOCEANO/embeddable-market-simulation-library.git@v0.1.0"
-```
-
-The optional extras install the same way and stack:
+The optional extras work the same way and stack:
 
 | Extra | Pulls | For |
 | :--- | :--- | :--- |
@@ -258,7 +250,19 @@ The optional extras install the same way and stack:
 | `sb3` | stable-baselines3 | the Stable-Baselines3 adapter |
 
 ```bash
-pip install "emsl[tune,sb3] @ git+https://github.com/atOCEANO/embeddable-market-simulation-library.git"
+pip install --find-links https://github.com/atOCEANO/embeddable-market-simulation-library/releases/expanded_assets/v0.1.0 "emsl[tune,sb3]"
+```
+
+To choose the wheel yourself, take its URL from the release assets:
+
+```bash
+pip install https://github.com/atOCEANO/embeddable-market-simulation-library/releases/download/v0.1.0/emsl-0.1.0-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+```
+
+Building from source instead needs the Rust toolchain ([rustup](https://rustup.rs)), and pip drives the build for you. Pin the tag when a build has to be reproducible:
+
+```bash
+pip install "git+https://github.com/atOCEANO/embeddable-market-simulation-library.git@v0.1.0"
 ```
 
 From a local checkout, either as a plain install or as a development build:
@@ -280,7 +284,7 @@ maturin build --release --out dist
 pip install dist/*.whl
 ```
 
-That one stable-ABI wheel covers Python 3.9 and up, so the same file serves every interpreter in that range, and `numpy` and `gymnasium` install with the package.
+That one stable-ABI wheel covers Python 3.9 and up, so the same file serves every interpreter in that range, and `numpy` and `gymnasium` install with the package. emsl is not published on PyPI, so a bare `pip install emsl` finds nothing; use one of the forms above.
 
 <br>
 <br>

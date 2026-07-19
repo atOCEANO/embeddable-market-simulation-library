@@ -95,19 +95,20 @@ jobs:
 
             ## Install
 
-            Wheels are attached below, one per platform, and each covers Python 3.9
-            and up. Download the one matching your system and install it, no compiler
-            needed:
+            Wheels are attached below, one per platform, each covering Python 3.9 and
+            up. No compiler is needed, and pip picks the one matching your machine:
 
             ```bash
-            pip install ./emsl-0.1.0-cp39-abi3-<your-platform>.whl
+            pip install --find-links https://github.com/atOCEANO/embeddable-market-simulation-library/releases/expanded_assets/${{ github.ref_name }} emsl
             ```
 
-            Or build from source, which needs the [Rust toolchain](https://rustup.rs):
+            The optional extras stack the same way, `"emsl[tune,sb3]"`. Or take a wheel
+            from the Assets below and install that file directly.
+
+            Building from source instead needs the [Rust toolchain](https://rustup.rs):
 
             ```bash
-            pip install "git+https://github.com/atOCEANO/embeddable-market-simulation-library.git@v0.1.0"
-            pip install "emsl[tune,sb3] @ git+https://github.com/atOCEANO/embeddable-market-simulation-library.git@v0.1.0"
+            pip install "git+https://github.com/atOCEANO/embeddable-market-simulation-library.git@${{ github.ref_name }}"
             ```
 
             ## What is in it
