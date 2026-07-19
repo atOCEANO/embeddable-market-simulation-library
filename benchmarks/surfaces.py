@@ -20,7 +20,6 @@ import numpy as np
 
 from emsl import Batch, Engine, tune
 from emsl.backtest import Backtester, Strategy
-from emsl.batch import BatchRunner
 from emsl.rl import VectorEnv
 
 # one shared series and one shared strategy, so every surface runs the same logic
@@ -133,20 +132,6 @@ def bench_tune(data, n_trials, n_jobs):
     return n_trials / dt
 
 
-def bench_batchrunner(data, n_configs):
-    # the compiled sweep: the same crossover, but as the built-in Rust strategy, over
-    # a grid with the GIL released
-    runner = BatchRunner(data, market="spot", quote=100_000)
-    params = np.random.default_rng(0).integers(5, 100, size=(n_configs, 2)).astype(float)
-    steps = data.shape[0] - 1
-
-    def run():
-        runner.run_all("sma_cross", params)
-
-    configs_per_sec = best_rate(run, n_configs, repeats=2)
-    return configs_per_sec, configs_per_sec * steps
-
-
 def bench_vectorenv(data, num_envs, steps):
     # the RL env, stepped by a cheap vectorized momentum policy over the batched
     # observation (window last close vs window first close)
@@ -197,9 +182,6 @@ def main():
     tune_seq = bench_tune(data, n_trials=tune_trials, n_jobs=1)
     tune_par = bench_tune(data, n_trials=tune_trials, n_jobs=-1)
 
-    br_configs = 3_000
-    batchrunner_cps, batchrunner_bps = bench_batchrunner(data, n_configs=br_configs)
-
     rl_envs, rl_steps = 1_024, 2_000
     vectorenv_eps = bench_vectorenv(data, num_envs=rl_envs, steps=rl_steps)
     batch_eps = bench_batch(data, num_envs=rl_envs, steps=rl_steps)
@@ -210,8 +192,6 @@ def main():
     print(f"backtester,bars_per_sec,{backtester_bps:.0f},single env reporting wrapper")
     print(f"tune,trials_per_sec,{tune_seq:.2f},n_jobs=1 {tune_trials} trials")
     print(f"tune,trials_per_sec,{tune_par:.2f},n_jobs=-1 {tune_trials} trials {cores} cores")
-    print(f"batchrunner,configs_per_sec,{batchrunner_cps:.0f},{br_configs} compiled configs")
-    print(f"batchrunner,bar_steps_per_sec,{batchrunner_bps:.0f},GIL released")
     print(f"vectorenv,env_steps_per_sec,{vectorenv_eps:.0f},{rl_envs} envs x {rl_steps} steps")
     print(f"batch,env_steps_per_sec,{batch_eps:.0f},{rl_envs} envs x {rl_steps} steps")
 

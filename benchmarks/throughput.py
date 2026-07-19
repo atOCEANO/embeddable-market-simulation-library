@@ -5,8 +5,6 @@ Covers the paths a user actually runs, not just the raw step:
 - single-env ``Engine.step``, which crosses the Python-to-Rust boundary each call;
 - batched ``Batch.advance``, which releases the GIL and steps every env in parallel;
 - a ``Backtester`` driving a Python ``Strategy`` callback each bar (flexible, slow);
-- the compiled ``BatchRunner`` sweep, one full backtest per parameter row in Rust,
-  parallel and GIL-free (the coarse-grained path);
 - a full RL ``VectorEnv`` step, including the observation gather and the reward.
 
 It prints steps/sec and env-steps/sec, the only figures a speed claim in the docs
@@ -84,20 +82,6 @@ def time_backtest(data, passes):
     return (passes * bars) / elapsed
 
 
-def time_sweep(data, num_params, passes):
-    from emsl.batch import BatchRunner
-
-    runner = BatchRunner(data, market="spot", quote=100_000.0, slippage_bps=2.0)
-    grid = np.arange(num_params)
-    params = np.column_stack([5 + grid % 20, 30 + grid % 60]).astype(np.float64)
-    bars = data.shape[0]
-    start = time.perf_counter()
-    for _ in range(passes):
-        runner.run_all("sma_cross", params)
-    elapsed = time.perf_counter() - start
-    return (passes * num_params * bars) / elapsed
-
-
 def time_rl(data, num_envs, steps):
     from emsl.rl import VectorEnv
 
@@ -131,9 +115,6 @@ def main():
 
     print("-- wrappers --")
     print(f"Backtester (python SMA)    : {time_backtest(data, 20):>16,.0f} bar-steps/sec")
-    for num_params in (256, 1_024, 4_096):
-        rate = time_sweep(data, num_params, 3)
-        print(f"sweep run_all g={num_params:<5}       : {rate:>16,.0f} bar-steps/sec")
     for num_envs in (1_024, 4_096):
         rate = time_rl(data, num_envs, 300)
         print(f"VectorEnv step n={num_envs:<5}      : {rate:>16,.0f} env-steps/sec")

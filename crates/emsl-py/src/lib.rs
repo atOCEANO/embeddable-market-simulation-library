@@ -19,9 +19,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
-use bar_engine::{
-    builtin_strategy, run_sweep, Candles, Engine as BarEngine, EngineConfig, EnvBatch, Stats, Trade,
-};
+use bar_engine::{Candles, Engine as BarEngine, EngineConfig, EnvBatch, Stats, Trade};
 use emsl_core::{Candle, Market, Order, OrderId, OrderStatus, OrderType, Side, State, TimeInForce};
 
 /// Parse a market string into the core enum.
@@ -924,157 +922,10 @@ impl Batch {
     }
 }
 
-/// Runs a built-in compiled strategy over a grid of parameter rows in parallel,
-/// returning final stats per row. Exposed to Python as `emsl.batch.BatchRunner`.
-#[pyclass]
-struct BatchRunner {
-    candles: Candles,
-    config: EngineConfig,
-}
-
-#[pymethods]
-impl BatchRunner {
-    #[new]
-    #[pyo3(signature = (
-        candles,
-        market = "spot",
-        quote = 10_000.0,
-        fee_taker = 0.0006,
-        fee_maker = 0.0002,
-        slippage_bps = 0.0,
-        max_fill_fraction = 1.0,
-        max_open_orders = 8,
-        leverage = 10.0,
-        impact = 0.0,
-        funding_rate = 0.0,
-        funding_interval = 0,
-    ))]
-    #[allow(clippy::too_many_arguments)]
-    fn new(
-        candles: PyReadonlyArray2<'_, f64>,
-        market: &str,
-        quote: f64,
-        fee_taker: f64,
-        fee_maker: f64,
-        slippage_bps: f64,
-        max_fill_fraction: f64,
-        max_open_orders: usize,
-        leverage: f64,
-        impact: f64,
-        funding_rate: f64,
-        funding_interval: usize,
-    ) -> PyResult<BatchRunner> {
-        let config = EngineConfig {
-            market: parse_market(market)?,
-            quote,
-            fee_taker,
-            fee_maker,
-            slippage_bps,
-            max_fill_fraction,
-            max_open_orders,
-            report: false, // the sweep forces reporting on per run
-            max_leverage: leverage,
-            impact,
-            funding_rate,
-            funding_interval,
-        };
-        Ok(BatchRunner {
-            candles: candles_from_array(candles)?,
-            config,
-        })
-    }
-
-    /// Run `strategy` over each row of `params` (shape `(G, P)`) to the end of the
-    /// data, in parallel with the GIL released, returning a dict of `(G,)` stat
-    /// arrays aligned to the rows.
-    #[pyo3(signature = (strategy, params, periods_per_year = 365.0, risk_free = 0.0))]
-    fn run_all<'py>(
-        &self,
-        py: Python<'py>,
-        strategy: &str,
-        params: PyReadonlyArray2<'_, f64>,
-        periods_per_year: f64,
-        risk_free: f64,
-    ) -> PyResult<Bound<'py, PyDict>> {
-        let factory = builtin_strategy(strategy).ok_or_else(|| {
-            PyValueError::new_err(format!(
-                "unknown strategy '{strategy}'; built-in strategies: sma_cross"
-            ))
-        })?;
-        let rows: Vec<Vec<f64>> = params
-            .as_array()
-            .outer_iter()
-            .map(|row| row.to_vec())
-            .collect();
-        let candles = self.candles.clone();
-        let config = self.config;
-        let stats = py.allow_threads(move || {
-            run_sweep(candles, config, factory, &rows, periods_per_year, risk_free)
-        });
-
-        let d = PyDict::new_bound(py);
-        let column = |get: fn(&Stats) -> f64| stats.iter().map(get).collect::<Vec<f64>>();
-        d.set_item(
-            "total_return_pct",
-            PyArray1::from_vec_bound(py, column(|s| s.total_return_pct)),
-        )?;
-        d.set_item(
-            "net_profit_pct",
-            PyArray1::from_vec_bound(py, column(|s| s.net_profit_pct)),
-        )?;
-        d.set_item(
-            "cagr_pct",
-            PyArray1::from_vec_bound(py, column(|s| s.cagr_pct)),
-        )?;
-        d.set_item("sharpe", PyArray1::from_vec_bound(py, column(|s| s.sharpe)))?;
-        d.set_item(
-            "sortino",
-            PyArray1::from_vec_bound(py, column(|s| s.sortino)),
-        )?;
-        d.set_item("calmar", PyArray1::from_vec_bound(py, column(|s| s.calmar)))?;
-        d.set_item(
-            "max_drawdown_pct",
-            PyArray1::from_vec_bound(py, column(|s| s.max_drawdown_pct)),
-        )?;
-        d.set_item(
-            "volatility_pct",
-            PyArray1::from_vec_bound(py, column(|s| s.volatility_pct)),
-        )?;
-        d.set_item(
-            "exposure_pct",
-            PyArray1::from_vec_bound(py, column(|s| s.exposure_pct)),
-        )?;
-        d.set_item(
-            "win_rate",
-            PyArray1::from_vec_bound(py, column(|s| s.win_rate)),
-        )?;
-        d.set_item(
-            "profit_factor",
-            PyArray1::from_vec_bound(py, column(|s| s.profit_factor)),
-        )?;
-        d.set_item(
-            "num_trades",
-            PyArray1::from_vec_bound(
-                py,
-                stats
-                    .iter()
-                    .map(|s| s.num_trades as i64)
-                    .collect::<Vec<i64>>(),
-            ),
-        )?;
-        d.set_item(
-            "avg_trade_pct",
-            PyArray1::from_vec_bound(py, column(|s| s.avg_trade_pct)),
-        )?;
-        Ok(d)
-    }
-}
-
 /// The `_emsl` extension module, imported by Python as `emsl._emsl`.
 #[pymodule]
 fn _emsl(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Engine>()?;
     m.add_class::<Batch>()?;
-    m.add_class::<BatchRunner>()?;
     Ok(())
 }

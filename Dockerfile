@@ -74,7 +74,7 @@ COPY benchmarks /benchmarks
 RUN pip install --no-cache-dir /wheels/*.whl numpy \
     && python /benchmarks/throughput.py
 
-# Per-surface throughput (Engine, Backtester, tune, BatchRunner, VectorEnv, Batch).
+# Per-surface throughput (Engine, Backtester, tune, VectorEnv, Batch).
 # Needs the full deps, so it is its own stage; run it and read stdout:
 #   docker build --target bench-surfaces -t emsl-bench-surfaces .
 #   docker run --rm emsl-bench-surfaces

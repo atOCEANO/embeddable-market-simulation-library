@@ -4,17 +4,17 @@ The compiled Rust core is exposed as ``emsl._emsl``; this package re-exports its
 public surface. ``Engine`` drives a single environment one bar at a time: build it
 from a ``(T, 5)`` OHLCV numpy array, then ``reset`` and ``step``. ``Batch`` runs
 many independent envs over one shared series and steps them in parallel with the
-GIL released. The Python wrappers (rl, backtest, batch) layer on top of these, and
-``tune`` searches a strategy's parameters by running many backtests across cores.
+GIL released. The Python wrappers (rl, backtest) layer on top of these, and ``tune``
+searches a strategy's parameters by running many backtests across cores.
 """
 
 from ._emsl import Batch, Engine
 from ._data import to_ohlcv
-from . import backtest, batch, rl
+from . import backtest, rl
 from .backtest import Strategy
 from ._tune import tune
 
-__all__ = ["Batch", "Engine", "Strategy", "to_ohlcv", "tune", "backtest", "batch", "rl"]
+__all__ = ["Batch", "Engine", "Strategy", "to_ohlcv", "tune", "backtest", "rl"]
 
 try:
     from importlib.metadata import version as _version

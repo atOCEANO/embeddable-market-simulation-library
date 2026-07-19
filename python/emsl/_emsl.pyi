@@ -1,6 +1,6 @@
-"""Type stubs for the compiled ``emsl._emsl`` extension: ``Engine``, ``Batch``, and
-``BatchRunner``. Hand-maintained; keep in sync with ``crates/emsl-py/src/lib.rs``.
-State and order records come back as plain dicts, typed here as ``dict[str, Any]``.
+"""Type stubs for the compiled ``emsl._emsl`` extension: ``Engine`` and ``Batch``.
+Hand-maintained; keep in sync with ``crates/emsl-py/src/lib.rs``. State and order
+records come back as plain dicts, typed here as ``dict[str, Any]``.
 """
 
 from typing import Any, Optional
@@ -97,27 +97,3 @@ class Batch:
     def snapshot(self) -> dict[str, np.ndarray]: ...
     def reset_at_each(self, offsets: np.ndarray) -> None: ...
     def reset_masked(self, mask: np.ndarray, offsets: np.ndarray) -> None: ...
-
-class BatchRunner:
-    def __init__(
-        self,
-        candles: np.ndarray,
-        market: str = ...,
-        quote: float = ...,
-        fee_taker: float = ...,
-        fee_maker: float = ...,
-        slippage_bps: float = ...,
-        max_fill_fraction: float = ...,
-        max_open_orders: int = ...,
-        leverage: float = ...,
-        impact: float = ...,
-        funding_rate: float = ...,
-        funding_interval: int = ...,
-    ) -> None: ...
-    def run_all(
-        self,
-        strategy: str,
-        params: np.ndarray,
-        periods_per_year: float = ...,
-        risk_free: float = ...,
-    ) -> dict[str, np.ndarray]: ...

@@ -1,7 +1,13 @@
 //! The compiled parameter sweep: run a built-in strategy over a grid of parameter
 //! rows in parallel, returning the final stats of each. Because the strategies are
 //! compiled Rust, the whole grid runs in the engine with no Python in the loop,
-//! which is what makes brute-force search fast. See ADR 0011.
+//! which is what makes brute-force search fast.
+//!
+//! This is deliberately not exposed to Python: it can only run the strategies
+//! compiled in here, so as a public surface it would be one nobody could extend
+//! without writing Rust. Parameter search from Python goes through `emsl.tune`;
+//! this stays as the in-core path and the benchmark of the GIL-free sweep. See
+//! ADR 0011.
 
 use rayon::prelude::*;
 
