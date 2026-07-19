@@ -30,10 +30,11 @@ jobs:
           - runner: ubuntu-latest
             target: aarch64
             best_effort: true # cross-compiled, so it may not resolve
-          - runner: macos-13
-            target: x86_64 # Intel macs
+          # one fat wheel covering Intel and Apple silicon, built on the runner
+          # that exists; the Intel-only macos-13 label is being retired, and a job
+          # asking for a retired label queues forever rather than failing
           - runner: macos-latest
-            target: aarch64 # Apple silicon
+            target: universal2-apple-darwin
           - runner: windows-latest
             target: x64
     steps:
