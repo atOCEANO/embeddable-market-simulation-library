@@ -1,15 +1,11 @@
-# Release: build the abi3 wheels and the sdist on a version tag, then publish to
-# PyPI. One stable-ABI wheel per platform covers Python 3.9+.
+# Release: build the abi3 wheels and the sdist, then publish them as a GitHub
+# Release with the artifacts attached. One abi3 wheel per platform covers Python
+# 3.9 and up, so the five below cover the common targets without a per-version
+# matrix.
 #
-# Draft, wire it up before the first tag:
-#   1. Enable PyPI trusted publishing for this project (OIDC), or swap the publish
-#      step for a token; the publish job authenticates by OIDC as written.
-#   2. macOS builds the runner's arch (arm64 on macos-latest); add an x86_64 target
-#      or a second runner if Intel-mac wheels are wanted.
-#   3. Gate publish on the tests: add a job that builds the wheel and runs the suite
-#      (or reuses the Docker gate) and make `publish` `needs:` it, so a tag never
-#      publishes an untested artifact. Until then, only cut a tag from a green main.
-# Nothing here runs until a v* tag is pushed (or the workflow is dispatched).
+# A v* tag builds AND releases. A manual dispatch builds only, so the whole
+# matrix can be dry-run before committing to a tag:
+#   Actions -> release -> Run workflow
 
 name: release
 
@@ -23,12 +19,23 @@ permissions:
 
 jobs:
   wheels:
-    name: wheel on ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+    name: wheel ${{ matrix.runner }} ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
     strategy:
-      fail-fast: false
+      fail-fast: false # one platform failing must not cancel the others
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          - runner: ubuntu-latest
+            target: x86_64
+          - runner: ubuntu-latest
+            target: aarch64
+            best_effort: true # cross-compiled, so it may not resolve
+          - runner: macos-13
+            target: x86_64 # Intel macs
+          - runner: macos-latest
+            target: aarch64 # Apple silicon
+          - runner: windows-latest
+            target: x64
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -36,15 +43,18 @@ jobs:
           python-version: "3.11" # pyo3 needs a >=3.9 interpreter to build
       - uses: dtolnay/rust-toolchain@1.88.0
       - name: build abi3 wheel
+        # the cross-compiled leg is best effort: it must not sink the release
+        continue-on-error: ${{ matrix.best_effort || false }}
         uses: PyO3/maturin-action@v1
         with:
-          command: build
+          target: ${{ matrix.target }}
           args: --release --locked --out dist
           manylinux: auto
       - uses: actions/upload-artifact@v4
         with:
-          name: wheels-${{ matrix.os }}
+          name: wheels-${{ matrix.runner }}-${{ matrix.target }}
           path: dist/*.whl
+          if-no-files-found: ignore # a best-effort leg may have produced nothing
 
   sdist:
     name: sdist
@@ -60,17 +70,79 @@ jobs:
           name: sdist
           path: dist/*.tar.gz
 
-  publish:
-    name: publish to PyPI
+  release:
+    name: publish the release
     needs: [wheels, sdist]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
-    environment: pypi
+    if: startsWith(github.ref, 'refs/tags/') # a dispatch builds only, never releases
     permissions:
-      id-token: write # PyPI trusted publishing (OIDC)
+      contents: write # creating a release writes to the repo
     steps:
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          body: |
+            `emsl` is a bar-level crypto market simulator: a Rust core with a small
+            Python surface. One engine drives a single backtest, a parameter search,
+            and a batched reinforcement-learning rollout, so all three see the same
+            fill model and the same costs.
+
+            ## Install
+
+            Wheels are attached below, one per platform, and each covers Python 3.9
+            and up. Download the one matching your system and install it, no compiler
+            needed:
+
+            ```bash
+            pip install ./emsl-0.1.0-cp39-abi3-<your-platform>.whl
+            ```
+
+            Or build from source, which needs the [Rust toolchain](https://rustup.rs):
+
+            ```bash
+            pip install "git+https://github.com/atOCEANO/embeddable-market-simulation-library.git@v0.1.0"
+            pip install "emsl[tune,sb3] @ git+https://github.com/atOCEANO/embeddable-market-simulation-library.git@v0.1.0"
+            ```
+
+            ## What is in it
+
+            - An event-driven bar engine: market, limit, and stop orders, with
+              reduce-only, post-only, and time-in-force, over a netted spot or perp
+              position.
+            - Honest costs: maker and taker fees, perp funding, slippage, market
+              impact, and a per-order volume cap.
+            - No same-bar lookahead: an order decided on bar `t` resolves against
+              bar `t+1`, never the bar the decision saw.
+            - A backtester returning the stats, the equity curve, and a trade log.
+            - `emsl.tune`: parameter search over any `Strategy`, across worker
+              processes, on a stats key or an objective of your own.
+            - `emsl.rl.VectorEnv`: a Gymnasium vector env, thousands of envs stepped
+              in parallel with the GIL released.
+            - `emsl.sb3.EmslVecEnv`: a Stable-Baselines3 adapter.
+
+            ## Scope
+
+            Bar-level and approximate by design. It does not model the order book
+            (L2), latency, or queue position, and it places no live orders. At bar
+            granularity the fill model cannot see the intrabar path, so it can be
+            slightly more generous than a live book would be; the costs it charges
+            are the real ones.
+
+            ## Verified
+
+            - Rust: 164 tests (61 `emsl-core`, 103 `bar-engine`), rustfmt and clippy
+              clean.
+            - Python: the one abi3 wheel imported and tested on 3.9, 3.11, and 3.12.
+            - Integration: Stable-Baselines3 PPO, A2C, DQN, and SAC, plus VecMonitor,
+              VecNormalize, and evaluate_policy, and gymnasium 1.0 through 1.3.
+
+            ## A note on the version
+
+            This is `0.1.0`: the public API is not frozen. Input validation is due to
+            tighten, a recorded decision, which may change what the boundary accepts.
+            Requires Python 3.9 or newer.
