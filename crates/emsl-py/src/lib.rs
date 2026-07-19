@@ -854,8 +854,10 @@ impl Batch {
         }
         let n = self.inner.len();
         let n_features = self.n_features;
-        let out = py
-            .allow_threads(|| self.inner.observe_features_all(window, &self.features, n_features));
+        let out = py.allow_threads(|| {
+            self.inner
+                .observe_features_all(window, &self.features, n_features)
+        });
         let array = Array3::from_shape_vec((n, window, n_features), out)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
         Ok(PyArray3::from_owned_array_bound(py, array))
