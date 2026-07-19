@@ -4,7 +4,8 @@ build-backend = "maturin"
 
 [project]
 name = "emsl"
-description = "Embeddable market simulation library: a Rust-core crypto market simulator for reinforcement learning, backtests, and parameter sweeps."
+description = "Embeddable market simulation library: a Rust-core crypto market simulator for reinforcement learning, backtests, and parameter search."
+readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
 authors = [{ name = "Dinis Martinho" }]
