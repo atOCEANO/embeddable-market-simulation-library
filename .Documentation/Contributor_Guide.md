@@ -2,6 +2,7 @@
 
 
 <div style="padding-top: 0px;">
+  <a href="https://github.com/atOCEANO/embeddable-market-simulation-library/releases"><img src="https://img.shields.io/github/v/release/atOCEANO/embeddable-market-simulation-library?label=release&color=2ea043" alt="Latest release" /></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.9+-blue.svg" alt="Python 3.9+" /></a>
   <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/rust-1.88-orange.svg?logo=rust&logoColor=white" alt="Rust 1.88" /></a>
   <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT" /></a>
@@ -76,6 +77,23 @@ Every non-obvious decision, a PnL-booking rule, a cost convention, an autoreset 
 ### Submitting a change
 
 Run the build loop above green before you submit, and the Docker gate too for anything Python-facing. Commit subjects read `scope: summary`, where scope names the layer or layers touched (`core:`, `bar:`, `py:`, `docs:`, `test:`, comma-joined when a change spans them), detail goes in the body, and a governing ADR is cited in parentheses: for example `bar: charge funding on a bar interval (ADR 0017)`. A non-obvious decision lands its ADR in the same change, never a follow-up.
+
+<br>
+
+### Cutting a release
+
+Releases are built by CI, never by hand. Pushing a `v*` tag runs the release workflow, which builds the `abi3` wheels for Linux (x86_64 and aarch64), macOS (one universal2 file covering Intel and Apple silicon), and Windows, plus an sdist, and attaches them all to a GitHub Release:
+
+```bash
+git tag -a v0.2.0 -m "emsl 0.2.0"
+git push origin v0.2.0
+```
+
+Two things before you tag. The version in `Cargo.toml` is what names the wheels, so bump it first and let the tag match it, or the release says one number while its artifacts say another. And run the gate on the exact commit you intend to tag: a tag builds, it does not test, so nothing else will catch a regression at that point.
+
+To rehearse without releasing, run the workflow by hand from the Actions tab. A manual dispatch builds every wheel and stops there; only a tag creates the Release. That distinction is worth using, because the macOS and Windows legs exist nowhere but the runners, so a tag is the first time they are exercised.
+
+Those wheels are the install path for anyone without a Rust toolchain, so a release is what makes a version usable at all. emsl is not published to PyPI.
 
 <br>
 
