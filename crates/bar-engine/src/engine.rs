@@ -638,7 +638,10 @@ impl Engine {
         } else {
             0.0
         };
-        let closed = pos_before.abs() - kept;
+        // Clamped at zero: a same-side add keeps MORE than it started with, so the
+        // raw difference goes negative and `opened` would then exceed the fill,
+        // charging the entry fee twice over. Nothing is closed by an add.
+        let closed = (pos_before.abs() - kept).max(0.0);
         let opened = applied - closed;
 
         // Split this fill's fee between the part that closed (the exit side of a
@@ -704,6 +707,12 @@ impl Engine {
         applied
     }
 
+    /// Resolve the resting book against `bar`, in slot order.
+    ///
+    /// A stop is consumed only when it produces a fill. On a bar that trades no
+    /// volume the trigger may be crossed and nothing can fill, and treating that as
+    /// a trigger would delete a stop-loss precisely on the illiquid data where it
+    /// matters; it stays armed for the next bar that can trade instead (ADR 0035).
     fn resolve_resting(&mut self, bar: &Candle) {
         let mut fills: Vec<(OrderId, Fill, OrderType, bool, TimeInForce, f64)> = Vec::new();
         for order in self.book.iter() {
@@ -1682,6 +1691,82 @@ mod tests {
     }
 
     #[test]
+    fn adding_to_a_position_does_not_double_charge_its_entry_fee() {
+        // buy 1 at 200 (fee 2), buy 1 at 400 (fee 4), then close both at 300 (fee 6).
+        // The whole position closes, so the row must carry every fee paid: 12, not 16.
+        // A same-side add keeps more than it started with, so the closed amount goes
+        // negative unless it is clamped, and the opening share of the fee is counted
+        // twice.
+        let candles = Candles::new(vec![
+            ohlc(100.0, 100.0, 100.0, 100.0, 1_000_000.0),
+            ohlc(200.0, 200.0, 200.0, 200.0, 1_000_000.0),
+            ohlc(400.0, 400.0, 400.0, 400.0, 1_000_000.0),
+            ohlc(300.0, 300.0, 300.0, 300.0, 1_000_000.0),
+            ohlc(300.0, 300.0, 300.0, 300.0, 1_000_000.0),
+        ]);
+        let mut config = perp_cfg();
+        config.quote = 1_000_000.0;
+        config.report = true;
+        config.fee_taker = 0.01;
+        let mut e = Engine::new(candles, config);
+        e.reset();
+        e.market_buy(1.0);
+        e.step(); // 1 @ 200, fee 2
+        e.market_buy(1.0);
+        e.step(); // 1 @ 400, fee 4; position 2, average entry 300
+        e.market_sell(2.0);
+        let last = e.step(); // 2 @ 300, fee 6
+
+        let trades = e.reporter().unwrap().trades();
+        assert_eq!(trades.len(), 1);
+        assert!(
+            (trades[0].fees - 12.0).abs() < 1e-9,
+            "fees {} should be 2 + 4 + 6",
+            trades[0].fees
+        );
+        assert!((trades[0].pnl - 0.0).abs() < 1e-9);
+        assert!((trades[0].net_pnl + 12.0).abs() < 1e-9);
+        // the identity must survive a scale-in as well as a single entry
+        assert!((trades[0].net_pnl - (last.equity - 1_000_000.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn net_pnl_reconciles_through_scale_ins_and_partial_exits() {
+        let mut config = cfg(); // spot
+        config.report = true;
+        config.fee_taker = 0.002;
+        config.fee_maker = 0.002;
+        let bars: Vec<Candle> = (0..40)
+            .map(|i| {
+                let c = 100.0 + (i as f64 * 0.9).sin() * 8.0;
+                ohlc(c, c + 1.0, c - 1.0, c, 1_000_000.0)
+            })
+            .collect();
+        let mut e = Engine::new(Candles::new(bars), config);
+        let mut state = e.reset();
+        while !e.done() {
+            let tick = e.tick();
+            if tick + 2 >= e.num_bars() {
+                e.close();
+            } else if state.position < 3.0 {
+                e.market_buy(1.0); // scale in, one unit at a time
+            } else if tick % 5 == 0 {
+                e.market_sell(1.0); // and scale out again
+            }
+            state = e.step();
+        }
+        assert_eq!(state.position, 0.0);
+        let trades = e.reporter().unwrap().trades();
+        assert!(trades.len() > 3, "only {} trades", trades.len());
+        let net: f64 = trades.iter().map(|t| t.net_pnl).sum();
+        assert!(
+            (net - (state.equity - 10_000.0)).abs() < 1e-9,
+            "sum(net_pnl) {net} != equity change {}",
+            state.equity - 10_000.0
+        );
+    }
+
+    #[test]
     fn a_partial_close_takes_only_its_share_of_the_entry_fee() {
         let mut config = cfg();
         config.report = true;
@@ -1955,6 +2040,27 @@ mod tests {
         assert_ne!(first, second);
         assert!(!e.cancel(first)); // the stale handle matches nothing
         assert!(e.cancel(second));
+    }
+
+    #[test]
+    fn a_stop_crossed_on_a_dead_bar_stays_armed() {
+        // bar 1 crosses the trigger but trades nothing, so the stop cannot fill. It
+        // must survive: consuming it here would delete the protection on exactly the
+        // illiquid data where a stop matters, and it fills on bar 2 instead (ADR 0035)
+        let candles = Candles::new(vec![
+            ohlc(100.0, 101.0, 99.0, 100.0, 1_000.0),
+            ohlc(100.0, 101.0, 80.0, 85.0, 0.0), // crosses 95, no volume
+            ohlc(85.0, 86.0, 84.0, 85.0, 1_000.0),
+        ]);
+        let mut e = Engine::new(candles, perp_cfg());
+        e.reset();
+        e.stop(Side::Sell, 1.0, 95.0, false).unwrap();
+        let s1 = e.step();
+        assert_eq!(s1.position, 0.0, "nothing can fill on a bar with no volume");
+        assert_eq!(s1.open_orders.len(), 1, "the stop must still be armed");
+        let s2 = e.step(); // bar 2 trades, and the trigger is still crossed
+        assert_eq!(s2.position, -1.0);
+        assert!(s2.open_orders.is_empty(), "and is consumed once it fills");
     }
 
     #[test]
