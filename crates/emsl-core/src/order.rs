@@ -1,7 +1,7 @@
 //! Order identity and the order record. Price and trigger are optional because a
 //! market order needs neither and a stop needs only a trigger.
 
-use crate::enums::{OrderStatus, OrderType, Side, TimeInForce};
+use crate::enums::{OrderType, Side, TimeInForce};
 use crate::units::{Price, Qty};
 
 /// An opaque handle to a resting order.
@@ -27,7 +27,6 @@ pub struct Order {
     /// A limit that would cross is rejected rather than turned taker.
     pub post_only: bool,
     pub tif: TimeInForce,
-    pub status: OrderStatus,
 }
 
 impl Order {
@@ -44,7 +43,6 @@ impl Order {
             reduce_only,
             post_only: false,
             tif: TimeInForce::Ioc,
-            status: OrderStatus::Resting,
         }
     }
 
@@ -69,7 +67,6 @@ impl Order {
             reduce_only,
             post_only,
             tif,
-            status: OrderStatus::Resting,
         }
     }
 
@@ -86,7 +83,6 @@ impl Order {
             reduce_only,
             post_only: false,
             tif: TimeInForce::Gtc,
-            status: OrderStatus::Resting,
         }
     }
 
@@ -94,12 +90,6 @@ impl Order {
     #[inline]
     pub fn remaining(&self) -> Qty {
         self.size - self.filled
-    }
-
-    /// Still live in the book.
-    #[inline]
-    pub fn is_resting(&self) -> bool {
-        matches!(self.status, OrderStatus::Resting)
     }
 }
 
@@ -132,7 +122,6 @@ mod tests {
         assert_eq!(o.kind, OrderType::Limit);
         assert_eq!(o.price, Some(Price(100.0)));
         assert!(o.post_only);
-        assert!(o.is_resting());
     }
 
     #[test]

@@ -19,7 +19,7 @@ pub use account::Account;
 pub use book::RestingOrderBook;
 pub use candle::Candle;
 pub use cost::{CostModel, FlatCostModel};
-pub use enums::{Market, OrderStatus, OrderType, Side, TimeInForce};
+pub use enums::{Market, OrderType, Side, TimeInForce};
 pub use fill::Fill;
 pub use order::{Order, OrderId};
 pub use position::Position;

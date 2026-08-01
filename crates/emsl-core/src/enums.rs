@@ -1,5 +1,5 @@
 //! Small plain enums shared across the engine: order side, type, time in force,
-//! lifecycle status, and market kind.
+//! and market kind.
 
 /// The direction of an order or a position change.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -49,17 +49,6 @@ pub enum TimeInForce {
     Ioc,
     /// Fill or kill: fills completely now, or cancels entirely.
     Fok,
-}
-
-/// The lifecycle state of an order.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum OrderStatus {
-    /// Live in the book, possibly partially filled.
-    Resting,
-    /// Fully filled.
-    Filled,
-    /// Removed without fully filling.
-    Canceled,
 }
 
 /// The market a position trades in.

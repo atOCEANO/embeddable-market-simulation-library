@@ -86,6 +86,15 @@ pub struct Engine {
     /// The tick at which the current position first became non-flat, used to
     /// stamp a closed trade's holding time. Meaningful only while a position is open.
     position_entry_tick: usize,
+    /// The fee already paid to open the position now standing, in quote. A close
+    /// consumes the share belonging to the size it closes, so a completed trade can
+    /// carry its whole round-trip cost rather than the exit side alone (ADR 0030).
+    /// Zero whenever the position is flat.
+    open_fee: f64,
+    /// Fills applied since the last reset. A run whose orders never filled, on a
+    /// series with no volume say, is otherwise indistinguishable from one that never
+    /// placed an order (ADR 0031).
+    fills: usize,
     /// Set when the account is dead: force-closed by a perp liquidation, or marked
     /// at a non-positive equity on either market, which is terminal too (ADR 0019).
     /// A terminal event for the RL env. Cleared on reset.
@@ -122,6 +131,8 @@ impl Engine {
             tick: 0,
             id_counter: 1,
             position_entry_tick: 0,
+            open_fee: 0.0,
+            fills: 0,
             bust: false,
             candles,
             config,
@@ -145,6 +156,8 @@ impl Engine {
         // handed out in one episode name a live order in the next, so a handle
         // carried across a reset cancelled somebody else's order (ADR 0028).
         self.position_entry_tick = self.tick;
+        self.open_fee = 0.0;
+        self.fills = 0;
         self.bust = false;
         if self.reporter.is_some() {
             self.reporter = Some(Reporter::new());
@@ -348,6 +361,45 @@ impl Engine {
     /// Cancel a resting order by id. True if it was found and removed.
     pub fn cancel(&mut self, id: OrderId) -> bool {
         self.book.cancel(id).is_some()
+    }
+
+    /// Move a resting order: cancel `id` and rest a replacement carrying the same
+    /// side, kind and flags, with whichever of `size`, `price` and `trigger` are
+    /// given. Returns the new id.
+    ///
+    /// `None` when `id` is not resting, and in that case NOTHING is placed. That is
+    /// the point of it. Re-placing a trailing stop with `stop()` each bar rests a new
+    /// order every time, so the one that fills leaves its siblings live, and on a
+    /// perp those open a position on the other side; a trail written with `replace`
+    /// cannot leave two orders alive, and once the stop has filled the replacement
+    /// silently does nothing instead of arming a fresh one (ADR 0032).
+    pub fn replace(
+        &mut self,
+        id: OrderId,
+        size: Option<f64>,
+        price: Option<f64>,
+        trigger: Option<f64>,
+    ) -> Option<OrderId> {
+        let old = self.book.cancel(id)?;
+        let size = size.unwrap_or(old.remaining().get());
+        match old.kind {
+            OrderType::Limit => self.place_limit(
+                old.side,
+                size,
+                price.or(old.price.map(|p| p.get()))?,
+                old.reduce_only,
+                old.post_only,
+                old.tif,
+            ),
+            OrderType::Stop => self.place_stop(
+                old.side,
+                size,
+                trigger.or(old.trigger.map(|t| t.get()))?,
+                old.reduce_only,
+            ),
+            // a market order never rests, so it can never be found to replace
+            OrderType::Market => None,
+        }
     }
 
     /// Cancel every resting order, returning how many were dropped. Pending market
@@ -567,6 +619,7 @@ impl Engine {
         }
         let applied = fill.size.get();
         let fee = self.cost.fee(&fill);
+        self.fills += 1;
 
         // Snapshot the position before the fill so any portion it closes can be
         // booked as a trade.
@@ -586,8 +639,29 @@ impl Engine {
             0.0
         };
         let closed = pos_before.abs() - kept;
+        let opened = applied - closed;
+
+        // Split this fill's fee between the part that closed (the exit side of a
+        // completed trade) and the part that opened (the entry side of the position
+        // now standing, to be charged when it closes later).
+        let exit_fee = if applied > 0.0 {
+            fee * closed / applied
+        } else {
+            0.0
+        };
+        // The share of the position's own entry fee that this close consumes.
+        let entry_fee = if closed > CLOSE_EPS && pos_before.abs() > CLOSE_EPS {
+            self.open_fee * closed / pos_before.abs()
+        } else {
+            0.0
+        };
 
         if closed > CLOSE_EPS && self.reporter.is_some() {
+            let pnl = self.account.realized() - realized_before;
+            // The whole round trip: the fee paid to open this size and the fee paid
+            // to close it. Charging only the exit side made a strategy whose edge is
+            // smaller than its costs look profitable per trade (ADR 0030).
+            let fees = entry_fee + exit_fee;
             let trade = Trade {
                 entry_tick: self.position_entry_tick,
                 exit_tick: self.tick,
@@ -599,15 +673,25 @@ impl Engine {
                 size: closed,
                 entry_price: entry_before,
                 exit_price: fill.price.get(),
-                // Prorate the fill's fee onto the portion that closed.
-                fees: fee * closed / applied,
-                pnl: self.account.realized() - realized_before,
+                fees,
+                pnl,
+                net_pnl: pnl - fees,
                 bars_held: self.tick.saturating_sub(self.position_entry_tick),
             };
             if let Some(reporter) = self.reporter.as_mut() {
                 reporter.record_trade(trade);
             }
         }
+
+        // Carry the entry-side fee of whatever position is left: what this close
+        // consumed is gone, and the part of this fill that opened size pays in.
+        self.open_fee = if pos_after.abs() <= CLOSE_EPS {
+            0.0
+        } else if applied > 0.0 {
+            (self.open_fee - entry_fee) + fee * opened / applied
+        } else {
+            self.open_fee - entry_fee
+        };
 
         // Stamp the open tick whenever a new side is established, from flat or
         // through a flip, so the next close measures its holding time from here.
@@ -699,9 +783,15 @@ impl Engine {
     /// Performance statistics for the run, or `None` when reporting is off. The
     /// starting equity is the configured quote.
     pub fn stats(&self, periods_per_year: f64, risk_free: f64) -> Option<Stats> {
-        self.reporter
-            .as_ref()
-            .map(|reporter| reporter.stats(self.config.quote, periods_per_year, risk_free))
+        self.reporter.as_ref().map(|reporter| {
+            reporter.stats(self.config.quote, periods_per_year, risk_free, self.fills)
+        })
+    }
+
+    /// Fills applied since the last reset, whatever the reporter is set to. Zero
+    /// beside orders you placed means none of them ever filled (ADR 0031).
+    pub fn num_fills(&self) -> usize {
+        self.fills
     }
 
     /// The account equity marked at the current bar's close, without building a
@@ -1516,6 +1606,139 @@ mod tests {
         let trade_sum: f64 = e.reporter().unwrap().trades().iter().map(|t| t.pnl).sum();
         assert!(!e.reporter().unwrap().trades().is_empty()); // trades were logged
         assert!((trade_sum - last.realized_pnl).abs() < 1e-9);
+    }
+
+    #[test]
+    fn net_trade_pnl_accounts_for_the_whole_run_when_it_ends_flat() {
+        // the invariant the entry-fee attribution buys: with the position closed and
+        // no liquidation, the net PnL of the logged trades IS the change in equity.
+        // Charging only the exit fee left about half the cost attributed to nothing
+        // (ADR 0030).
+        let mut config = cfg(); // spot
+        config.report = true;
+        config.fee_taker = 0.001;
+        config.fee_maker = 0.001;
+        let bars: Vec<Candle> = (0..30)
+            .map(|i| {
+                let c = 100.0 + (i as f64 * 0.7).sin() * 5.0;
+                ohlc(c, c + 1.0, c - 1.0, c, 10_000.0)
+            })
+            .collect();
+        let mut e = Engine::new(Candles::new(bars), config);
+        let mut state = e.reset();
+        let mut hold = 0;
+        while !e.done() {
+            // an order decided on the last bar has no bar to fill against, so the
+            // flattening close has to be decided on the one before it
+            if e.tick() + 2 >= e.num_bars() {
+                e.close();
+            } else if state.position == 0.0 {
+                e.market_buy(2.0);
+                hold = 0;
+            } else {
+                hold += 1;
+                if hold >= 2 {
+                    e.close();
+                }
+            }
+            state = e.step();
+        }
+        assert_eq!(
+            state.position, 0.0,
+            "the run must end flat for the identity"
+        );
+
+        let trades = e.reporter().unwrap().trades();
+        assert!(trades.len() > 3, "only {} trades", trades.len());
+        let net: f64 = trades.iter().map(|t| t.net_pnl).sum();
+        let equity_change = state.equity - 10_000.0;
+        assert!(
+            (net - equity_change).abs() < 1e-9,
+            "sum(net_pnl) {net} != equity change {equity_change}"
+        );
+        // and the gross figure alone does not reconcile, which is the whole point
+        let gross: f64 = trades.iter().map(|t| t.pnl).sum();
+        assert!((gross - equity_change).abs() > 1e-6);
+        for t in trades {
+            assert!((t.net_pnl - (t.pnl - t.fees)).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn a_trade_carries_both_sides_of_its_fee() {
+        let mut config = cfg(); // spot, bar 1 open 200, bar 2 open 300
+        config.report = true;
+        config.fee_taker = 0.01;
+        let mut e = Engine::new(series(), config);
+        e.reset();
+        e.market_buy(1.0);
+        e.step(); // buy 1 at 200, fee 2.0
+        e.close();
+        e.step(); // sell 1 at 300, fee 3.0
+        let t = e.reporter().unwrap().trades()[0];
+        assert!((t.pnl - 100.0).abs() < 1e-9); // gross price PnL
+        assert!((t.fees - 5.0).abs() < 1e-9); // 2.0 entry plus 3.0 exit
+        assert!((t.net_pnl - 95.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_partial_close_takes_only_its_share_of_the_entry_fee() {
+        let mut config = cfg();
+        config.report = true;
+        config.fee_taker = 0.01;
+        let mut e = Engine::new(series(), config);
+        e.reset();
+        e.market_buy(4.0);
+        e.step(); // buy 4 at 200, entry fee 8.0 for the whole position
+        e.market_sell(1.0);
+        e.step(); // sell 1 at 300, exit fee 3.0; entry share is 8.0 * 1/4 = 2.0
+        let t = e.reporter().unwrap().trades()[0];
+        assert!((t.size - 1.0).abs() < 1e-9);
+        assert!((t.fees - 5.0).abs() < 1e-9);
+        assert!((t.net_pnl - 95.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn num_fills_separates_a_dead_feed_from_a_quiet_strategy() {
+        // a zero-volume series fills nothing, and without a counter the result is
+        // identical to a strategy that never placed an order (ADR 0031)
+        let dead = Candles::new(vec![ohlc(100.0, 100.0, 100.0, 100.0, 0.0); 6]);
+        let mut config = cfg();
+        config.report = true;
+        let mut e = Engine::new(dead, config);
+        e.reset();
+        while !e.done() {
+            e.market_buy(1.0);
+            e.step();
+        }
+        assert_eq!(e.num_fills(), 0);
+        assert_eq!(e.stats(365.0, 0.0).unwrap().num_fills, 0);
+
+        let mut live = Engine::new(series(), config);
+        live.reset();
+        live.market_buy(1.0);
+        live.step();
+        assert_eq!(live.num_fills(), 1);
+    }
+
+    #[test]
+    fn replace_moves_one_order_and_refuses_to_arm_a_second() {
+        // the trailing-stop trap: re-placing with stop() rests a new order every
+        // bar, and the one that fills leaves its siblings live (ADR 0032)
+        let mut e = Engine::new(dip_series(), perp_cfg());
+        e.reset();
+        let first = e.stop(Side::Sell, 1.0, 90.0, true).unwrap();
+        let second = e.replace(first, None, None, Some(92.0)).unwrap();
+        let s = e.step();
+        assert_eq!(s.open_orders.len(), 1, "replace must not leave two live");
+        assert_eq!(s.open_orders[0].id, second);
+        assert_eq!(s.open_orders[0].trigger.unwrap().get(), 92.0);
+        assert!(s.open_orders[0].reduce_only, "flags carry over");
+
+        // once the order is gone, replacing places nothing at all
+        assert!(e.cancel(second));
+        assert_eq!(e.replace(second, None, None, Some(95.0)), None);
+        assert!(e.step().open_orders.is_empty());
     }
 
     #[test]

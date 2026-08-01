@@ -18,13 +18,17 @@ pub struct Trade {
     pub size: f64,
     pub entry_price: f64,
     pub exit_price: f64,
-    /// Fee paid on the closing fill for the closed size, in quote. Exit-side only:
-    /// the entry-side fee was charged to cash when the position opened and is not
-    /// attributed back here. The equity curve reflects every fee, so return and
-    /// risk stats are unaffected.
+    /// The whole round-trip fee on the closed size, in quote: the share of the
+    /// position's entry fee belonging to this size, plus the closing fill's fee on
+    /// it. Charging only the exit side understated the cost by about half and let a
+    /// strategy whose edge is smaller than its costs read as profitable per trade
+    /// (ADR 0030).
     pub fees: f64,
     /// Gross realized price PnL booked on the close, in quote, before fees.
     pub pnl: f64,
+    /// `pnl - fees`: what this trade actually added to the account. The trade
+    /// statistics are built from this, so they can be reproduced from the log.
+    pub net_pnl: f64,
     pub bars_held: usize,
 }
 
@@ -79,8 +83,15 @@ impl Reporter {
     }
 
     /// Performance statistics over the recorded curve and trades. `initial` is the
-    /// starting equity; see ADR 0007 for the conventions.
-    pub fn stats(&self, initial: f64, periods_per_year: f64, risk_free: f64) -> Stats {
+    /// starting equity and `num_fills` the engine's fill counter; see ADR 0007 for
+    /// the conventions.
+    pub fn stats(
+        &self,
+        initial: f64,
+        periods_per_year: f64,
+        risk_free: f64,
+        num_fills: usize,
+    ) -> Stats {
         Stats::compute(
             initial,
             &self.equity_curve,
@@ -88,6 +99,7 @@ impl Reporter {
             periods_per_year,
             risk_free,
             self.in_position_steps,
+            num_fills,
         )
     }
 }
@@ -107,6 +119,7 @@ mod tests {
             exit_price: 110.0,
             fees: 0.1,
             pnl: 20.0,
+            net_pnl: 19.9,
             bars_held: 4,
         }
     }

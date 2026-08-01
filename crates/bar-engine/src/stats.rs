@@ -30,6 +30,10 @@ pub struct Stats {
     /// trade opened with, so later trades in a drawn-down account count for their
     /// nominal size rather than their real one (ADR 0007).
     pub avg_trade_pct: f64,
+    /// Fills applied over the run. Zero beside orders you know you placed means they
+    /// never filled, which a zero-volume series does silently; without this a dead
+    /// feed and a strategy that never triggered look identical (ADR 0031).
+    pub num_fills: usize,
 }
 
 impl Stats {
@@ -43,6 +47,7 @@ impl Stats {
         periods_per_year: f64,
         risk_free: f64,
         in_position_steps: usize,
+        num_fills: usize,
     ) -> Stats {
         // A non-positive or non-finite annualization has no per-period rate and no
         // square root: `risk_free / periods_per_year` would be NaN and poison sharpe,
@@ -137,18 +142,19 @@ impl Stats {
             0.0
         };
 
-        // The trade metrics are net of the fee each trade records. On gross PnL a
-        // scalper whose edge is smaller than its costs reported a perfect win rate
-        // and an infinite profit factor beside a negative total return, which is the
-        // most flattering way a backtest can lie (ADR 0029). `Trade.pnl` stays gross
-        // (ADR 0009); the netting happens here.
+        // The trade metrics read `net_pnl`, the whole round trip after fees. On gross
+        // PnL a scalper whose edge is smaller than its costs reported a perfect win
+        // rate and an infinite profit factor beside a negative total return, the most
+        // flattering way a backtest can lie (ADR 0029), and netting only the exit
+        // side left half that error in place (ADR 0030). `Trade.pnl` stays gross
+        // (ADR 0009), so the log carries both and either can be recomputed.
         let num_trades = trades.len();
         let mut wins = 0usize;
         let mut net_profit = 0.0;
         let mut net_loss = 0.0;
         let mut total_pnl = 0.0;
         for t in trades {
-            let net = t.pnl - t.fees;
+            let net = t.net_pnl;
             total_pnl += net;
             if net > 0.0 {
                 wins += 1;
@@ -189,6 +195,7 @@ impl Stats {
             profit_factor,
             num_trades,
             avg_trade_pct,
+            num_fills,
         }
     }
 }
@@ -209,8 +216,29 @@ mod tests {
             exit_price: 100.0 + pnl,
             fees: 0.0,
             pnl,
+            net_pnl: pnl,
             bars_held: 1,
         }
+    }
+
+    /// `Stats::compute` with no fills recorded, which is all these cases need.
+    fn compute(
+        initial: f64,
+        curve: &[f64],
+        trades: &[Trade],
+        periods_per_year: f64,
+        risk_free: f64,
+        in_position_steps: usize,
+    ) -> Stats {
+        Stats::compute(
+            initial,
+            curve,
+            trades,
+            periods_per_year,
+            risk_free,
+            in_position_steps,
+            0,
+        )
     }
 
     fn approx(a: f64, b: f64) -> bool {
@@ -220,7 +248,7 @@ mod tests {
     #[test]
     fn total_return_and_max_drawdown() {
         // initial 100, curve [120, 90, 110]: peak 120, trough 90 -> 25% drawdown
-        let s = Stats::compute(100.0, &[120.0, 90.0, 110.0], &[], 252.0, 0.0, 3);
+        let s = compute(100.0, &[120.0, 90.0, 110.0], &[], 252.0, 0.0, 3);
         assert!(approx(s.total_return_pct, 10.0)); // 110 / 100 - 1
         assert!(approx(s.net_profit_pct, 10.0)); // fee-inclusive, equals total return
         assert!(approx(s.max_drawdown_pct, 25.0)); // (120 - 90) / 120
@@ -229,7 +257,7 @@ mod tests {
 
     #[test]
     fn monotonic_up_has_no_drawdown_and_positive_sharpe() {
-        let s = Stats::compute(100.0, &[110.0, 120.0, 130.0], &[], 252.0, 0.0, 3);
+        let s = compute(100.0, &[110.0, 120.0, 130.0], &[], 252.0, 0.0, 3);
         assert_eq!(s.max_drawdown_pct, 0.0);
         assert!(s.sharpe > 0.0);
     }
@@ -240,7 +268,7 @@ mod tests {
         // 0.222222; mean 0.0740741, sample std 0.1626681, downside dev 0.0577350,
         // all worked out by hand from ADR 0007, independent of the code.
         let trades = [trade(30.0), trade(-10.0), trade(5.0)];
-        let s = Stats::compute(100.0, &[110.0, 99.0, 121.0], &trades, 3.0, 0.0, 3);
+        let s = compute(100.0, &[110.0, 99.0, 121.0], &trades, 3.0, 0.0, 3);
         assert!(approx(s.total_return_pct, 21.0)); // 121/100 - 1
         assert!(approx(s.cagr_pct, 21.0)); // 1.21^(3/3) - 1
         assert!(approx(s.max_drawdown_pct, 10.0)); // (110 - 99) / 110
@@ -257,7 +285,7 @@ mod tests {
     #[test]
     fn trade_stats_win_rate_and_profit_factor() {
         let trades = [trade(100.0), trade(-50.0), trade(25.0)];
-        let s = Stats::compute(1000.0, &[1000.0], &trades, 252.0, 0.0, 1);
+        let s = compute(1000.0, &[1000.0], &trades, 252.0, 0.0, 1);
         assert_eq!(s.num_trades, 3);
         assert!(approx(s.win_rate, 2.0 / 3.0));
         assert!(approx(s.profit_factor, 125.0 / 50.0)); // 2.5
@@ -266,7 +294,7 @@ mod tests {
 
     #[test]
     fn no_losing_trades_gives_infinite_profit_factor() {
-        let s = Stats::compute(
+        let s = compute(
             1000.0,
             &[1000.0],
             &[trade(10.0), trade(20.0)],
@@ -279,7 +307,7 @@ mod tests {
 
     #[test]
     fn degenerate_inputs_yield_zeros() {
-        let s = Stats::compute(100.0, &[], &[], 252.0, 0.0, 0);
+        let s = compute(100.0, &[], &[], 252.0, 0.0, 0);
         assert_eq!(s.total_return_pct, 0.0);
         assert_eq!(s.sharpe, 0.0);
         assert_eq!(s.max_drawdown_pct, 0.0);
@@ -291,13 +319,17 @@ mod tests {
     #[test]
     fn exposure_is_the_fraction_of_steps_in_a_position() {
         // 4 steps recorded, 3 of them holding a position -> 75% exposure
-        let s = Stats::compute(100.0, &[100.0, 101.0, 102.0, 103.0], &[], 252.0, 0.0, 3);
+        let s = compute(100.0, &[100.0, 101.0, 102.0, 103.0], &[], 252.0, 0.0, 3);
         assert!(approx(s.exposure_pct, 75.0));
         assert!(approx(s.net_profit_pct, s.total_return_pct));
     }
 
     fn trade_with_fee(pnl: f64, fees: f64) -> Trade {
-        Trade { fees, ..trade(pnl) }
+        Trade {
+            fees,
+            net_pnl: pnl - fees,
+            ..trade(pnl)
+        }
     }
 
     #[test]
@@ -308,7 +340,7 @@ mod tests {
             trade_with_fee(1.0, 3.0),
             trade_with_fee(1.0, 3.0),
         ];
-        let s = Stats::compute(1000.0, &[994.0], &trades, 252.0, 0.0, 1);
+        let s = compute(1000.0, &[994.0], &trades, 252.0, 0.0, 1);
         assert_eq!(s.win_rate, 0.0); // every trade lost 2 after its fee
         assert_eq!(s.profit_factor, 0.0); // no net profit at all
         assert!(approx(s.avg_trade_pct, -2.0 / 1000.0 * 100.0));
@@ -320,7 +352,7 @@ mod tests {
         // risk_free / periods_per_year would be 0/0; ADR 0007 says the set is always
         // defined, so a degenerate annualization falls back rather than propagating
         for ppy in [0.0, -1.0, f64::NAN, f64::INFINITY] {
-            let s = Stats::compute(100.0, &[110.0, 99.0, 121.0], &[], ppy, 0.02, 3);
+            let s = compute(100.0, &[110.0, 99.0, 121.0], &[], ppy, 0.02, 3);
             assert!(s.sharpe.is_finite(), "ppy {ppy} gave sharpe {}", s.sharpe);
             assert!(s.sortino.is_finite());
             assert!(s.volatility_pct.is_finite());
@@ -333,8 +365,8 @@ mod tests {
     fn drawdown_is_capped_at_a_hundred_percent_so_calmar_stays_ordered() {
         // bad debt takes equity below zero; an uncapped drawdown gave the deeper
         // bust the larger divisor and therefore the BETTER calmar (ADR 0029)
-        let shallow = Stats::compute(100.0, &[100.0, 0.0], &[], 252.0, 0.0, 2);
-        let deep = Stats::compute(100.0, &[100.0, -80.0], &[], 252.0, 0.0, 2);
+        let shallow = compute(100.0, &[100.0, 0.0], &[], 252.0, 0.0, 2);
+        let deep = compute(100.0, &[100.0, -80.0], &[], 252.0, 0.0, 2);
         assert!(approx(shallow.max_drawdown_pct, 100.0));
         assert!(approx(deep.max_drawdown_pct, 100.0));
         assert!(
@@ -349,7 +381,7 @@ mod tests {
     fn a_bust_past_zero_yields_finite_stats_not_nan() {
         // equity goes negative (a perp bust past zero) and stays negative; CAGR
         // floors at -100%, post-bust returns are zeroed, nothing is NaN (ADR 0007)
-        let s = Stats::compute(100.0, &[50.0, -20.0, -10.0], &[], 252.0, 0.0, 3);
+        let s = compute(100.0, &[50.0, -20.0, -10.0], &[], 252.0, 0.0, 3);
         assert!(s.total_return_pct.is_finite());
         assert!(s.cagr_pct.is_finite());
         assert!(s.calmar.is_finite());
