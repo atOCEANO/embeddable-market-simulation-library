@@ -239,7 +239,7 @@ These move with hardware and workload, so treat them as shape, not a promise. Ru
 Every [release](https://github.com/atOCEANO/embeddable-market-simulation-library/releases) carries prebuilt wheels for Linux (x86_64 and aarch64), macOS (Intel and Apple silicon in one universal2 file), and Windows. Installing from those needs no compiler, and pip picks the one matching your machine:
 
 ```bash
-pip install --find-links https://github.com/atOCEANO/embeddable-market-simulation-library/releases/expanded_assets/v0.3.0 emsl
+pip install --find-links https://github.com/atOCEANO/embeddable-market-simulation-library/releases/expanded_assets/v0.3.1 emsl
 ```
 
 The optional extras work the same way and stack:
@@ -251,19 +251,19 @@ The optional extras work the same way and stack:
 | `sb3` | stable-baselines3 | the Stable-Baselines3 adapter |
 
 ```bash
-pip install --find-links https://github.com/atOCEANO/embeddable-market-simulation-library/releases/expanded_assets/v0.3.0 "emsl[tune,sb3]"
+pip install --find-links https://github.com/atOCEANO/embeddable-market-simulation-library/releases/expanded_assets/v0.3.1 "emsl[tune,sb3]"
 ```
 
 To choose the wheel yourself, take its URL from the release assets:
 
 ```bash
-pip install https://github.com/atOCEANO/embeddable-market-simulation-library/releases/download/v0.3.0/emsl-0.3.0-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+pip install https://github.com/atOCEANO/embeddable-market-simulation-library/releases/download/v0.3.1/emsl-0.3.1-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
 ```
 
 Building from source instead needs the Rust toolchain ([rustup](https://rustup.rs)), and pip drives the build for you. Pin the tag when a build has to be reproducible:
 
 ```bash
-pip install "git+https://github.com/atOCEANO/embeddable-market-simulation-library.git@v0.3.0"
+pip install "git+https://github.com/atOCEANO/embeddable-market-simulation-library.git@v0.3.1"
 ```
 
 From a local checkout, either as a plain install or as a development build:

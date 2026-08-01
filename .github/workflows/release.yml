@@ -176,4 +176,12 @@ jobs:
             `Engine.replace` for moving a resting order without ever arming a second,
             `is_bust()` and `num_fills()`, and a `min_trades` floor for `tune`.
             Removed: the `OrderStatus` enum, whose `Filled` and `Canceled` variants
-            were unconstructible. Requires Python 3.9 or newer.
+            were unconstructible.
+
+            `0.3.1` fixes one real defect in 0.3.0, found by differential testing
+            against independent implementations of the decision record: adding to a
+            position counted its entry fee twice, so a trade that scaled in reported
+            more cost than it paid and its net PnL, win rate, profit factor and
+            average trade all read too low. A single entry and exit was never
+            affected. If you hold trade statistics from 0.3.0 for a strategy that
+            scales in, re-run them. Requires Python 3.9 or newer.
