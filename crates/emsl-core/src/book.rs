@@ -5,8 +5,11 @@
 
 use crate::order::{Order, OrderId};
 
-/// A bounded set of resting orders held in a fixed number of slots, so a step
-/// never allocates and the per-env footprint is fixed.
+/// A bounded set of resting orders held in a fixed number of slots, so the book
+/// itself never grows or reallocates once built. Resolution follows slot order,
+/// and `place` reuses the first free slot, so a cancelled slot hands its priority
+/// to the next order placed (ADR 0006). Slots are allocated up front, so the
+/// caller's capacity is bounded at the Python boundary (ADR 0027).
 #[derive(Clone, Debug)]
 pub struct RestingOrderBook {
     slots: Vec<Option<Order>>,

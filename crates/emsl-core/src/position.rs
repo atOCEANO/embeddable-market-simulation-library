@@ -1,7 +1,6 @@
 //! The netted, one-way position: signed size, a volume-weighted average entry,
 //! and cumulative realized PnL. A single fill can add to, reduce, close, or flip
-//! the position. The booking rule is recorded in
-//! `.Documentation/decisions/0001-flip-through-zero-pnl.md`.
+//! the position. The booking rule is ADR 0001 in `.Documentation/Decisions.md`.
 
 use crate::fill::Fill;
 use crate::units::{Price, Qty};
@@ -10,7 +9,15 @@ use crate::units::{Price, Qty};
 /// flat, so a close with non-representable fractional sizes (the classic
 /// `0.1 + 0.2 != 0.3`) cannot strand a dust residual with a stale entry. Far
 /// below any real exchange lot size.
-const POS_EPS: f64 = 1e-9;
+pub const POS_EPS: f64 = 1e-9;
+
+/// True when `fill` moves the position at all. A non-finite value or a size at
+/// or below the dust epsilon changes nothing, so the account must not move cash
+/// for it either (ADR 0023).
+#[inline]
+pub fn moves_position(fill: &Fill) -> bool {
+    fill.size.get().is_finite() && fill.size.get() > POS_EPS && fill.price.get().is_finite()
+}
 
 /// A net long, net short, or flat position. There is never a simultaneous long
 /// and short (no hedge mode).
@@ -50,14 +57,16 @@ impl Position {
     ///
     /// Non-finite fills and zero-size fills are ignored, so a bad value cannot
     /// poison the account; the engine validates orders before they reach here.
+    /// `Account::apply_fill` gates its cash move on the same `moves_position`
+    /// predicate, so a fill refused here never moves quote either (ADR 0023).
     pub fn apply(&mut self, fill: &Fill) -> f64 {
-        let signed = fill.side.sign() * fill.size.get();
-        let px = fill.price.get();
         // size is a positive magnitude; a non-finite, zero, or negative size is
         // ignored so a bad value cannot open the wrong side or poison the account
-        if !signed.is_finite() || !px.is_finite() || fill.size.get() <= POS_EPS {
+        if !moves_position(fill) {
             return 0.0;
         }
+        let signed = fill.side.sign() * fill.size.get();
+        let px = fill.price.get();
 
         let pos = self.qty.get();
         let entry = self.avg_entry.get();

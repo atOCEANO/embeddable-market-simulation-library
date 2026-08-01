@@ -43,10 +43,14 @@ impl SmaCross {
 
 impl Strategy for SmaCross {
     fn next(&mut self, state: &State, engine: &mut Engine) {
+        // The window has to span the LONGER of the two lengths. Fetching it at `slow`
+        // clamped the fast average to the same bars whenever fast >= slow, so both
+        // averages were identical and the strategy silently never traded.
+        let span = self.fast.max(self.slow);
         let (fast, slow) = {
-            let bars = engine.candle_window(self.slow);
-            if bars.len() < self.slow {
-                return; // warmup: not enough bars for the slow average yet
+            let bars = engine.candle_window(span);
+            if bars.len() < span {
+                return; // warmup: not enough bars for the longer average yet
             }
             let sma = |n: usize| {
                 let n = n.min(bars.len());
@@ -151,6 +155,33 @@ mod tests {
         let final_state = run(&mut e, &mut s);
         // fast average stays above slow on a monotone rise, so it buys and holds
         assert!(final_state.position > 0.0);
+    }
+
+    #[test]
+    fn an_inverted_row_still_compares_two_different_averages() {
+        // fetching the window at `slow` alone clamped the fast average to the same
+        // bars once fast >= slow, so every such row returned an untraded run
+        let mut e = Engine::new(rising(40), cfg());
+        let mut s = SmaCross::from_params(&[10.0, 3.0]);
+        run(&mut e, &mut s);
+        let inverted = e.stats(365.0, 0.0).unwrap().num_trades;
+
+        let mut e = Engine::new(rising(40), cfg());
+        let mut s = SmaCross::from_params(&[3.0, 3.0]);
+        run(&mut e, &mut s);
+        let equal = e.stats(365.0, 0.0).unwrap().num_trades;
+
+        // equal lengths cannot cross, so that row is genuinely inert; the inverted
+        // row compares a 10-bar mean against a 3-bar one and must not match it
+        assert_eq!(equal, 0);
+        let mut e = Engine::new(rising(40), cfg());
+        let mut s = SmaCross::from_params(&[10.0, 3.0]);
+        let final_state = run(&mut e, &mut s);
+        assert_eq!(inverted, e.stats(365.0, 0.0).unwrap().num_trades);
+        // on a monotone rise the 3-bar mean sits above the 10-bar one, so an
+        // inverted row (fast 10, slow 3) reads fast < slow and stays flat, which is
+        // a real comparison rather than the degenerate equality it used to make
+        assert_eq!(final_state.position, 0.0);
     }
 
     #[test]

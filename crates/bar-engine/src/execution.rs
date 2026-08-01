@@ -5,14 +5,22 @@
 
 use emsl_core::{Bps, Candle, Fill, Order, Price, Qty, Side};
 
+/// The most a taker fill may be moved against itself, as a fraction of the
+/// reference price. A slip of 1.0 would price a sell at zero and anything beyond
+/// it below zero, which is not a trade, so the total is held just under 1 (ADR 0024).
+const MAX_SLIP: f64 = 0.99;
+
 /// The cost side of execution: how far a market order slips and how much of a bar
 /// one order may consume.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FillModel {
     /// Adverse slippage on a taker fill, in basis points off the reference price.
     pub slippage_bps: Bps,
-    /// The most of a bar's volume one order may take, as a fraction (1.0 is the
-    /// whole bar), so a fill can never exceed what the bar actually traded.
+    /// The most of a bar's volume ONE order may take, as a fraction (1.0 is the
+    /// whole bar), so no single fill exceeds that slice of what the bar traded. The
+    /// cap is per order, not a shared per-bar budget: several orders resolving
+    /// against the same bar each get it, which ADR 0006 names as a bar-fidelity
+    /// approximation.
     pub max_fill_fraction: f64,
     /// Market-impact coefficient: extra adverse slippage equal to `impact` times
     /// the fill's fraction of the bar volume, so a larger order pays more. Zero
@@ -21,16 +29,39 @@ pub struct FillModel {
 }
 
 impl FillModel {
-    /// The fillable size: the order's remaining, capped at the volume fraction. A
-    /// non-finite remaining fills nothing: `f64::min` keeps the other operand when
-    /// one side is NaN, which would otherwise launder a NaN size into a full-cap
-    /// fill (ADR 0001).
+    /// The fillable size: the order's remaining, capped at the volume fraction.
+    /// `f64::min` keeps the other operand when one side is NaN, so BOTH sides
+    /// carry the guard: a non-finite remaining would launder a NaN size into a
+    /// full-cap fill (ADR 0001), and a non-finite fraction would delete the cap
+    /// altogether and let one order take more than the bar traded (ADR 0024).
+    /// The available side must be finite as well as positive: an infinite fraction
+    /// leaves `min` with a real operand and would hand back the whole remaining.
     fn cap(&self, order: &Order, bar: &Candle) -> f64 {
         let remaining = order.remaining().get();
-        if !remaining.is_finite() {
+        let available = self.max_fill_fraction * bar.volume;
+        if !remaining.is_finite() || !available.is_finite() || available <= 0.0 {
             return 0.0;
         }
-        remaining.min(self.max_fill_fraction * bar.volume)
+        remaining.min(available)
+    }
+
+    /// The adverse slip on a taker fill: the flat rate plus the impact term. Both
+    /// are floored at zero, since slippage is adverse by definition (ADR 0004) and
+    /// a negative rate would fill better than the market, and the total is capped
+    /// below 1 so the reference price can never be dropped to zero or through it
+    /// (ADR 0024).
+    fn taker_slip(&self, size: f64, volume: f64) -> f64 {
+        let flat = self.slippage_bps.as_fraction().max(0.0);
+        let impact = if volume > 0.0 && volume.is_finite() {
+            self.impact.max(0.0) * (size / volume)
+        } else {
+            0.0
+        };
+        let slip = flat + impact;
+        if !slip.is_finite() {
+            return MAX_SLIP;
+        }
+        slip.min(MAX_SLIP)
     }
 
     /// Fill a market order against `bar` (the bar after the decision). Priced off
@@ -42,7 +73,7 @@ impl FillModel {
         if size <= 0.0 {
             return None;
         }
-        let slip = self.slippage_bps.as_fraction() + self.impact * (size / bar.volume);
+        let slip = self.taker_slip(size, bar.volume);
         let price = match order.side {
             Side::Buy => bar.open * (1.0 + slip),
             Side::Sell => bar.open * (1.0 - slip),
@@ -94,7 +125,7 @@ impl FillModel {
         if size <= 0.0 {
             return None;
         }
-        let slip = self.slippage_bps.as_fraction() + self.impact * (size / bar.volume);
+        let slip = self.taker_slip(size, bar.volume);
         let price = match order.side {
             Side::Buy => bar.open.max(trigger) * (1.0 + slip),
             Side::Sell => bar.open.min(trigger) * (1.0 - slip),
@@ -235,6 +266,62 @@ mod tests {
         assert!(model(0.0, 1.0)
             .fill_market(&market(Side::Buy, 1.0), &bar(100.0, 0.0))
             .is_none());
+    }
+
+    #[test]
+    fn a_non_finite_fill_fraction_does_not_remove_the_cap() {
+        // f64::min keeps the other operand when one side is NaN, so an unguarded
+        // NaN or inf fraction would let one order take the whole order size
+        // regardless of what the bar traded (ADR 0024)
+        for fraction in [f64::NAN, f64::INFINITY] {
+            let f =
+                model(0.0, fraction).fill_market(&market(Side::Buy, 10_000.0), &bar(100.0, 5.0));
+            assert!(
+                f.is_none(),
+                "fraction {fraction} filled against a 5-volume bar"
+            );
+        }
+    }
+
+    #[test]
+    fn a_negative_volume_bar_fills_nothing() {
+        assert!(model(0.0, 1.0)
+            .fill_market(&market(Side::Buy, 1.0), &bar(100.0, -5.0))
+            .is_none());
+    }
+
+    #[test]
+    fn a_negative_slippage_cannot_improve_a_fill() {
+        // slippage is adverse by definition (ADR 0004); a negative rate would fill
+        // a buy below the open and mint equity out of the cost model
+        let f = model(-20_000.0, 1.0)
+            .fill_market(&market(Side::Buy, 1.0), &bar(100.0, 1000.0))
+            .unwrap();
+        assert_eq!(f.price.get(), 100.0);
+        let s = model(-20_000.0, 1.0)
+            .fill_market(&market(Side::Sell, 1.0), &bar(100.0, 1000.0))
+            .unwrap();
+        assert_eq!(s.price.get(), 100.0);
+    }
+
+    #[test]
+    fn a_sell_is_never_priced_at_or_below_zero() {
+        // a huge flat slip or a huge impact would otherwise reach 1.0 and price the
+        // fill at zero, or beyond it and price it negative (ADR 0024)
+        let flat = model(50_000.0, 1.0)
+            .fill_market(&market(Side::Sell, 1.0), &bar(100.0, 1000.0))
+            .unwrap();
+        assert!(flat.price.get() > 0.0);
+
+        let heavy = FillModel {
+            slippage_bps: Bps(0.0),
+            max_fill_fraction: 1.0,
+            impact: 5.0,
+        };
+        let f = heavy
+            .fill_market(&market(Side::Sell, 1000.0), &bar(100.0, 1000.0))
+            .unwrap();
+        assert!(f.price.get() > 0.0, "priced at {}", f.price.get());
     }
 
     // limit

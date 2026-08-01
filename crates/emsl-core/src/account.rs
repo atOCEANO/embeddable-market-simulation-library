@@ -6,8 +6,16 @@
 
 use crate::enums::{Market, Side};
 use crate::fill::Fill;
-use crate::position::Position;
+use crate::position::{moves_position, Position};
 use crate::units::{Price, Qty};
+
+/// True when `price` can divide a notional: finite and strictly positive. A bar
+/// whose close is zero is accepted by the input contract (only non-finite values
+/// are rejected), so the sizing helpers check it themselves.
+#[inline]
+fn tradeable(price: Price) -> bool {
+    price.get().is_finite() && price.get() > 0.0
+}
 
 /// A cash balance and the netted position it backs.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -28,8 +36,14 @@ impl Account {
         }
     }
 
-    /// Apply a fill and its fee, moving cash by the market's convention.
+    /// Apply a fill and its fee, moving cash by the market's convention. A fill
+    /// the position refuses (non-finite, or sized at or below the dust epsilon)
+    /// moves no cash and pays no fee, so quote can never change without the
+    /// position changing with it (ADR 0023).
     pub fn apply_fill(&mut self, fill: &Fill, fee: f64) {
+        if !moves_position(fill) {
+            return;
+        }
         let realized = self.position.apply(fill);
         self.quote -= fee;
         match self.market {
@@ -66,13 +80,22 @@ impl Account {
     }
 
     /// Base size worth `fraction` of current equity at `price`. `fraction` can
-    /// exceed 1 for leverage on a perp; the margin cap is enforced elsewhere.
+    /// exceed 1 for leverage on a perp; the margin cap is enforced elsewhere. A
+    /// price that is not finite and positive has no size to give, so it returns
+    /// zero rather than an infinity the caller would have to notice (ADR 0023).
     pub fn qty_from_weight(&self, fraction: f64, price: Price) -> Qty {
+        if !tradeable(price) {
+            return Qty(0.0);
+        }
         Qty(fraction * self.equity(price) / price.get())
     }
 
-    /// Base size worth `cash` quote at `price`.
+    /// Base size worth `cash` quote at `price`. Zero on a non-positive or
+    /// non-finite price, for the same reason as `qty_from_weight`.
     pub fn qty_from_quote(&self, cash: f64, price: Price) -> Qty {
+        if !tradeable(price) {
+            return Qty(0.0);
+        }
         Qty(cash / price.get())
     }
 
@@ -273,6 +296,39 @@ mod tests {
 
         let mut flat = Account::new(Market::Perp, 1000.0);
         assert!(!flat.liquidate_if_bust(Price(50.0)));
+    }
+
+    #[test]
+    fn a_sub_dust_fill_moves_neither_position_nor_cash() {
+        // the position ignores anything at or below POS_EPS, so the cash move and
+        // the fee must be gated on the same test or quote drifts on its own (ADR 0023)
+        let mut a = Account::new(Market::Spot, 1000.0);
+        a.apply_fill(&fill(Side::Buy, 2.0, 100.0), 0.0); // quote 800, long 2
+        let before = a;
+        a.apply_fill(&fill(Side::Sell, 1e-10, 300.0), 0.5);
+        assert_eq!(a, before);
+    }
+
+    #[test]
+    fn a_non_finite_or_negative_fill_moves_no_cash() {
+        let mut a = Account::new(Market::Spot, 1000.0);
+        let before = a;
+        a.apply_fill(&fill(Side::Buy, f64::NAN, 100.0), 1.0);
+        a.apply_fill(&fill(Side::Buy, 1.0, f64::NAN), 1.0);
+        a.apply_fill(&fill(Side::Buy, -100.0, 100.0), -20_000.0);
+        assert_eq!(a, before);
+        assert!(a.quote.is_finite());
+    }
+
+    #[test]
+    fn sizing_helpers_return_zero_on_an_untradeable_price() {
+        // a zero close passes the candle contract (only non-finite is rejected), and
+        // dividing by it would hand the caller an infinity instead of a size
+        let a = Account::new(Market::Spot, 1000.0);
+        assert_eq!(a.qty_from_weight(0.5, Price(0.0)), Qty(0.0));
+        assert_eq!(a.qty_from_quote(250.0, Price(0.0)), Qty(0.0));
+        assert_eq!(a.qty_from_weight(0.5, Price(-1.0)), Qty(0.0));
+        assert_eq!(a.qty_from_quote(250.0, Price(f64::NAN)), Qty(0.0));
     }
 
     fn fill_seq(len: std::ops::Range<usize>) -> impl Strategy<Value = Vec<Fill>> {

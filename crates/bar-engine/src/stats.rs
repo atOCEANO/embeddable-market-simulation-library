@@ -19,9 +19,16 @@ pub struct Stats {
     pub volatility_pct: f64,
     /// Fraction of recorded steps spent holding a position, in percent.
     pub exposure_pct: f64,
+    /// Fraction of closed trades whose PnL net of the recorded fee is positive
+    /// (ADR 0029).
     pub win_rate: f64,
+    /// Net profit over net loss across the closed trades, both after the recorded
+    /// fee; infinite when nothing lost (ADR 0029).
     pub profit_factor: f64,
     pub num_trades: usize,
+    /// Mean net trade PnL as a percent of STARTING equity, not of the equity the
+    /// trade opened with, so later trades in a drawn-down account count for their
+    /// nominal size rather than their real one (ADR 0007).
     pub avg_trade_pct: f64,
 }
 
@@ -37,6 +44,17 @@ impl Stats {
         risk_free: f64,
         in_position_steps: usize,
     ) -> Stats {
+        // A non-positive or non-finite annualization has no per-period rate and no
+        // square root: `risk_free / periods_per_year` would be NaN and poison sharpe,
+        // which is the one thing ADR 0007 says this set must never return. Fall back
+        // to no annualization rather than propagating it (ADR 0029).
+        let (periods_per_year, risk_free) =
+            if periods_per_year.is_finite() && periods_per_year > 0.0 && risk_free.is_finite() {
+                (periods_per_year, risk_free)
+            } else {
+                (1.0, 0.0)
+            };
+
         // The equity path including the starting point.
         let mut series = Vec::with_capacity(curve.len() + 1);
         series.push(initial);
@@ -102,7 +120,12 @@ impl Stats {
                 peak = e;
             }
             if peak > 0.0 {
-                max_dd = max_dd.max((peak - e) / peak);
+                // A drawdown is bounded by the peak it falls from: losing everything
+                // is 100%. Bad debt takes equity below zero (ADR 0003), and leaving
+                // that uncapped reported drawdowns above 100% whose larger divisor
+                // gave a DEEPER bust a HIGHER calmar than a shallower one, exactly
+                // the argmax poisoning ADR 0007 exists to prevent (ADR 0029).
+                max_dd = max_dd.max(((peak - e) / peak).min(1.0));
             }
         }
 
@@ -114,18 +137,24 @@ impl Stats {
             0.0
         };
 
+        // The trade metrics are net of the fee each trade records. On gross PnL a
+        // scalper whose edge is smaller than its costs reported a perfect win rate
+        // and an infinite profit factor beside a negative total return, which is the
+        // most flattering way a backtest can lie (ADR 0029). `Trade.pnl` stays gross
+        // (ADR 0009); the netting happens here.
         let num_trades = trades.len();
         let mut wins = 0usize;
-        let mut gross_profit = 0.0;
-        let mut gross_loss = 0.0;
+        let mut net_profit = 0.0;
+        let mut net_loss = 0.0;
         let mut total_pnl = 0.0;
         for t in trades {
-            total_pnl += t.pnl;
-            if t.pnl > 0.0 {
+            let net = t.pnl - t.fees;
+            total_pnl += net;
+            if net > 0.0 {
                 wins += 1;
-                gross_profit += t.pnl;
-            } else if t.pnl < 0.0 {
-                gross_loss -= t.pnl; // accumulate a positive magnitude
+                net_profit += net;
+            } else if net < 0.0 {
+                net_loss -= net; // accumulate a positive magnitude
             }
         }
         let win_rate = if num_trades > 0 {
@@ -133,9 +162,9 @@ impl Stats {
         } else {
             0.0
         };
-        let profit_factor = if gross_loss > 0.0 {
-            gross_profit / gross_loss
-        } else if gross_profit > 0.0 {
+        let profit_factor = if net_loss > 0.0 {
+            net_profit / net_loss
+        } else if net_profit > 0.0 {
             f64::INFINITY
         } else {
             0.0
@@ -265,6 +294,55 @@ mod tests {
         let s = Stats::compute(100.0, &[100.0, 101.0, 102.0, 103.0], &[], 252.0, 0.0, 3);
         assert!(approx(s.exposure_pct, 75.0));
         assert!(approx(s.net_profit_pct, s.total_return_pct));
+    }
+
+    fn trade_with_fee(pnl: f64, fees: f64) -> Trade {
+        Trade { fees, ..trade(pnl) }
+    }
+
+    #[test]
+    fn trade_metrics_are_net_of_the_recorded_fee() {
+        // gross the run looks perfect; net it is a loser, and the metrics must say so
+        let trades = [
+            trade_with_fee(1.0, 3.0),
+            trade_with_fee(1.0, 3.0),
+            trade_with_fee(1.0, 3.0),
+        ];
+        let s = Stats::compute(1000.0, &[994.0], &trades, 252.0, 0.0, 1);
+        assert_eq!(s.win_rate, 0.0); // every trade lost 2 after its fee
+        assert_eq!(s.profit_factor, 0.0); // no net profit at all
+        assert!(approx(s.avg_trade_pct, -2.0 / 1000.0 * 100.0));
+        assert!(s.total_return_pct < 0.0);
+    }
+
+    #[test]
+    fn a_non_positive_annualization_does_not_produce_nan() {
+        // risk_free / periods_per_year would be 0/0; ADR 0007 says the set is always
+        // defined, so a degenerate annualization falls back rather than propagating
+        for ppy in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let s = Stats::compute(100.0, &[110.0, 99.0, 121.0], &[], ppy, 0.02, 3);
+            assert!(s.sharpe.is_finite(), "ppy {ppy} gave sharpe {}", s.sharpe);
+            assert!(s.sortino.is_finite());
+            assert!(s.volatility_pct.is_finite());
+            assert!(s.cagr_pct.is_finite());
+            assert!(s.calmar.is_finite());
+        }
+    }
+
+    #[test]
+    fn drawdown_is_capped_at_a_hundred_percent_so_calmar_stays_ordered() {
+        // bad debt takes equity below zero; an uncapped drawdown gave the deeper
+        // bust the larger divisor and therefore the BETTER calmar (ADR 0029)
+        let shallow = Stats::compute(100.0, &[100.0, 0.0], &[], 252.0, 0.0, 2);
+        let deep = Stats::compute(100.0, &[100.0, -80.0], &[], 252.0, 0.0, 2);
+        assert!(approx(shallow.max_drawdown_pct, 100.0));
+        assert!(approx(deep.max_drawdown_pct, 100.0));
+        assert!(
+            deep.calmar <= shallow.calmar,
+            "deeper bust scored {} against {}",
+            deep.calmar,
+            shallow.calmar
+        );
     }
 
     #[test]

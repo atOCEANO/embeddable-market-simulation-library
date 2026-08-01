@@ -132,7 +132,8 @@ impl EnvBatch {
         self.engines.iter().map(Engine::done).collect()
     }
 
-    /// Per-env termination flag: true where the env was liquidated.
+    /// Per-env termination flag: true where the env's account died, by a perp
+    /// liquidation or by equity reaching zero on either market (ADR 0019).
     pub fn busts(&self) -> Vec<bool> {
         self.engines.iter().map(Engine::is_bust).collect()
     }

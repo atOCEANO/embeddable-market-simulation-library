@@ -86,8 +86,9 @@ pub struct Engine {
     /// The tick at which the current position first became non-flat, used to
     /// stamp a closed trade's holding time. Meaningful only while a position is open.
     position_entry_tick: usize,
-    /// Set when the account was force-closed by liquidation, a terminal event for
-    /// the RL env. Cleared on reset.
+    /// Set when the account is dead: force-closed by a perp liquidation, or marked
+    /// at a non-positive equity on either market, which is terminal too (ADR 0019).
+    /// A terminal event for the RL env. Cleared on reset.
     bust: bool,
 }
 
@@ -140,7 +141,9 @@ impl Engine {
         self.book.cancel_all();
         self.pending.clear();
         self.tick = start_tick.min(self.candles.len().saturating_sub(1));
-        self.id_counter = 1;
+        // The id counter deliberately survives a reset. Restarting it made an id
+        // handed out in one episode name a live order in the next, so a handle
+        // carried across a reset cancelled somebody else's order (ADR 0028).
         self.position_entry_tick = self.tick;
         self.bust = false;
         if self.reporter.is_some() {
@@ -149,8 +152,9 @@ impl Engine {
         self.state()
     }
 
-    /// True when the account was force-closed by liquidation since the last reset,
-    /// the RL env's terminal signal.
+    /// True when the account died since the last reset, by a perp liquidation or by
+    /// equity reaching zero on either market. The RL env's terminal signal (ADR 0019).
+    /// The engine does not stop on it; a driver that wants to halt checks it.
     pub fn is_bust(&self) -> bool {
         self.bust
     }
@@ -223,8 +227,11 @@ impl Engine {
         tif: TimeInForce,
     ) -> Option<OrderId> {
         // A size that is not a positive finite number can never fill (ADR 0001), so
-        // it is refused a slot rather than resting inert forever.
-        if !(size.is_finite() && size > 0.0) {
+        // it is refused a slot rather than resting inert forever. A non-finite price
+        // is refused for the same reason: every touch test against it compares with
+        // NaN and is false, so the order would camp on a slot until the book filled
+        // up and later placements were silently rejected (ADR 0027).
+        if !size.is_finite() || size <= 0.0 || !price.is_finite() {
             return None;
         }
         // A post_only limit that would cross the prevailing price is rejected.
@@ -255,8 +262,9 @@ impl Engine {
         trigger: f64,
         reduce_only: bool,
     ) -> Option<OrderId> {
-        // The same guard as a limit: a non-positive or non-finite size never fills.
-        if !(size.is_finite() && size > 0.0) {
+        // The same guard as a limit: a non-positive or non-finite size never fills,
+        // and a non-finite trigger never triggers (ADRs 0001, 0027).
+        if !size.is_finite() || size <= 0.0 || !trigger.is_finite() {
             return None;
         }
         let id = self.next_id();
@@ -310,9 +318,17 @@ impl Engine {
     }
 
     /// Rest a stop that becomes a market order once `trigger` is crossed. `None`
-    /// if the book is full.
-    pub fn stop(&mut self, side: Side, size: f64, trigger: f64) -> Option<OrderId> {
-        self.place_stop(side, size, trigger, false)
+    /// if the book is full or the size or trigger is not finite. `reduce_only`
+    /// makes it a protective stop that can only shrink the position, never open
+    /// one on the other side; a stop-loss wants it true (ADR 0028).
+    pub fn stop(
+        &mut self,
+        side: Side,
+        size: f64,
+        trigger: f64,
+        reduce_only: bool,
+    ) -> Option<OrderId> {
+        self.place_stop(side, size, trigger, reduce_only)
     }
 
     /// Base size for a fraction of current equity, marked at the current close.
@@ -368,9 +384,13 @@ impl Engine {
             let pending = std::mem::take(&mut self.pending);
             for order in pending {
                 if let Some(fill) = self.fill_model.fill_market(&order, &bar) {
-                    // FOK: the whole size fills against this bar's liquidity or none
+                    // FOK is all or nothing against everything that can shrink the
+                    // fill, not just the bar's liquidity: the margin cap and the
+                    // spot clamps are applied to a copy first, so an order that
+                    // could only fill in part books nothing at all (ADR 0025).
                     if order.tif == TimeInForce::Fok
-                        && fill.size.get() + CLOSE_EPS < order.size.get()
+                        && self.clamp_fill(order.reduce_only, &fill).size.get() + CLOSE_EPS
+                            < order.size.get()
                     {
                         continue;
                     }
@@ -381,9 +401,10 @@ impl Engine {
             // 2. resting limit and stop orders fill against the bar range
             self.resolve_resting(&bar);
 
-            // 3. funding at each interval boundary, on the position held into the
-            //    bar, marked at the close, before liquidation so a funding debit can
-            //    bust the account this bar (ADR 0017)
+            // 3. funding at each interval boundary, on the position held at the
+            //    funding event (so after this bar's fills, not the position carried
+            //    into the bar), marked at the close, and before liquidation so a
+            //    funding debit can bust the account this bar (ADR 0017)
             if self.config.funding_interval > 0 && self.tick % self.config.funding_interval == 0 {
                 self.account
                     .apply_funding(self.config.funding_rate, Price(bar.close));
@@ -432,10 +453,16 @@ impl Engine {
             return;
         }
         let equity = self.account.equity(Price(mark));
-        if equity <= 0.0 {
-            return; // insolvent; liquidation handles it
-        }
-        let max_size = self.config.max_leverage * equity / mark;
+        // No equity backs new notional, so an insolvent account may only shrink. It
+        // used to be waved through here on the grounds that liquidation handles it,
+        // but liquidation cannot force-close an account that is flat, so a position
+        // opened from negative equity was closed at the bar's adverse extreme and
+        // deepened the bad debt instead of being refused (ADR 0026).
+        let max_size = if equity > 0.0 {
+            self.config.max_leverage * equity / mark
+        } else {
+            0.0
+        };
         let pos = self.account.position.qty.get();
         let new_pos = pos + fill.side.sign() * fill.size.get();
         // A same-side grow may keep an existing over-cap position (from an equity
@@ -497,13 +524,19 @@ impl Engine {
         }
     }
 
-    fn apply_fill_clamped(&mut self, reduce_only: bool, fill: Fill) -> f64 {
-        let mut fill = fill;
+    /// Every risk clamp applied to a copy of `fill` without booking anything: the
+    /// perp margin cap, the spot short and cash clamps, then reduce_only. Returns
+    /// the fill that would actually be booked, so an all-or-nothing order can be
+    /// judged against the real fillable size rather than the raw liquidity the
+    /// fill model offered (ADR 0025). A refused fill comes back sized zero.
+    fn clamp_fill(&self, reduce_only: bool, fill: &Fill) -> Fill {
+        let mut fill = *fill;
         // size is a positive magnitude; a non-positive or non-finite fill is not a
         // real trade, so it moves nothing and pays no fee
         let size = fill.size.get();
         if !size.is_finite() || size <= 0.0 || !fill.price.get().is_finite() {
-            return 0.0;
+            fill.size = Qty(0.0);
+            return fill;
         }
         self.cap_leverage(&mut fill);
         self.cap_spot_short(&mut fill);
@@ -513,13 +546,24 @@ impl Engine {
             let reduces =
                 (pos > 0.0 && fill.side == Side::Sell) || (pos < 0.0 && fill.side == Side::Buy);
             if !reduces {
-                return 0.0;
+                fill.size = Qty(0.0);
+                return fill;
             }
-            let size = fill.size.get().min(pos.abs());
-            if size <= 0.0 {
-                return 0.0;
-            }
-            fill.size = Qty(size);
+            fill.size = Qty(fill.size.get().min(pos.abs()));
+        }
+        // a clamp can leave NaN or a negative remainder; normalize so the caller only
+        // has to test for a positive size
+        let clamped = fill.size.get();
+        if clamped.is_nan() || clamped <= 0.0 {
+            fill.size = Qty(0.0);
+        }
+        fill
+    }
+
+    fn apply_fill_clamped(&mut self, reduce_only: bool, fill: Fill) -> f64 {
+        let fill = self.clamp_fill(reduce_only, &fill);
+        if fill.size.get() <= 0.0 {
+            return 0.0;
         }
         let applied = fill.size.get();
         let fee = self.cost.fee(&fill);
@@ -577,7 +621,7 @@ impl Engine {
     }
 
     fn resolve_resting(&mut self, bar: &Candle) {
-        let mut fills: Vec<(OrderId, Fill, OrderType, bool)> = Vec::new();
+        let mut fills: Vec<(OrderId, Fill, OrderType, bool, TimeInForce, f64)> = Vec::new();
         for order in self.book.iter() {
             let fill = match order.kind {
                 OrderType::Limit => self.fill_model.fill_limit(order, bar),
@@ -585,19 +629,28 @@ impl Engine {
                 OrderType::Market => None,
             };
             if let Some(fill) = fill {
-                // FOK limit: skip a fill that cannot cover the whole remaining; the
-                // sweep below then cancels it unfilled.
-                if order.kind == OrderType::Limit
-                    && order.tif == TimeInForce::Fok
-                    && fill.size.get() + CLOSE_EPS < order.remaining().get()
-                {
-                    continue;
-                }
-                fills.push((order.id, fill, order.kind, order.reduce_only));
+                fills.push((
+                    order.id,
+                    fill,
+                    order.kind,
+                    order.reduce_only,
+                    order.tif,
+                    order.remaining().get(),
+                ));
             }
         }
 
-        for (id, fill, kind, reduce_only) in fills {
+        for (id, fill, kind, reduce_only, tif, requested) in fills {
+            // FOK limit: all or nothing against every clamp, not just the bar's
+            // liquidity, and judged against the account as it stands when this
+            // order is reached rather than the snapshot the loop above saw. The
+            // sweep below then cancels it unfilled (ADRs 0016, 0025).
+            if kind == OrderType::Limit
+                && tif == TimeInForce::Fok
+                && self.clamp_fill(reduce_only, &fill).size.get() + CLOSE_EPS < requested
+            {
+                continue;
+            }
             let applied = self.apply_fill_clamped(reduce_only, fill);
             match kind {
                 // A triggered stop is a market order; it does not rest afterward.
@@ -816,7 +869,7 @@ mod tests {
         let mut e = Engine::new(series(), cfg());
         e.reset();
         assert_eq!(e.limit_buy(f64::NAN, 50.0), None);
-        assert_eq!(e.stop(Side::Sell, f64::INFINITY, 90.0), None);
+        assert_eq!(e.stop(Side::Sell, f64::INFINITY, 90.0, false), None);
         let s = e.step();
         assert!(s.open_orders.is_empty());
         assert_eq!(s.position, 0.0);
@@ -1299,7 +1352,7 @@ mod tests {
         // a sell stop from flat opens a short, a perp behavior (ADR 0015)
         let mut e = Engine::new(crash_series(), perp_cfg());
         e.reset();
-        e.stop(Side::Sell, 1.0, 95.0); // placed at bar 0
+        e.stop(Side::Sell, 1.0, 95.0, false); // placed at bar 0
         let s1 = e.step(); // bar 1 low 80 crosses 95; open 100 so fills at trigger 95
         assert_eq!(s1.position, -1.0);
         assert_eq!(s1.avg_entry, 95.0);
@@ -1482,6 +1535,227 @@ mod tests {
         let s = e.step(); // funding 2*100*1.0 = 200 debited -> equity -100
         assert!(e.is_bust());
         assert!(s.equity <= 0.0);
+    }
+
+    #[test]
+    fn a_fok_market_blocked_by_the_cash_clamp_fills_nothing() {
+        // the bar has the liquidity, but spot cash affords only 50 of the 1000, and
+        // FOK is all or nothing against every clamp, not just volume (ADR 0025)
+        let mut e = Engine::new(series(), cfg()); // spot, quote 10_000, bar 1 open 200
+        e.reset();
+        e.order(
+            Side::Buy,
+            1000.0,
+            OrderType::Market,
+            None,
+            None,
+            false,
+            false,
+            TimeInForce::Fok,
+        );
+        let s = e.step();
+        assert_eq!(s.position, 0.0);
+        assert_eq!(s.quote, 10_000.0);
+    }
+
+    #[test]
+    fn a_fok_market_blocked_by_the_leverage_cap_fills_nothing() {
+        let mut config = perp_cfg(); // quote 100
+        config.max_leverage = 2.0;
+        let mut e = Engine::new(series(), config);
+        e.reset();
+        // 2x on 100 equity at the bar 1 open of 200 allows 1.0, so a FOK for 10 dies
+        e.order(
+            Side::Buy,
+            10.0,
+            OrderType::Market,
+            None,
+            None,
+            false,
+            false,
+            TimeInForce::Fok,
+        );
+        assert_eq!(e.step().position, 0.0);
+    }
+
+    #[test]
+    fn an_insolvent_perp_cannot_open_a_position() {
+        // after a gap liquidation the account is flat with negative equity. Nothing
+        // backs new notional, and liquidation cannot force-close a flat account, so
+        // the fill is refused rather than opened and closed at the low (ADR 0026)
+        let candles = Candles::new(vec![
+            ohlc(100.0, 100.0, 100.0, 100.0, 1_000_000.0),
+            ohlc(100.0, 100.0, 100.0, 100.0, 1_000_000.0),
+            ohlc(40.0, 40.0, 40.0, 40.0, 1_000_000.0),
+            ohlc(40.0, 41.0, 25.0, 30.0, 1_000_000.0),
+        ]);
+        let mut config = perp_cfg(); // quote 100
+        config.max_leverage = 10.0;
+        let mut e = Engine::new(candles, config);
+        e.reset();
+        e.market_buy(10.0);
+        e.step();
+        let busted = e.step();
+        assert!(busted.equity < 0.0);
+        assert_eq!(busted.position, 0.0);
+        e.market_buy(5_000.0);
+        let after = e.step();
+        assert_eq!(after.position, 0.0);
+        // the refused fill costs nothing; equity only marks the same dead account
+        assert!(
+            (after.equity - busted.equity).abs() < 1e-9,
+            "equity moved {} -> {}",
+            busted.equity,
+            after.equity
+        );
+    }
+
+    #[test]
+    fn two_resting_orders_filling_on_one_bar_are_clamped_in_sequence() {
+        // the fills are collected against a pre-fill snapshot and applied one at a
+        // time, so the second must be clamped against the account the first left
+        let candles = Candles::new(vec![
+            ohlc(100.0, 100.0, 100.0, 100.0, 1_000.0),
+            ohlc(100.0, 100.0, 80.0, 100.0, 1_000.0),
+        ]);
+        let mut config = perp_cfg(); // quote 100
+        config.max_leverage = 2.0;
+        let mut e = Engine::new(candles, config);
+        e.reset();
+        e.limit_buy(2.0, 90.0).unwrap();
+        e.limit_buy(2.0, 90.0).unwrap();
+        let s = e.step();
+        // 2x on 100 equity at a fill price of 90 allows 2.222 units in total, so the
+        // first limit fills whole and the second is clamped to the remainder
+        assert!(
+            (s.position - 2.0 * 100.0 / 90.0).abs() < 1e-9,
+            "position {}",
+            s.position
+        );
+    }
+
+    #[test]
+    fn two_pending_market_orders_are_clamped_in_sequence() {
+        let mut e = Engine::new(series(), cfg()); // spot, quote 10_000, bar 1 open 200
+        e.reset();
+        e.market_buy(40.0);
+        e.market_buy(40.0);
+        let s = e.step();
+        // 10_000 of cash at 200 buys 50 in total, not 80
+        assert_eq!(s.position, 50.0);
+        assert_eq!(s.quote, 0.0);
+    }
+
+    #[test]
+    fn close_flattens_a_short_and_records_the_trade() {
+        // every other close test runs on a long, leaving the short arm of close()
+        // and the pos < 0 half of the reduce_only predicate unexecuted
+        let mut config = perp_cfg(); // quote 100, no cap
+        config.report = true;
+        let mut e = Engine::new(series(), config);
+        e.reset();
+        e.market_sell(1.0);
+        let s1 = e.step(); // short 1 @ bar 1 open 200
+        assert_eq!(s1.position, -1.0);
+        e.close();
+        let s2 = e.step(); // buys back at bar 2 open 300
+        assert_eq!(s2.position, 0.0);
+        let trades = e.reporter().unwrap().trades();
+        assert_eq!(trades.len(), 1);
+        assert_eq!(trades[0].side, Side::Sell);
+        assert_eq!(trades[0].pnl, -100.0); // short 1 from 200 bought back at 300
+        let stats = e.stats(365.0, 0.0).unwrap();
+        assert_eq!(stats.win_rate, 0.0);
+        assert_eq!(stats.profit_factor, 0.0);
+    }
+
+    #[test]
+    fn a_reduce_only_buy_closes_a_short() {
+        let mut e = Engine::new(series(), perp_cfg());
+        e.reset();
+        e.market_sell(2.0);
+        e.step(); // short 2
+        e.place_market(Side::Buy, 5.0, true, TimeInForce::Ioc);
+        let s = e.step(); // clamped to 2, so it closes rather than flipping long
+        assert_eq!(s.position, 0.0);
+    }
+
+    #[test]
+    fn funding_is_charged_only_on_interval_bars() {
+        // every other funding test uses interval 1, where the modulo is trivially
+        // true on every bar, so the schedule itself is never exercised (ADR 0017)
+        let mut config = perp_cfg();
+        config.quote = 10_000.0;
+        config.funding_rate = 0.001;
+        config.funding_interval = 3;
+        let flat = ohlc(100.0, 100.0, 100.0, 100.0, 10_000.0);
+        let mut e = Engine::new(Candles::new(vec![flat; 8]), config);
+        e.reset();
+        e.market_buy(1.0);
+        let mut charged = Vec::new();
+        let mut prev = 10_000.0;
+        for _ in 0..7 {
+            let s = e.step();
+            charged.push((prev - s.quote).abs() > 1e-12);
+            prev = s.quote;
+        }
+        // ticks 1..7; funding fires where tick % 3 == 0, so on ticks 3 and 6 only
+        assert_eq!(
+            charged,
+            vec![false, false, true, false, false, true, false],
+            "charged on {charged:?}"
+        );
+    }
+
+    #[test]
+    fn a_perp_marks_equity_at_the_close_on_an_open_position() {
+        // the only numeric equity assertions were on spot, so a perp marked with the
+        // spot formula would have gone unnoticed
+        let mut e = Engine::new(series(), perp_cfg()); // quote 100
+        e.reset();
+        e.market_buy(1.0);
+        let s1 = e.step(); // long 1 @ bar 1 open 200, bar 1 close 250
+        assert_eq!(s1.equity, 100.0 + 1.0 * (250.0 - 200.0));
+        let s2 = e.step(); // bar 2 close 350
+        assert_eq!(s2.equity, 100.0 + 1.0 * (350.0 - 200.0));
+    }
+
+    #[test]
+    fn order_ids_stay_unique_across_a_reset() {
+        // an id handed out in one episode must not name a live order in the next,
+        // or a handle carried across a reset cancels somebody else's order (ADR 0028)
+        let mut e = Engine::new(dip_series(), cfg());
+        e.reset();
+        let first = e.limit_buy(1.0, 50.0).unwrap();
+        e.reset();
+        let second = e.limit_buy(1.0, 50.0).unwrap();
+        assert_ne!(first, second);
+        assert!(!e.cancel(first)); // the stale handle matches nothing
+        assert!(e.cancel(second));
+    }
+
+    #[test]
+    fn a_reduce_only_stop_cannot_open_the_other_side() {
+        // the shortcut carries the flag now, so a protective stop that outlives the
+        // one that closed the position fills nothing instead of opening a short
+        let mut e = Engine::new(crash_series(), perp_cfg());
+        e.reset();
+        assert!(e.stop(Side::Sell, 1.0, 95.0, true).is_some());
+        let s = e.step(); // bar 1 low 80 crosses 95, but there is nothing to reduce
+        assert_eq!(s.position, 0.0);
+    }
+
+    #[test]
+    fn a_non_finite_limit_price_or_stop_trigger_is_refused_a_slot() {
+        // every touch test against NaN is false, so such an order never fills and
+        // never expires; it would hold a slot until the book was full (ADR 0027)
+        let mut e = Engine::new(series(), cfg());
+        e.reset();
+        assert_eq!(e.limit_buy(1.0, f64::NAN), None);
+        assert_eq!(e.limit_sell(1.0, f64::INFINITY), None);
+        assert_eq!(e.stop(Side::Sell, 1.0, f64::NAN, false), None);
+        let s = e.step();
+        assert!(s.open_orders.is_empty());
     }
 
     #[test]
