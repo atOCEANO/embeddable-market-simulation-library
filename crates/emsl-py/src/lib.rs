@@ -132,6 +132,104 @@ fn candles_from_array(array: PyReadonlyArray2<'_, f64>) -> PyResult<Candles> {
     Ok(Candles::new(bars))
 }
 
+/// The largest resting-order book the caller may ask for. Slots are allocated up
+/// front, once per env, so an unbounded request aborts the process on allocation
+/// failure instead of raising; far above any real strategy (ADR 0027).
+const MAX_OPEN_ORDERS_LIMIT: usize = 4096;
+
+/// Reject a zero observation window. The batched gathers chunk their output buffer
+/// by the window, and rayon asserts a chunk size is nonzero, so a zero window used
+/// to reach Python as a PanicException, which is not an `Exception` and so escapes
+/// an ordinary `except` (ADR 0027).
+fn check_window(window: usize) -> PyResult<()> {
+    if window == 0 {
+        return Err(PyValueError::new_err("window must be at least 1, got 0"));
+    }
+    Ok(())
+}
+
+/// Reject a configuration scalar that is not finite. The candle array is already
+/// checked for exactly this, and a NaN knob is no less poisonous: a NaN quote makes
+/// every state field NaN, and a NaN `max_fill_fraction` deletes the volume cap
+/// because `f64::min` keeps the other operand (ADR 0027).
+fn finite(name: &str, value: f64) -> PyResult<f64> {
+    if !value.is_finite() {
+        return Err(PyValueError::new_err(format!(
+            "{name} must be a finite number, got {value}"
+        )));
+    }
+    Ok(value)
+}
+
+/// Reject a configuration scalar that is not finite and at or above `low`.
+fn at_least(name: &str, value: f64, low: f64) -> PyResult<f64> {
+    finite(name, value)?;
+    if value < low {
+        return Err(PyValueError::new_err(format!(
+            "{name} must be at least {low}, got {value}"
+        )));
+    }
+    Ok(value)
+}
+
+/// Validate every engine knob and build the config. One place, so `Engine` and
+/// `Batch` cannot drift apart on what they accept (ADR 0027).
+#[allow(clippy::too_many_arguments)]
+fn build_config(
+    market: &str,
+    quote: f64,
+    fee_taker: f64,
+    fee_maker: f64,
+    slippage_bps: f64,
+    max_fill_fraction: f64,
+    max_open_orders: usize,
+    report: bool,
+    leverage: f64,
+    impact: f64,
+    funding_rate: f64,
+    funding_interval: usize,
+) -> PyResult<EngineConfig> {
+    if max_open_orders == 0 || max_open_orders > MAX_OPEN_ORDERS_LIMIT {
+        return Err(PyValueError::new_err(format!(
+            "max_open_orders must be between 1 and {MAX_OPEN_ORDERS_LIMIT}, got {max_open_orders}"
+        )));
+    }
+    // A fee rate at or below -1 is a rebate larger than the notional; it turns the
+    // spot cash clamp's `1 + rate` divisor non-positive and mints equity out of a
+    // fill that never happens.
+    for (name, rate) in [("fee_taker", fee_taker), ("fee_maker", fee_maker)] {
+        if finite(name, rate)? <= -1.0 {
+            return Err(PyValueError::new_err(format!(
+                "{name} must be greater than -1.0 (a rebate cannot exceed the notional), got {rate}"
+            )));
+        }
+    }
+    Ok(EngineConfig {
+        market: parse_market(market)?,
+        quote: at_least("quote", quote, 0.0)?,
+        fee_taker,
+        fee_maker,
+        // slippage and impact are adverse by definition (ADRs 0004, 0013); a
+        // negative rate would fill better than the market and mint equity
+        slippage_bps: at_least("slippage_bps", slippage_bps, 0.0)?,
+        max_fill_fraction: {
+            let v = at_least("max_fill_fraction", max_fill_fraction, 0.0)?;
+            if v <= 0.0 {
+                return Err(PyValueError::new_err(
+                    "max_fill_fraction must be greater than 0, got 0".to_string(),
+                ));
+            }
+            v
+        },
+        max_open_orders,
+        report,
+        max_leverage: at_least("leverage", leverage, 0.0)?,
+        impact: at_least("impact", impact, 0.0)?,
+        funding_rate: finite("funding_rate", funding_rate)?,
+        funding_interval,
+    })
+}
+
 /// Read an optional per-env cost-override array, checked to length `num_envs`.
 /// `None` leaves the batch on its shared scalar for that field (ADR 0014).
 fn per_env_vec(
@@ -308,8 +406,8 @@ impl Engine {
         funding_rate: f64,
         funding_interval: usize,
     ) -> PyResult<Engine> {
-        let config = EngineConfig {
-            market: parse_market(market)?,
+        let config = build_config(
+            market,
             quote,
             fee_taker,
             fee_maker,
@@ -317,11 +415,11 @@ impl Engine {
             max_fill_fraction,
             max_open_orders,
             report,
-            max_leverage: leverage,
+            leverage,
             impact,
             funding_rate,
             funding_interval,
-        };
+        )?;
         let series = candles_from_array(candles)?;
         Ok(Engine {
             inner: BarEngine::new(series, config),
@@ -393,19 +491,36 @@ impl Engine {
     }
 
     /// Rest a buy limit. Returns the order id, or None if the book is full.
-    fn limit_buy(&mut self, size: f64, price: f64) -> Option<u64> {
-        self.inner.limit_buy(size, price).map(|id| id.0)
+    fn limit_buy(&mut self, size: f64, price: f64) -> PyResult<Option<u64>> {
+        finite("price", price)?;
+        Ok(self.inner.limit_buy(size, price).map(|id| id.0))
     }
 
     /// Rest a sell limit. Returns the order id, or None if the book is full.
-    fn limit_sell(&mut self, size: f64, price: f64) -> Option<u64> {
-        self.inner.limit_sell(size, price).map(|id| id.0)
+    fn limit_sell(&mut self, size: f64, price: f64) -> PyResult<Option<u64>> {
+        finite("price", price)?;
+        Ok(self.inner.limit_sell(size, price).map(|id| id.0))
     }
 
-    /// Rest a stop on `side` that triggers at `trigger`. None if the book is full.
-    fn stop(&mut self, side: &str, size: f64, trigger: f64) -> PyResult<Option<u64>> {
+    /// Rest a stop on `side` that triggers at `trigger`. None if the book is full
+    /// or the size or trigger is not finite. `reduce_only` makes it a protective
+    /// stop that can only shrink the position: without it a stop that outlives the
+    /// one that closed the position opens a fresh one on the other side, which is
+    /// what a stop-loss almost never wants (ADR 0028).
+    #[pyo3(signature = (side, size, trigger, reduce_only = false))]
+    fn stop(
+        &mut self,
+        side: &str,
+        size: f64,
+        trigger: f64,
+        reduce_only: bool,
+    ) -> PyResult<Option<u64>> {
         let side = parse_side(side)?;
-        Ok(self.inner.stop(side, size, trigger).map(|id| id.0))
+        finite("trigger", trigger)?;
+        Ok(self
+            .inner
+            .stop(side, size, trigger, reduce_only)
+            .map(|id| id.0))
     }
 
     /// Flatten the position with a reduce-only market order. None when flat.
@@ -460,6 +575,12 @@ impl Engine {
         if kind == OrderType::Stop && trigger.is_none() {
             return Err(PyValueError::new_err("a stop order requires a trigger"));
         }
+        if let Some(p) = price {
+            finite("price", p)?;
+        }
+        if let Some(t) = trigger {
+            finite("trigger", t)?;
+        }
         Ok(self
             .inner
             .order(
@@ -494,6 +615,14 @@ impl Engine {
         periods_per_year: f64,
         risk_free: f64,
     ) -> PyResult<Option<Bound<'py, PyDict>>> {
+        // A non-positive annualization has no square root and no per-period rate,
+        // and the stats set must never come back NaN (ADRs 0007, 0027).
+        if !(periods_per_year.is_finite() && periods_per_year > 0.0) {
+            return Err(PyValueError::new_err(format!(
+                "periods_per_year must be a finite positive number, got {periods_per_year}"
+            )));
+        }
+        finite("risk_free", risk_free)?;
         match self.inner.stats(periods_per_year, risk_free) {
             Some(stats) => Ok(Some(stats_to_dict(py, &stats)?)),
             None => Ok(None),
@@ -620,8 +749,8 @@ impl Batch {
         slippage_bps_per_env: Option<PyReadonlyArray1<'_, f64>>,
         impact_per_env: Option<PyReadonlyArray1<'_, f64>>,
     ) -> PyResult<Batch> {
-        let config = EngineConfig {
-            market: parse_market(market)?,
+        let config = build_config(
+            market,
             quote,
             fee_taker,
             fee_maker,
@@ -629,11 +758,11 @@ impl Batch {
             max_fill_fraction,
             max_open_orders,
             report,
-            max_leverage: leverage,
+            leverage,
             impact,
             funding_rate,
             funding_interval,
-        };
+        )?;
         let series = candles_from_array(candles)?;
 
         // Per-env cost randomization (ADR 0014): each override, if given, replaces
@@ -795,6 +924,7 @@ impl Batch {
     /// Batched observation: the `window` most recent candles per env as an
     /// `(num_envs, window, 5)` float64 array, front-padded with zeros at warmup.
     fn observe<'py>(&self, py: Python<'py>, window: usize) -> PyResult<Bound<'py, PyArray3<f64>>> {
+        check_window(window)?;
         let n = self.inner.len();
         let flat = py.allow_threads(|| self.inner.observe_all(window));
         let array = Array3::from_shape_vec((n, window, 5), flat)
@@ -812,7 +942,8 @@ impl Batch {
         PyArray1::from_vec_bound(py, self.inner.dones())
     }
 
-    /// Per-env termination flags (liquidated) as a `(num_envs,)` array.
+    /// Per-env termination flags as a `(num_envs,)` array: true where the account
+    /// died, by a perp liquidation or by equity reaching zero (ADR 0019).
     fn busts<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<bool>> {
         PyArray1::from_vec_bound(py, self.inner.busts())
     }
@@ -845,6 +976,7 @@ impl Batch {
         py: Python<'py>,
         window: usize,
     ) -> PyResult<Bound<'py, PyArray3<f64>>> {
+        check_window(window)?;
         if self.n_features == 0 {
             return Err(PyValueError::new_err(
                 "no features set; call set_features before observe_features",

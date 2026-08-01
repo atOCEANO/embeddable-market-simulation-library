@@ -246,4 +246,7 @@ class VectorEnv(gym.vector.VectorEnv):
         return obs, rewards, terminations, truncations, infos
 
     def close(self, **kwargs):
-        pass
+        # the batch owns no file handle, socket, or subprocess, so there is nothing
+        # to release; the flag still has to flip or a wrapper reading env.closed
+        # after close() is told the env is live
+        self.closed = True

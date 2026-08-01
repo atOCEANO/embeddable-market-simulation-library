@@ -456,6 +456,144 @@ def test_non_finite_candles_are_rejected():
         emsl.Engine(bad)
 
 
+def test_non_finite_config_scalars_are_rejected():
+    # the candle array was always checked for non-finite values; every other knob
+    # crossing the boundary poisons the same things and is now checked too (ADR 0027)
+    for kwargs in (
+        {"quote": float("nan")},
+        {"fee_taker": float("nan")},
+        {"fee_maker": float("inf")},
+        {"slippage_bps": float("nan")},
+        {"max_fill_fraction": float("nan")},
+        {"leverage": float("nan")},
+        {"impact": float("nan")},
+        {"funding_rate": float("nan")},
+    ):
+        with pytest.raises(ValueError):
+            emsl.Engine(series(), **kwargs)
+        with pytest.raises(ValueError):
+            emsl.Batch(series(), num_envs=2, **kwargs)
+
+
+def test_out_of_range_config_scalars_are_rejected():
+    for kwargs in (
+        {"quote": -1.0},
+        {"slippage_bps": -1.0},  # slippage is adverse, never favourable
+        {"impact": -0.5},
+        {"leverage": -1.0},
+        {"max_fill_fraction": 0.0},
+        {"max_fill_fraction": -0.5},
+        {"fee_maker": -1.0},  # a rebate cannot exceed the notional
+        {"fee_taker": -2.0},
+        {"max_open_orders": 0},
+        {"max_open_orders": 10_000},
+    ):
+        with pytest.raises(ValueError):
+            emsl.Engine(series(), **kwargs)
+
+
+def test_a_zero_window_raises_instead_of_panicking():
+    # the batched gathers chunk by the window and rayon asserts a nonzero chunk, so
+    # this used to surface as a PanicException, which `except Exception` misses
+    b = emsl.Batch(series(), num_envs=2)
+    b.reset_all()
+    with pytest.raises(ValueError):
+        b.observe(0)
+    b.set_features(np.zeros((3, 2), dtype=np.float64))
+    with pytest.raises(ValueError):
+        b.observe_features(0)
+
+
+def test_non_finite_prices_and_triggers_are_rejected():
+    e = engine()
+    e.reset()
+    with pytest.raises(ValueError):
+        e.limit_buy(1.0, float("nan"))
+    with pytest.raises(ValueError):
+        e.limit_sell(1.0, float("inf"))
+    with pytest.raises(ValueError):
+        e.stop("sell", 1.0, float("nan"))
+    with pytest.raises(ValueError):
+        e.order("buy", 1.0, type="limit", price=float("nan"))
+
+
+def test_stats_reject_a_non_positive_annualization():
+    e = engine(report=True)
+    e.reset()
+    e.step()
+    for ppy in (0.0, -1.0, float("nan")):
+        with pytest.raises(ValueError):
+            e.stats(periods_per_year=ppy)
+
+
+def test_stop_takes_reduce_only_so_it_cannot_open_the_other_side():
+    # a fall that crosses the trigger while flat: a protective stop fills nothing,
+    # a bare one opens a short on a perp (ADR 0028)
+    data = np.array(
+        [
+            [100.0, 101.0, 99.0, 100.0, 1000.0],
+            [100.0, 101.0, 80.0, 85.0, 1000.0],
+            [85.0, 86.0, 84.0, 85.0, 1000.0],
+        ],
+        dtype=np.float64,
+    )
+    protective = emsl.Engine(data, market="perp", quote=10_000.0, fee_taker=0.0)
+    protective.reset()
+    protective.stop("sell", 1.0, 95.0, reduce_only=True)
+    assert protective.step()["position"] == 0.0
+
+    bare = emsl.Engine(data, market="perp", quote=10_000.0, fee_taker=0.0)
+    bare.reset()
+    bare.stop("sell", 1.0, 95.0)
+    assert bare.step()["position"] == -1.0
+
+
+def test_order_ids_do_not_restart_on_reset():
+    e = engine()
+    e.reset()
+    first = e.limit_buy(1.0, 50.0)
+    e.reset()
+    second = e.limit_buy(1.0, 50.0)
+    assert first != second
+    assert e.cancel(first) is False  # the stale handle names nothing
+    assert e.cancel(second) is True
+
+
+def test_a_fok_market_blocked_by_the_cash_clamp_fills_nothing():
+    # the bar has the volume, but the cash affords 50 of the 1000; FOK is all or
+    # nothing against every clamp, not just liquidity (ADR 0025)
+    e = engine()
+    e.reset()
+    e.order("buy", 1000.0, type="market", tif="FOK")
+    s = e.step()
+    assert s["position"] == 0.0
+    assert s["quote"] == 10_000.0
+
+
+def test_trade_metrics_are_net_of_fees():
+    # a creeping series whose per-trade gross edge is smaller than the round trip
+    # cost: gross it wins every trade, net it loses money (ADR 0029)
+    data = np.array(
+        [[100.0 + i * 0.01] * 4 + [1000.0] for i in range(40)], dtype=np.float64
+    )
+
+    class PingPong:
+        def next(self, state, engine):
+            if state["position"] == 0.0:
+                engine.market_buy(1.0)
+            else:
+                engine.close()
+
+    e = emsl.Engine(data, market="spot", quote=10_000.0, fee_taker=0.001,
+                    fee_maker=0.001, report=True)
+    e.run(PingPong())
+    st = e.stats()
+    assert st["total_return_pct"] < 0.0
+    assert st["win_rate"] == 0.0
+    assert st["profit_factor"] == 0.0
+    assert st["avg_trade_pct"] < 0.0
+
+
 def test_spot_buy_cannot_spend_more_quote_than_held():
     # the Python view of the spot-buy cash clamp: a huge buy fills only what the
     # cash affords, and the balance never goes negative

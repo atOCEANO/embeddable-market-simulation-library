@@ -19,6 +19,12 @@ class Strategy:
     the engine, and places orders through the engine's methods (``market_buy``,
     ``limit_buy``, ``stop``, ``close``, ...). ``init`` is optional and runs once
     after reset, before the first bar.
+
+    It is called on every bar but the last. An order decided on a bar fills on the
+    next one, so on the final bar there is no bar left to fill against and nothing
+    a decision could do; a ``T``-bar series therefore calls ``next`` ``T - 1``
+    times. A position still open at the end is marked into the equity curve and the
+    return, but it never closes, so it appears in no trade metric (ADR 0009).
     """
 
     def init(self, engine):
