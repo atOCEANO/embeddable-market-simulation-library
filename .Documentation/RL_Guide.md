@@ -91,7 +91,7 @@ venv = VecNormalize(VecMonitor(EmslVecEnv(VectorEnv(ohlcv, num_envs=8, window=32
 PPO("MlpPolicy", venv).learn(total_timesteps=100_000)
 ```
 
-`evaluate_policy` runs a trained model over a fresh env the same way. `emsl.sb3` needs stable-baselines3 (`pip install 'emsl[sb3]'`); because emsl's same-step autoreset already matches SB3's `VecEnv` contract, the adapter is a straight remap, so the GIL-free batch stays intact and an SB3 seed reaches the env.
+`evaluate_policy` runs a trained model over a fresh env the same way. `emsl.sb3` needs stable-baselines3, which the `[sb3]` extra pulls in (emsl is not on PyPI, so install from a release as the [README](../README.md#install) shows); because emsl's same-step autoreset already matches SB3's `VecEnv` contract, the adapter is a straight remap, so the GIL-free batch stays intact and an SB3 seed reaches the env.
 
 Save a trained model and reload it later, the usual SB3 way:
 

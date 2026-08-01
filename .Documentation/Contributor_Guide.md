@@ -85,8 +85,8 @@ Run the build loop above green before you submit, and the Docker gate too for an
 Releases are built by CI, never by hand. Pushing a `v*` tag runs the release workflow, which builds the `abi3` wheels for Linux (x86_64 and aarch64), macOS (one universal2 file covering Intel and Apple silicon), and Windows, plus an sdist, and attaches them all to a GitHub Release:
 
 ```bash
-git tag -a v0.2.0 -m "emsl 0.2.0"
-git push origin v0.2.0
+git tag -a vX.Y.Z -m "emsl X.Y.Z: one line on what changed"
+git push origin vX.Y.Z
 ```
 
 Two things before you tag. The version in `Cargo.toml` is what names the wheels, so bump it first and let the tag match it, or the release says one number while its artifacts say another. And run the gate on the exact commit you intend to tag: a tag builds, it does not test, so nothing else will catch a regression at that point.
