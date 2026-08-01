@@ -121,15 +121,27 @@ eng = Engine(
 | :--- | :--- | :--- |
 | `market_buy(size)` / `market_sell(size)` | order id | Taker order; fills at the next bar's open, pays the taker fee, takes slippage. |
 | `limit_buy(size, price)` / `limit_sell(size, price)` | id or `None` | Maker order; rests until a later bar reaches the price. `None` if the book is full. |
-| `stop(side, size, trigger)` | id or `None` | Becomes a market order once a bar crosses `trigger`. `side` is `"buy"` or `"sell"`. |
-| `order(side, size, type, price, trigger, reduce_only, post_only, tif)` | id or `None` | The primitive the shortcuts wrap; the only call that sets `reduce_only`, `post_only`, and `tif`. |
-| `close()` | id or `None` | Flatten the whole position with a reduce-only market order. `None` when flat. |
+| `stop(side, size, trigger, reduce_only=False)` | id or `None` | Becomes a market order once a bar crosses `trigger`. `side` is `"buy"` or `"sell"`. Pass `reduce_only=True` for a stop-loss. |
+| `order(side, size, type, price, trigger, reduce_only, post_only, tif)` | id or `None` | The primitive the shortcuts wrap; the only call that sets `post_only` and `tif`. |
+| `close()` | id or `None` | Queue a reduce-only market order sized to the whole position. `None` when flat. |
 | `cancel(order_id)` | bool | Drop a resting order. True if it was found. |
 | `cancel_all()` | int | Drop every resting order; returns how many were dropped. |
 | `qty_from_weight(fraction)` | float | Base size for `fraction` of current equity, at the current close. |
 | `qty_from_quote(cash)` | float | Base size for a `cash` amount in quote, at the current close. |
 
-`order(...)` is the full primitive: `type` is `"market"`, `"limit"`, or `"stop"`, `tif` is `"GTC"`, `"IOC"`, or `"FOK"`, and it carries the three flags the shortcuts leave at their defaults. `reduce_only` marks a take-profit or stop-loss that can only shrink the position; `post_only` rejects a limit that would cross rather than turning it taker; `tif` decides what happens to the part of an order the next bar does not fill: `GTC` rests, `IOC` takes one bar then cancels the remainder, `FOK` fills the whole size against the bar or nothing. A market order is `IOC` by nature and a stop rests until it triggers, so `tif` is meaningful on limits ([ADR 0016](Decisions.md)). A limit needs a `price` and a stop a `trigger`, else it is a `ValueError`. A reduce-only stop-loss is `order("sell", size, type="stop", trigger=..., reduce_only=True)`.
+`order(...)` is the full primitive: `type` is `"market"`, `"limit"`, or `"stop"`, `tif` is `"GTC"`, `"IOC"`, or `"FOK"`, and it carries the three flags the shortcuts leave at their defaults. `reduce_only` marks a take-profit or stop-loss that can only shrink the position; `post_only` rejects a limit that would cross rather than turning it taker; `tif` decides what happens to the part of an order the next bar does not fill: `GTC` rests, `IOC` takes one bar then cancels the remainder, `FOK` fills the whole size against the bar or nothing. A market order is `IOC` unless you ask for `FOK`, since it never rests and so cannot tell `GTC` from `IOC`; a stop rests until it triggers ([ADR 0016](Decisions.md)). `FOK` is all or nothing against every clamp, not only the bar's liquidity, so a `FOK` the spot cash balance or the margin cap could only fill in part books nothing ([ADR 0025](Decisions.md)). A limit needs a `price` and a stop a `trigger`, else it is a `ValueError`, and a non-finite price or trigger is a `ValueError` too ([ADR 0027](Decisions.md)).
+
+Three things about resting orders that are easy to get wrong. Nothing links them: there is no OCO and no replace, so **re-placing a trailing stop each bar rests a new order every time**, and once the book is full every further placement is rejected and the trail keeps only its oldest triggers. Cancel before re-placing, and pass `reduce_only=True`, or a stop that outlives the one that closed your position opens a fresh position on the other side ([ADR 0028](Decisions.md)). And `close()` queues an ordinary market order, so it is `IOC`: on a thin bar the volume cap can fill only part of it and the remainder is cancelled rather than carried, which leaves a residual position. Check `state["position"]` rather than assuming.
+
+```python
+#  a trailing stop that stays one order and can only ever shrink the position
+if state["position"] > 0.0:
+    wanted = state["bar_close"] * 0.94
+    if self.trigger is None or wanted > self.trigger:
+        engine.cancel_all()
+        engine.stop("sell", state["position"], wanted, reduce_only=True)
+        self.trigger = wanted
+```
 
 You decide on a bar and the order fills on the next one; there is no same-bar lookahead.
 
@@ -304,7 +316,7 @@ class SmaWithStop(Strategy):
                 engine.close()                                      # exit on the crossover
             elif not state["open_orders"]:                          # rest the stop once, while held
                 trigger = state["bar_close"] * (1.0 - self.stop_pct)
-                engine.order("sell", pos, type="stop", trigger=trigger, reduce_only=True)
+                engine.stop("sell", pos, trigger, reduce_only=True)
 ```
 
 The stop rests only once a position is held (orders fill on the next bar, so there is nothing to protect until then), and `reduce_only` keeps it from flipping the position short instead of closing it. This same class is ready for [tuning](#tuning): its `fast`, `slow`, and `stop_pct` are already constructor arguments.
@@ -318,10 +330,12 @@ The stop rests only once a position is held (orders fill on the next bar, so the
 | `total_return_pct`, `net_profit_pct`, `cagr_pct` | percent | Total return (net of fees; both names give the same figure) and annualized return. |
 | `sharpe`, `sortino`, `calmar` | ratio | Risk-adjusted return; annualized. |
 | `max_drawdown_pct`, `volatility_pct`, `exposure_pct` | percent | Largest peak-to-trough decline; annualized volatility; fraction of steps holding a position. |
-| `win_rate` | fraction | Fraction of closed trades with positive PnL. |
-| `profit_factor` | ratio | Gross profit over gross loss (`inf` with no losses). |
-| `num_trades` | count | Closed trades. |
-| `avg_trade_pct` | percent | Mean trade PnL as a percent of starting equity. |
+| `win_rate` | fraction | Fraction of closed trades whose PnL net of the recorded fee is positive. |
+| `profit_factor` | ratio | Net profit over net loss, both after fees (`inf` with no losses). |
+| `num_trades` | count | Closed round trips. A position still open at the end is in the return and the exposure but in none of these four. |
+| `avg_trade_pct` | percent | Mean net trade PnL as a percent of **starting** equity, not of the equity the trade opened with. |
+
+The four trade metrics count completed round trips only, so `exposure_pct > 0` beside `num_trades == 0` means "still holding", not "never traded"; buy and hold reports a real return with zero trades ([ADR 0009](Decisions.md)). They are net of the fee each trade records, because on gross PnL a strategy whose edge is smaller than its costs reports a perfect win rate and an infinite profit factor beside a negative return ([ADR 0029](Decisions.md)). `periods_per_year` must be finite and positive.
 
 The conventions (risk-free rate, sample deviation, annualization) are fixed in [ADR 0007](Decisions.md).
 
@@ -336,7 +350,7 @@ Each entry in `trades()` is one closed portion of a position:
 | `size` | Base size closed. |
 | `entry_price`, `exit_price` | Average entry before the fill, and the fill price. |
 | `fees` | Closing-fill fee on the closed size (exit-side only; see [ADR 0009](Decisions.md)). |
-| `pnl` | Gross realized price PnL, before fees. |
+| `pnl` | Gross realized price PnL, before fees. The stats above net it of `fees`; this row stays gross ([ADR 0009](Decisions.md)). |
 | `bars_held` | Bars held, from the position's first entry. |
 
 When the `Backtester` is given a pandas DataFrame or parquet input with a datetime index, each trade also carries `entry_time` and `exit_time`, the index values at those ticks. A raw numpy input has no index, so its trades stay tick-only.

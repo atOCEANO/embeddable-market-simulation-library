@@ -35,7 +35,7 @@ Every decision keeps a number. The code and the other guides cite them by that n
 
 The library is a stack of layers, and the one rule is that logic flows up, never sideways: each layer builds only on the one below it.
 
-- **`emsl-core`** is pure primitives: the units, the order and fill types, the netted position, the account (equity, funding, liquidation, realized and unrealized PnL), the cost model, and the resting-order book. It knows nothing about candles, parallelism, or Python. This is the seam a future tick or L2 engine would reuse, so nothing bar-specific lives here.
+- **`emsl-core`** is pure primitives: the units, the OHLCV bar, the order and fill types, the netted position, the account (equity, funding, liquidation, realized and unrealized PnL), the cost model, and the resting-order book. It knows nothing about a candle *series*, parallelism, or Python: it holds one bar, never the time series, the windows over it, or any bar-level fill logic, all of which live in `bar-engine`. This is the seam a future tick or L2 engine would reuse.
 - **`bar-engine`** is the bar-level realization: the candle series, the next-bar fill model, the single `step()` machine, the reporter and its stats, and the parallel batch and sweep. It builds only on `emsl-core`.
 - **`emsl-py`** is the one crate that links Python. It parses arguments, copies candles once from numpy, hands state back as dicts, vends the zero-copy observation, and releases the GIL around the batched step. It holds no simulation logic.
 - **`python/emsl`** is the thin wrappers: `backtest`, `rl`, `tune`. This is what "one engine, three surfaces" means in practice: a backtest, a Gymnasium RL env, and a parameter search are not three engines, they are three ways to drive the same one. A wrapper only configures the engine, drives its loop, and shapes the result. Keeping them thin is what keeps the core embeddable: it never assumes it is being used for a backtest rather than an RL rollout, so it drops into a system you already have instead of owning your loop.
@@ -52,13 +52,25 @@ The library is a stack of layers, and the one rule is that logic flows up, never
 
 **Market impact (0013).** An extra adverse slip proportional to the fraction of the bar's volume the fill takes, so a bigger order pays more. A per-fill cost function is deliberately refused; this coefficient is its fast-path stand-in.
 
-**Time in force (0016).** `GTC` rests, `IOC` takes one bar then cancels the rest, `FOK` fills the whole size against one bar or nothing. It is meaningful on limits: a market order is `IOC` by nature and a stop rests until it triggers.
+**Time in force (0016).** `GTC` rests, `IOC` takes one bar then cancels the rest, `FOK` fills the whole size against one bar or nothing. A market order is `IOC` unless `FOK` is asked for, since it never rests and so cannot tell `GTC` from `IOC`; a stop rests until it triggers, then fills as a market order. The one-bar rule is why an unfilled market order is cancelled rather than carried: on a bar that trades no volume it fills nothing and is gone, exactly as an `IOC` limit would be, while a `GTC` limit waits for the next bar.
+
+**Protective stops and stable order ids (0028).** `stop()` takes `reduce_only`, because the shortcut's whole purpose is a stop-loss and without the flag a stop that outlives the one that closed the position opens a fresh position on the other side. Nothing links resting orders: there is no OCO and no replace, so re-placing a trailing stop each bar rests a new order every time and, once the book is full, every further placement is rejected and the trail keeps only its oldest triggers. Cancel before re-placing. Order ids are unique for the engine's life rather than per episode; restarting the counter on reset meant a handle carried across one addressed a live order belonging to the next episode.
 
 **Spot buys clamp to cash (0018).** A spot buy fills only what the quote balance affords, so a buy never drives the account negative.
 
 **Spot cannot short (0015).** On spot a sell is clamped to the current long; shorting base needs a borrow this tier does not model, so a short and a flip through zero are perp behaviors.
 
-**Bar-fidelity limits (0006).** At bar granularity the fill model cannot see the path inside a bar, so it can be slightly more generous than a live book, and two contradictory resting orders can both fill on one wide bar. These approximations are named rather than hidden.
+**Bar-fidelity limits (0006).** At bar granularity the fill model cannot see the path inside a bar, so it can be slightly more generous than a live book, and two contradictory resting orders can both fill on one wide bar. These approximations are named rather than hidden. Resting orders resolve in book-slot order, and a cancelled slot is reused by the next placement, so when two orders fill on the same bar and a cash or margin clamp binds on the first one applied, which of them gets the room depends on slot order rather than on placement time.
+
+**The cap and the slip are bounded (0024).** The volume cap is a `min` against `max_fill_fraction * volume`, and `f64::min` keeps the other operand when one side is NaN, so both sides carry the guard: a non-finite remaining cannot launder a NaN size into a full-cap fill, and a non-finite fraction cannot delete the cap and let one order take more than the bar traded. Slippage and market impact are adverse by definition, so both are floored at zero, and their total is held just under 1: a slip of 1.0 would price a sell at zero and anything beyond it below zero, which is not a trade.
+
+**All-or-nothing is decided after the clamps (0025).** `FOK` means the whole size fills or none of it, and the size that can actually fill is not the one the fill model offers: the perp margin cap, the spot cash and short clamps, and `reduce_only` all shrink it afterwards. So the decision is made against a clamped copy of the fill, and a `FOK` that could only fill in part books nothing. A resting `FOK` limit is judged against the account as it stands when its turn comes, not against a snapshot taken before the bar's earlier fills.
+
+<br>
+
+## The Input Boundary
+
+**The boundary validates its arguments (0027).** The candle array was checked for non-finite values from the start, on the reasoning that one would poison every mark downstream. Every other argument crossing into the engine now gets the same treatment, because they poison the same things: a NaN `quote` makes every state field NaN, a NaN `max_fill_fraction` deletes the volume cap, a fee at or below -1 turns the spot cash clamp's `1 + rate` divisor non-positive and mints equity, a negative `slippage_bps` fills better than the market, an unbounded `max_open_orders` allocates its slots up front and aborts the process rather than raising, and a zero observation `window` reaches Rayon's chunker and surfaces as a `PanicException`, which is not an `Exception` and escapes an ordinary `except`. A non-finite limit price or stop trigger is refused a book slot for the same reason a non-finite size is (ADR 0001): every comparison against it is false, so it can never fill and never expire, and it holds a slot until the book is full and later orders are silently rejected. Errors name the argument and the expectation.
 
 <br>
 
@@ -66,15 +78,21 @@ The library is a stack of layers, and the one rule is that logic flows up, never
 
 **Funding (0002, 0017).** A perp charges funding on the held notional: a long pays a positive rate, a short receives. The cadence is measured in bars (`funding_rate`, `funding_interval`), anchored to the absolute bar index, and charged before the liquidation check, so a funding debit can bust the account on the same bar.
 
-**Liquidation (0003).** A perp is force-closed at the bar's adverse extreme when its margin is exhausted, the low for a long and the high for a short.
+**Liquidation (0003).** A perp is force-closed at the bar's adverse extreme when its margin is exhausted, the low for a long and the high for a short. The close is priced at that extreme after the whole bar has printed, so a gap through it books more loss than the margin behind it and leaves bad debt: a single event can cost more than the account, and a per-trade loss past -100% is arithmetic rather than an outcome.
 
-**Leverage cap (0012).** `leverage` caps a perp's notional at that multiple of equity; the shipped default is a finite 10x, and `0.0` opts out into uncapped notional. Spot ignores it.
+**Cash moves only with the position (0023).** The netted position ignores a fill that is non-finite or sized at or below its dust epsilon, and the account gates its cash move and its fee on the same test. They used to disagree: the account moved quote for a fill the position had already refused, so a sub-dust trade shifted cash with the position frozen, and a fee rate below -1 drove the spot cash clamp to a negative size that credited the account without trading. Quote cannot change unless the position changes with it. The sizing helpers follow the same rule and return zero rather than an infinity when the mark is not finite and positive.
+
+**Leverage cap (0012).** `leverage` caps a perp's notional at that multiple of equity; the shipped default is a finite 10x, and `0.0` opts out into uncapped notional. Spot ignores it. A position already over the cap because equity fell is not force-reduced, only blocked from growing.
+
+**An insolvent perp may only shrink (0026).** The margin cap used to switch itself off once equity reached zero, on the grounds that liquidation would handle it. Liquidation cannot handle it: it force-closes a position, and an account that is flat has none, so a fill opened from negative equity was admitted uncapped and then closed at the bar's adverse extreme, deepening the bad debt instead of being refused. With no equity there is no notional to back, so the allowance is zero and the only fills that pass are those that reduce.
 
 **A non-positive equity is terminal (0019).** Equity at or below zero ends the account for both markets; the RL env reads it as a termination, not a truncation.
 
-**Statistics (0007).** The stats set (return, CAGR, Sharpe, Sortino, Calmar, drawdown, volatility, and the trade metrics) with fixed conventions: sample deviation, square-root annualization, and a degenerate or busted run returns finite numbers rather than `NaN`, so a bad run cannot poison a sweep's argmax.
+**Statistics (0007).** The stats set (return, CAGR, Sharpe, Sortino, Calmar, drawdown, volatility, and the trade metrics) with fixed conventions: sample deviation for the volatility and the Sharpe denominator, the population divisor on Sortino's downside deviation as that ratio is conventionally defined, square-root annualization, and a degenerate or busted run returns finite numbers rather than `NaN`, so a bad run cannot poison a sweep's argmax. `avg_trade_pct` is measured against starting equity, so a trade taken in a drawn-down account counts for its nominal size rather than the smaller one it really had.
 
-**Trade recording (0009).** One trade row per closed portion of a position, carrying the closing-side fee only.
+**Statistics stay finite, monotone, and net (0029).** Three ways the set could still mislead, closed. A `periods_per_year` of zero made the per-period risk-free rate `0.0 / 0.0` and handed back a `NaN` Sharpe, the one thing ADR 0007 exists to prevent, so a non-positive or non-finite annualization now falls back to none at all rather than propagating. Drawdown is capped at 100%: bad debt takes equity below zero, and an uncapped drawdown gave the deeper bust the larger divisor and therefore the higher Calmar, ranking it above a shallower one. And the trade metrics are computed net of the fee each row already records, because on gross PnL a strategy whose edge is smaller than its costs reported a perfect win rate and an infinite profit factor beside a negative total return.
+
+**Trade recording (0009).** One trade row per closed portion of a position, carrying the closing-side fee only, with `pnl` gross of it. A position still open when the data ends is never closed, so it appears in `total_return_pct` and `exposure_pct`, which mark it, and in none of the trade metrics, which count only completed round trips. Buy and hold therefore reports a real return beside zero trades; read `exposure_pct > 0` with `num_trades == 0` as "still open", not as "never traded".
 
 <br>
 

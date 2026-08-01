@@ -33,7 +33,7 @@ The library is a cargo workspace: a pure-Rust core exposed to Python through one
 
 Three crates, each building only on the one beneath it:
 
-1. **`emsl-core`** (pure Rust; no Python, no candle series, no parallelism). The fidelity-neutral primitives: unit newtypes, the order and fill types, the netted position, and the account (spot and perp equity, funding, liquidation, realized and unrealized PnL), the cost model, and the fixed-slot resting order book. This is the reuse seam a future tick or L2 engine would share, so nothing here holds the candle series or any bar-level fill logic.
+1. **`emsl-core`** (pure Rust; no Python, no candle series, no parallelism). The fidelity-neutral primitives: unit newtypes, the OHLCV bar, the order and fill types, the netted position, and the account (spot and perp equity, funding, liquidation, realized and unrealized PnL), the cost model, and the fixed-slot resting order book. This is the reuse seam a future tick or L2 engine would share, so nothing here holds the candle series, the windows over it, or any bar-level fill logic.
 2. **`bar-engine`** (pure Rust; no Python). The bar-level realization: the shared candle series with zero-copy windows, the next-bar fill model, the single `step()` state machine, the optional reporter and its stats, and the Rayon batched runner. It builds only on `emsl-core`.
 3. **`emsl-py`** (the only Python-linked crate; PyO3, compiled to `emsl._emsl`). A thin shell over `bar-engine`: it parses arguments, copies candles once from numpy, hands state back as dicts, vends the zero-copy observation view, and releases the GIL around the batched step. It holds no simulation logic.
 
