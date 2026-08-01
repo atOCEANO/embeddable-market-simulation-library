@@ -8,7 +8,7 @@ logic lives here; the engine does all of it.
 
 from __future__ import annotations
 
-from ._data import index_of, to_ohlcv
+from ._data import prepare
 from ._emsl import Engine
 
 
@@ -75,8 +75,9 @@ class Backtester:
         periods_per_year=365.0,
         risk_free=0.0,
     ):
-        self._candles = to_ohlcv(candles)
-        self._index = index_of(candles)
+        # one read: a parquet path used to be decoded twice, once for the candles
+        # and once for the index
+        self._candles, self._index = prepare(candles)
         self._config = dict(
             market=market,
             quote=quote,

@@ -570,6 +570,95 @@ def test_a_fok_market_blocked_by_the_cash_clamp_fills_nothing():
     assert s["quote"] == 10_000.0
 
 
+def test_a_trade_carries_both_sides_of_its_fee():
+    # charging only the closing fill left about half the round trip attributed to
+    # nothing, so the metrics built on it stayed optimistic (ADR 0030)
+    e = emsl.Engine(series(), market="spot", quote=10_000.0, fee_taker=0.01,
+                    fee_maker=0.01, report=True)
+    e.reset()
+    e.market_buy(1.0)
+    e.step()  # buy 1 at 200, entry fee 2.0
+    e.close()
+    e.step()  # sell 1 at 300, exit fee 3.0
+    t = e.trades()[0]
+    assert abs(t["pnl"] - 100.0) < 1e-9
+    assert abs(t["fees"] - 5.0) < 1e-9
+    assert abs(t["net_pnl"] - 95.0) < 1e-9
+
+
+def test_stats_reproduce_from_the_trade_log():
+    data = np.array(
+        [[100.0 + (i % 7) - 3.0] * 4 + [10_000.0] for i in range(60)], dtype=np.float64
+    )
+
+    class PingPong:
+        def __init__(self):
+            self.hold = 0
+
+        def next(self, state, engine):
+            if state["position"] == 0.0:
+                engine.market_buy(1.0)
+                self.hold = 0
+            else:
+                self.hold += 1
+                if self.hold >= 2:
+                    engine.close()
+
+    e = emsl.Engine(data, market="spot", quote=10_000.0, fee_taker=0.001,
+                    fee_maker=0.001, report=True)
+    e.run(PingPong())
+    st, trades = e.stats(), e.trades()
+    assert len(trades) > 3
+    wins = sum(1 for t in trades if t["net_pnl"] > 0.0)
+    assert abs(st["win_rate"] - wins / len(trades)) < 1e-12
+    for t in trades:
+        assert abs(t["net_pnl"] - (t["pnl"] - t["fees"])) < 1e-12
+
+
+def test_num_fills_separates_a_dead_feed_from_a_quiet_strategy():
+    dead = np.array([[100.0, 100.0, 100.0, 100.0, 0.0]] * 6, dtype=np.float64)
+    e = emsl.Engine(dead, market="spot", report=True)
+    e.reset()
+    while not e.done():
+        e.market_buy(1.0)
+        e.step()
+    assert e.num_fills() == 0
+    assert e.stats()["num_fills"] == 0
+
+    live = engine(report=True)
+    live.reset()
+    live.market_buy(1.0)
+    live.step()
+    assert live.num_fills() == 1
+
+
+def test_replace_moves_one_order_and_will_not_arm_a_second():
+    # the trailing-stop trap: stop() per bar rests a new order every time, and the
+    # one that fills leaves its siblings live (ADR 0032)
+    e = emsl.Engine(series(), market="perp", quote=10_000.0, fee_taker=0.0)
+    e.reset()
+    first = e.stop("sell", 1.0, 50.0, reduce_only=True)
+    second = e.replace(first, trigger=60.0)
+    s = e.step()
+    assert len(s["open_orders"]) == 1
+    assert s["open_orders"][0]["id"] == second
+    assert s["open_orders"][0]["trigger"] == 60.0
+    assert s["open_orders"][0]["reduce_only"] is True
+    assert e.cancel(second)
+    assert e.replace(second, trigger=70.0) is None  # gone, so nothing is placed
+    assert e.step()["open_orders"] == []
+
+
+def test_is_bust_reports_a_dead_account():
+    e = emsl.Engine(series(), market="spot", quote=10_000.0)
+    e.reset()
+    assert e.is_bust() is False
+    dead = emsl.Engine(series(), market="spot", quote=0.0)
+    dead.reset()
+    dead.step()
+    assert dead.is_bust() is True
+
+
 def test_trade_metrics_are_net_of_fees():
     # a creeping series whose per-trade gross edge is smaller than the round trip
     # cost: gross it wins every trade, net it loses money (ADR 0029)

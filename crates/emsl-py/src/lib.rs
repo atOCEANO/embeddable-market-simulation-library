@@ -20,7 +20,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
 use bar_engine::{Candles, Engine as BarEngine, EngineConfig, EnvBatch, Stats, Trade};
-use emsl_core::{Candle, Market, Order, OrderId, OrderStatus, OrderType, Side, State, TimeInForce};
+use emsl_core::{Candle, Market, Order, OrderId, OrderType, Side, State, TimeInForce};
 
 /// Parse a market string into the core enum.
 fn parse_market(market: &str) -> PyResult<Market> {
@@ -80,14 +80,6 @@ fn kind_str(kind: OrderType) -> &'static str {
         OrderType::Market => "market",
         OrderType::Limit => "limit",
         OrderType::Stop => "stop",
-    }
-}
-
-fn status_str(status: OrderStatus) -> &'static str {
-    match status {
-        OrderStatus::Resting => "resting",
-        OrderStatus::Filled => "filled",
-        OrderStatus::Canceled => "canceled",
     }
 }
 
@@ -264,7 +256,9 @@ fn order_to_dict<'py>(py: Python<'py>, order: &Order) -> PyResult<Bound<'py, PyD
     d.set_item("size", order.size.get())?;
     d.set_item("filled", order.filled.get())?;
     d.set_item("remaining", order.remaining().get())?;
-    d.set_item("status", status_str(order.status))?;
+    // only resting orders are ever handed out, so this is a constant; the key stays
+    // because the API documents it (ADR 0033)
+    d.set_item("status", "resting")?;
     d.set_item("reduce_only", order.reduce_only)?;
     d.set_item("post_only", order.post_only)?;
     Ok(d)
@@ -317,6 +311,7 @@ fn stats_to_dict<'py>(py: Python<'py>, stats: &Stats) -> PyResult<Bound<'py, PyD
     d.set_item("profit_factor", stats.profit_factor)?;
     d.set_item("num_trades", stats.num_trades)?;
     d.set_item("avg_trade_pct", stats.avg_trade_pct)?;
+    d.set_item("num_fills", stats.num_fills)?;
     Ok(d)
 }
 
@@ -330,6 +325,7 @@ fn trade_to_dict<'py>(py: Python<'py>, trade: &Trade) -> PyResult<Bound<'py, PyD
     d.set_item("exit_price", trade.exit_price)?;
     d.set_item("fees", trade.fees)?;
     d.set_item("pnl", trade.pnl)?;
+    d.set_item("net_pnl", trade.net_pnl)?;
     d.set_item("bars_held", trade.bars_held)?;
     Ok(d)
 }
@@ -533,10 +529,51 @@ impl Engine {
         self.inner.cancel(OrderId(order_id))
     }
 
+    /// Move a resting order: cancel `order_id` and rest a replacement with the same
+    /// side, type and flags, overriding whichever of `size`, `price` and `trigger`
+    /// are given. Returns the new order id.
+    ///
+    /// None when `order_id` is no longer resting, and nothing is placed in that
+    /// case. Use it for a trailing stop: re-placing with `stop()` each bar rests a
+    /// new order every time, and the one that fills leaves its siblings live to open
+    /// a position on the other side (ADR 0032).
+    #[pyo3(signature = (order_id, size = None, price = None, trigger = None))]
+    fn replace(
+        &mut self,
+        order_id: u64,
+        size: Option<f64>,
+        price: Option<f64>,
+        trigger: Option<f64>,
+    ) -> PyResult<Option<u64>> {
+        if let Some(p) = price {
+            finite("price", p)?;
+        }
+        if let Some(t) = trigger {
+            finite("trigger", t)?;
+        }
+        Ok(self
+            .inner
+            .replace(OrderId(order_id), size, price, trigger)
+            .map(|id| id.0))
+    }
+
     /// Cancel every resting order, returning how many were dropped. Pending market
     /// orders are not resting and still fill on the next step.
     fn cancel_all(&mut self) -> usize {
         self.inner.cancel_all()
+    }
+
+    /// True when the account died since the last reset: a perp liquidation, or
+    /// equity reaching zero on either market (ADR 0019). The engine does not stop on
+    /// it, so a backtest that wants to halt has to read it.
+    fn is_bust(&self) -> bool {
+        self.inner.is_bust()
+    }
+
+    /// Fills applied since the last reset. Zero beside orders you placed means none
+    /// of them ever filled, which a series with no volume does silently (ADR 0031).
+    fn num_fills(&self) -> usize {
+        self.inner.num_fills()
     }
 
     /// The one order primitive the shortcuts wrap. `side` is "buy" or "sell",

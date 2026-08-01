@@ -17,6 +17,11 @@ declares its tunables as constructor arguments and stores them as fields.
   ``direction="maximize"``. A trial whose strategy or objective raises, or whose
   objective is ``NaN``, is marked failed and the search continues; an infinite value
   (``profit_factor`` with no losing trades, say) is kept and ranks at the extreme.
+- **Minimum activity**: ``min_trades`` fails any trial that closed fewer trades than
+  that. A search ranking on a point estimate walks to the thinnest cell it can find,
+  where a handful of samples produces the widest interval and the best-looking
+  number, so a floor is the cheapest defence against a winner that is really noise
+  (ADR 0034).
 - **Parallelism**: ``n_jobs=1`` runs in this process; ``n_jobs>1`` (or ``-1`` for
   every core) runs trials in worker processes, rebuilding the engine in each worker
   rather than shipping a live one across the boundary (ADR 0021).
@@ -94,6 +99,7 @@ _STAT_KEYS = frozenset(
         "profit_factor",
         "num_trades",
         "avg_trade_pct",
+        "num_fills",
     }
 )
 
@@ -192,7 +198,9 @@ class _CloudPickled:
 _WORKER = {}
 
 
-def _worker_init(candles, config, periods_per_year, risk_free, strategy_wrapped, objective_wrapped):
+def _worker_init(
+    candles, config, periods_per_year, risk_free, strategy_wrapped, objective_wrapped, min_trades
+):
     # runs once when a worker process starts: rebuild the Backtester from the candles
     # and config, and unwrap the cloudpickled strategy and objective
     _WORKER["backtester"] = Backtester(
@@ -200,19 +208,32 @@ def _worker_init(candles, config, periods_per_year, risk_free, strategy_wrapped,
     )
     _WORKER["strategy"] = strategy_wrapped.obj
     _WORKER["objective"] = objective_wrapped.obj
+    _WORKER["min_trades"] = min_trades
 
 
 def _worker_eval(params):
     return _evaluate(
-        _WORKER["backtester"], _WORKER["strategy"], _WORKER["objective"], params
+        _WORKER["backtester"],
+        _WORKER["strategy"],
+        _WORKER["objective"],
+        params,
+        _WORKER["min_trades"],
     )
 
 
-def _evaluate(backtester, strategy, objective, params):
+def _evaluate(backtester, strategy, objective, params, min_trades=0):
     # one trial: build a fresh strategy from the sampled params, backtest it, and
     # score it. A NaN score is an undefined result the caller fails the trial on; an
     # infinite score (profit_factor with no losses, say) is kept so it can rank
     result = backtester.run(strategy(**params))
+    # a configuration that barely traded is scored on a handful of samples, and the
+    # best point estimate in a search walks straight to the thinnest cell. Failing it
+    # is the same treatment a NaN objective gets (ADR 0034)
+    if min_trades > 0 and result.stats["num_trades"] < min_trades:
+        raise ValueError(
+            f"only {result.stats['num_trades']} trades, below min_trades={min_trades}, "
+            f"for params {params}"
+        )
     value = float(objective(result))
     if math.isnan(value):
         raise ValueError(f"objective returned NaN for params {params}")
@@ -297,14 +318,18 @@ def _validate_param_names(strategy, space):
         )
 
 
-def _drive_sequential(study, distributions, n_trials, strategy, objective, backtester):
+def _drive_sequential(
+    study, distributions, n_trials, strategy, objective, backtester, min_trades
+):
     import optuna
 
     last_error = None
     for _ in range(n_trials):
         trial = study.ask(distributions)
         try:
-            value, stats = _evaluate(backtester, strategy, objective, trial.params)
+            value, stats = _evaluate(
+                backtester, strategy, objective, trial.params, min_trades
+            )
         except Exception as exc:
             last_error = exc
             study.tell(trial, state=optuna.trial.TrialState.FAIL)
@@ -316,7 +341,7 @@ def _drive_sequential(study, distributions, n_trials, strategy, objective, backt
 
 def _drive_parallel(
     study, distributions, n_trials, n_jobs, candles, config,
-    periods_per_year, risk_free, strategy, objective,
+    periods_per_year, risk_free, strategy, objective, min_trades,
 ):
     import optuna
 
@@ -327,6 +352,7 @@ def _drive_parallel(
         risk_free,
         _CloudPickled(strategy),
         _CloudPickled(objective),
+        min_trades,
     )
     inflight = {}
     submitted = 0
@@ -415,6 +441,7 @@ def tune(
     n_jobs=1,
     seed=None,
     verbose=False,
+    min_trades=0,
     market="spot",
     quote=10_000.0,
     fee_taker=0.0006,
@@ -451,7 +478,10 @@ def tune(
         raise ValueError(f"n_trials must be a positive integer, got {n_trials}")
     if market not in ("spot", "perp"):
         raise ValueError(f"market must be 'spot' or 'perp', got {market!r}")
+    if int(min_trades) < 0:
+        raise ValueError(f"min_trades must be zero or a positive integer, got {min_trades}")
     n_trials = int(n_trials)
+    min_trades = int(min_trades)
     n_jobs = _resolve_n_jobs(n_jobs)
     _validate_param_names(strategy, space)
 
@@ -481,7 +511,7 @@ def tune(
             candles, periods_per_year=periods_per_year, risk_free=risk_free, **config
         )
         last_error = _drive_sequential(
-            study, distributions, n_trials, strategy, objective_fn, backtester
+            study, distributions, n_trials, strategy, objective_fn, backtester, min_trades
         )
     else:
         if n_jobs > n_trials:
@@ -489,7 +519,7 @@ def tune(
         _require_cloudpickle()
         last_error = _drive_parallel(
             study, distributions, n_trials, n_jobs, candles, config,
-            periods_per_year, risk_free, strategy, objective_fn,
+            periods_per_year, risk_free, strategy, objective_fn, min_trades,
         )
 
     if not any(t.state.name == "COMPLETE" for t in study.trials):

@@ -64,19 +64,41 @@ def index_of(data):
     return frame.index.to_numpy()
 
 
+def prepare(data):
+    """Return `(ohlcv_array, index_or_None)` from one read of `data`.
+
+    `to_ohlcv` and `index_of` each route a parquet path through `_as_frame`, so
+    calling both decoded the file twice, doubling the load time and peak memory of
+    the most convenient entry point and leaving room for the two reads to disagree
+    if the file changed between them.
+    """
+    if isinstance(data, np.ndarray):
+        return to_ohlcv(data), None
+    frame = _as_frame(data)
+    return to_ohlcv(frame), index_of(frame)
+
+
 def _as_frame(data):
+    # the type check comes before the import: on a pandas-free install an
+    # unsupported argument used to report "pandas is required", sending the caller
+    # after a dependency that would not have helped
+    if isinstance(data, str) or hasattr(data, "__fspath__"):
+        return _pandas().read_parquet(data)
+    if type(data).__module__.split(".")[0] == "pandas":
+        frame = _pandas().DataFrame
+        if isinstance(data, frame):
+            return data
+    raise TypeError(
+        f"unsupported data type {type(data).__name__}; "
+        "pass a numpy array, a pandas DataFrame, or a parquet path"
+    )
+
+
+def _pandas():
     try:
         import pandas as pd
     except ImportError as exc:
         raise ImportError(
             "pandas is required for DataFrame or parquet input; pip install pandas pyarrow"
         ) from exc
-
-    if isinstance(data, pd.DataFrame):
-        return data
-    if isinstance(data, str) or hasattr(data, "__fspath__"):
-        return pd.read_parquet(data)
-    raise TypeError(
-        f"unsupported data type {type(data).__name__}; "
-        "pass a numpy array, a pandas DataFrame, or a parquet path"
-    )
+    return pd
