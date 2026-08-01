@@ -126,21 +126,26 @@ eng = Engine(
 | `close()` | id or `None` | Queue a reduce-only market order sized to the whole position. `None` when flat. |
 | `cancel(order_id)` | bool | Drop a resting order. True if it was found. |
 | `cancel_all()` | int | Drop every resting order; returns how many were dropped. |
+| `replace(order_id, size=, price=, trigger=)` | id or `None` | Move a resting order: cancel it and rest a replacement with the same side, type and flags. `None`, and nothing placed, if it is no longer resting. |
+| `is_bust()` | bool | True when the account died: a perp liquidation, or equity reaching zero ([ADR 0019](Decisions.md)). The engine does not stop on it. |
+| `num_fills()` | int | Fills applied since the reset. Zero beside orders you placed means none of them filled. |
 | `qty_from_weight(fraction)` | float | Base size for `fraction` of current equity, at the current close. |
 | `qty_from_quote(cash)` | float | Base size for a `cash` amount in quote, at the current close. |
 
 `order(...)` is the full primitive: `type` is `"market"`, `"limit"`, or `"stop"`, `tif` is `"GTC"`, `"IOC"`, or `"FOK"`, and it carries the three flags the shortcuts leave at their defaults. `reduce_only` marks a take-profit or stop-loss that can only shrink the position; `post_only` rejects a limit that would cross rather than turning it taker; `tif` decides what happens to the part of an order the next bar does not fill: `GTC` rests, `IOC` takes one bar then cancels the remainder, `FOK` fills the whole size against the bar or nothing. A market order is `IOC` unless you ask for `FOK`, since it never rests and so cannot tell `GTC` from `IOC`; a stop rests until it triggers ([ADR 0016](Decisions.md)). `FOK` is all or nothing against every clamp, not only the bar's liquidity, so a `FOK` the spot cash balance or the margin cap could only fill in part books nothing ([ADR 0025](Decisions.md)). A limit needs a `price` and a stop a `trigger`, else it is a `ValueError`, and a non-finite price or trigger is a `ValueError` too ([ADR 0027](Decisions.md)).
 
-Three things about resting orders that are easy to get wrong. Nothing links them: there is no OCO and no replace, so **re-placing a trailing stop each bar rests a new order every time**, and once the book is full every further placement is rejected and the trail keeps only its oldest triggers. Cancel before re-placing, and pass `reduce_only=True`, or a stop that outlives the one that closed your position opens a fresh position on the other side ([ADR 0028](Decisions.md)). And `close()` queues an ordinary market order, so it is `IOC`: on a thin bar the volume cap can fill only part of it and the remainder is cancelled rather than carried, which leaves a residual position. Check `state["position"]` rather than assuming.
+Three things about resting orders that are easy to get wrong. Nothing links them into an OCO group, so **re-placing a trailing stop with `stop()` each bar rests a new order every time**; the one that fills leaves its siblings live, and on a perp those open a position on the other side. Use `replace`, which cannot leave two alive and quietly does nothing once the order has filled ([ADR 0032](Decisions.md)). Pass `reduce_only=True` as well, so even a leaked stop can only shrink the position ([ADR 0028](Decisions.md)). And `close()` queues an ordinary market order, so it is `IOC`: on a thin bar the volume cap can fill only part of it and the remainder is cancelled rather than carried, which leaves a residual position. Check `state["position"]` rather than assuming.
 
 ```python
 #  a trailing stop that stays one order and can only ever shrink the position
 if state["position"] > 0.0:
     wanted = state["bar_close"] * 0.94
-    if self.trigger is None or wanted > self.trigger:
-        engine.cancel_all()
-        engine.stop("sell", state["position"], wanted, reduce_only=True)
-        self.trigger = wanted
+    if self.stop_id is None:
+        self.stop_id = engine.stop("sell", state["position"], wanted, reduce_only=True)
+    elif wanted > self.trigger:
+        #  None here means the stop already filled, so nothing is armed again
+        self.stop_id = engine.replace(self.stop_id, trigger=wanted)
+    self.trigger = wanted
 ```
 
 You decide on a bar and the order fills on the next one; there is no same-bar lookahead.
@@ -334,8 +339,15 @@ The stop rests only once a position is held (orders fill on the next bar, so the
 | `profit_factor` | ratio | Net profit over net loss, both after fees (`inf` with no losses). |
 | `num_trades` | count | Closed round trips. A position still open at the end is in the return and the exposure but in none of these four. |
 | `avg_trade_pct` | percent | Mean net trade PnL as a percent of **starting** equity, not of the equity the trade opened with. |
+| `num_fills` | count | Fills applied over the run. Zero beside orders you placed means the feed never filled them. |
 
-The four trade metrics count completed round trips only, so `exposure_pct > 0` beside `num_trades == 0` means "still holding", not "never traded"; buy and hold reports a real return with zero trades ([ADR 0009](Decisions.md)). They are net of the fee each trade records, because on gross PnL a strategy whose edge is smaller than its costs reports a perfect win rate and an infinite profit factor beside a negative return ([ADR 0029](Decisions.md)). `periods_per_year` must be finite and positive.
+The four trade metrics count completed round trips only, so `exposure_pct > 0` beside `num_trades == 0` means "still holding", not "never traded"; buy and hold reports a real return with zero trades ([ADR 0009](Decisions.md)). They read each trade's `net_pnl`, its whole round trip after fees, because on gross PnL a strategy whose edge is smaller than its costs reports a perfect win rate and an infinite profit factor beside a negative return ([ADRs 0029, 0030](Decisions.md)). So they reproduce from the log:
+
+```python
+win_rate = sum(t["net_pnl"] > 0 for t in result.trades) / len(result.trades)
+```
+
+`num_fills` is the canary for a dead feed: a series with no volume fills nothing, silently and correctly, and without it that run is indistinguishable from a strategy that never triggered ([ADR 0031](Decisions.md)). `periods_per_year` must be finite and positive.
 
 The conventions (risk-free rate, sample deviation, annualization) are fixed in [ADR 0007](Decisions.md).
 
@@ -349,8 +361,9 @@ Each entry in `trades()` is one closed portion of a position:
 | `side` | Side of the position that closed (`buy` for a long, `sell` for a short). |
 | `size` | Base size closed. |
 | `entry_price`, `exit_price` | Average entry before the fill, and the fill price. |
-| `fees` | Closing-fill fee on the closed size (exit-side only; see [ADR 0009](Decisions.md)). |
-| `pnl` | Gross realized price PnL, before fees. The stats above net it of `fees`; this row stays gross ([ADR 0009](Decisions.md)). |
+| `fees` | The whole round-trip fee on the closed size: its share of the position's entry fee plus the closing fill's fee ([ADR 0030](Decisions.md)). |
+| `pnl` | Gross realized price PnL, before fees. |
+| `net_pnl` | `pnl - fees`: what the trade actually added to the account. The trade statistics are built from this, so they reproduce from the log ([ADR 0030](Decisions.md)). |
 | `bars_held` | Bars held, from the position's first entry. |
 
 When the `Backtester` is given a pandas DataFrame or parquet input with a datetime index, each trade also carries `entry_time` and `exit_time`, the index values at those ticks. A raw numpy input has no index, so its trades stay tick-only.
