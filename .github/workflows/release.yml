@@ -137,7 +137,7 @@ jobs:
 
             ## Verified
 
-            - Rust: 164 tests (61 `emsl-core`, 103 `bar-engine`), rustfmt and clippy
+            - Rust: 186 tests (64 `emsl-core`, 122 `bar-engine`), rustfmt and clippy
               clean.
             - Python: the one abi3 wheel imported and tested on 3.9, 3.11, and 3.12.
             - Integration: Stable-Baselines3 PPO, A2C, DQN, and SAC, plus VecMonitor,
@@ -145,6 +145,11 @@ jobs:
 
             ## A note on the version
 
-            This is `0.1.0`: the public API is not frozen. Input validation is due to
-            tighten, a recorded decision, which may change what the boundary accepts.
+            The public API is not frozen before 1.0. `0.2.0` is the release that
+            tightened input validation, so the boundary now rejects arguments it used
+            to accept: non-finite configuration scalars, a negative slippage or
+            impact, a fee rate at or below -1, a `max_open_orders` outside 1 to 4096,
+            a zero observation window, a non-finite limit price or stop trigger, and a
+            non-positive `periods_per_year`. It also nets the trade statistics of
+            fees, caps drawdown at 100%, and gives `stop()` a `reduce_only` flag.
             Requires Python 3.9 or newer.
