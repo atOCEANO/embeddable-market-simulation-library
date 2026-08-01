@@ -43,8 +43,24 @@ jobs:
         with:
           python-version: "3.11" # pyo3 needs a >=3.9 interpreter to build
       - uses: dtolnay/rust-toolchain@1.88.0
+      # The first attempt never fails the job, so the retry below always gets to
+      # run; the retry is the one that decides.
       - name: build abi3 wheel
-        # the cross-compiled leg is best effort: it must not sink the release
+        id: build
+        continue-on-error: true
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          args: --release --locked --out dist
+          manylinux: auto
+      # The manylinux legs build inside a container that fetches its toolchain over
+      # the network, and a failed fetch exits 35, curl's SSL error, with nothing
+      # built. Since `release` needs every wheel, one flake blocked an entire
+      # release while the other four artifacts sat there fine. Try once more before
+      # giving up; a real compile error fails both attempts just as fast. The
+      # cross-compiled leg stays best effort and cannot sink the release either way.
+      - name: retry the wheel once
+        if: steps.build.outcome == 'failure'
         continue-on-error: ${{ matrix.best_effort || false }}
         uses: PyO3/maturin-action@v1
         with:
@@ -145,11 +161,19 @@ jobs:
 
             ## A note on the version
 
-            The public API is not frozen before 1.0. `0.2.0` is the release that
-            tightened input validation, so the boundary now rejects arguments it used
-            to accept: non-finite configuration scalars, a negative slippage or
-            impact, a fee rate at or below -1, a `max_open_orders` outside 1 to 4096,
-            a zero observation window, a non-finite limit price or stop trigger, and a
-            non-positive `periods_per_year`. It also nets the trade statistics of
-            fees, caps drawdown at 100%, and gives `stop()` a `reduce_only` flag.
-            Requires Python 3.9 or newer.
+            The public API is not frozen before 1.0. `0.2.0` tightened input
+            validation, so the boundary rejects arguments 0.1.0 accepted: non-finite
+            configuration scalars, a negative slippage or impact, a fee rate at or
+            below -1, a `max_open_orders` outside 1 to 4096, a zero observation
+            window, a non-finite limit price or stop trigger, and a non-positive
+            `periods_per_year`.
+
+            `0.3.0` finishes the accounting it started. A trade row now carries its
+            whole round-trip fee rather than the closing side alone, and a `net_pnl`
+            field, so `win_rate`, `profit_factor` and `avg_trade_pct` are net of the
+            real cost and reproduce from the trade log; on a run that ends flat the
+            net PnL of the logged trades equals the change in equity. New:
+            `Engine.replace` for moving a resting order without ever arming a second,
+            `is_bust()` and `num_fills()`, and a `min_trades` floor for `tune`.
+            Removed: the `OrderStatus` enum, whose `Filled` and `Canceled` variants
+            were unconstructible. Requires Python 3.9 or newer.
