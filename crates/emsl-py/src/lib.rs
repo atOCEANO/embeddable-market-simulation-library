@@ -327,6 +327,7 @@ fn trade_to_dict<'py>(py: Python<'py>, trade: &Trade) -> PyResult<Bound<'py, PyD
     d.set_item("pnl", trade.pnl)?;
     d.set_item("net_pnl", trade.net_pnl)?;
     d.set_item("bars_held", trade.bars_held)?;
+    d.set_item("liquidated", trade.liquidated)?;
     Ok(d)
 }
 

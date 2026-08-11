@@ -229,6 +229,7 @@ mod tests {
             pnl,
             net_pnl: pnl,
             bars_held: 1,
+            liquidated: false,
         }
     }
 

@@ -480,8 +480,17 @@ impl Engine {
             } else {
                 bar.high
             };
-            if self.account.liquidate_if_bust(Price(adverse)) {
-                self.bust = true;
+            if !self.account.position.is_flat() {
+                let before = self.before_fill();
+                let closing = self.account.position.qty.get().abs();
+                if self.account.liquidate_if_bust(Price(adverse)) {
+                    // The forced close still pays no fee and no slippage, which is
+                    // what makes the cash left behind exactly the equity that
+                    // triggered it; that model is unchanged here (ADR 0003). What
+                    // changed is that it is booked at all
+                    self.book_fill(closing, adverse, 0.0, before, true);
+                    self.bust = true;
+                }
             }
         }
 
@@ -627,6 +636,15 @@ impl Engine {
         fill
     }
 
+    /// The position fields a fill has to be compared against once it has landed.
+    fn before_fill(&self) -> (f64, f64, f64) {
+        (
+            self.account.position.qty.get(),
+            self.account.position.avg_entry.get(),
+            self.account.realized(),
+        )
+    }
+
     fn apply_fill_clamped(&mut self, reduce_only: bool, fill: Fill) -> f64 {
         let fill = self.clamp_fill(reduce_only, &fill);
         if fill.size.get() <= 0.0 {
@@ -634,16 +652,31 @@ impl Engine {
         }
         let applied = fill.size.get();
         let fee = self.cost.fee(&fill);
-        self.fills += 1;
-
-        // Snapshot the position before the fill so any portion it closes can be
-        // booked as a trade.
-        let pos_before = self.account.position.qty.get();
-        let entry_before = self.account.position.avg_entry.get();
-        let realized_before = self.account.realized();
-
+        let before = self.before_fill();
         self.account.apply_fill(&fill, fee);
+        self.book_fill(applied, fill.price.get(), fee, before, false);
+        applied
+    }
 
+    /// Book what a fill just did to the account: count it, log whatever it closed
+    /// as a trade, carry the entry-side fee of whatever is left, and stamp a new
+    /// position's open tick.
+    ///
+    /// The single place this happens, which is the point. A liquidation used to
+    /// close the position on the account directly and reach none of it, so the
+    /// forced close appeared in no trade row, counted toward no fill, and left the
+    /// dead position's entry fee standing to be charged against the NEXT trade
+    /// (ADRs 0030, 0031).
+    fn book_fill(
+        &mut self,
+        applied: f64,
+        exit_price: f64,
+        fee: f64,
+        before: (f64, f64, f64),
+        liquidated: bool,
+    ) {
+        let (pos_before, entry_before, realized_before) = before;
+        self.fills += 1;
         let pos_after = self.account.position.qty.get();
 
         // The base amount the fill moved the position toward zero: a reduce keeps
@@ -690,11 +723,12 @@ impl Engine {
                 },
                 size: closed,
                 entry_price: entry_before,
-                exit_price: fill.price.get(),
+                exit_price,
                 fees,
                 pnl,
                 net_pnl: pnl - fees,
                 bars_held: self.tick.saturating_sub(self.position_entry_tick),
+                liquidated,
             };
             if let Some(reporter) = self.reporter.as_mut() {
                 reporter.record_trade(trade);
@@ -718,8 +752,6 @@ impl Engine {
         if opened_new_side {
             self.position_entry_tick = self.tick;
         }
-
-        applied
     }
 
     /// Resolve the resting book against `bar`, in slot order.
@@ -2119,6 +2151,37 @@ mod tests {
         let s = e.step(); // reaches 50, fills 100 (10% of 1000), cancels the other 400
         assert_eq!(s.position, 100.0);
         assert!(s.open_orders.is_empty()); // IOC: nothing rests
+    }
+
+    #[test]
+    fn a_liquidation_is_booked_like_any_other_close() {
+        // the forced close ran on the account directly and reached none of the
+        // engine's bookkeeping: it appeared in no trade row, counted toward no
+        // fill, and left the dead position's entry fee standing to be charged
+        // against the NEXT position (ADRs 0030, 0031)
+        let config = EngineConfig {
+            market: Market::Perp,
+            quote: 100.0,
+            fee_taker: 0.001,
+            max_leverage: 10.0,
+            report: true,
+            ..cfg()
+        };
+        let mut e = Engine::new(crash_series(), config);
+        e.reset();
+        e.market_buy(10.0); // 1000 of notional on 100 of quote, exactly at the cap
+        let s = e.step(); // fills at the open of 100, then the low of 80 busts it
+        assert!(e.is_bust());
+        assert_eq!(s.position, 0.0);
+        assert_eq!(e.num_fills(), 2); // the buy, and the forced close
+        let trades = e.reporter().expect("reporting is on").trades();
+        assert_eq!(trades.len(), 1);
+        assert!(trades[0].liquidated);
+        assert_eq!(trades[0].exit_price, 80.0);
+        // the entry fee, and nothing on the exit: the forced close is still free
+        assert!((trades[0].fees - 1.0).abs() < CLOSE_EPS);
+        assert!((trades[0].net_pnl + 201.0).abs() < CLOSE_EPS);
+        assert_eq!(e.open_fee, 0.0); // nothing left over to charge the next position
     }
 
     #[test]

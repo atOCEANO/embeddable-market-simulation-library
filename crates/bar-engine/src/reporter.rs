@@ -30,6 +30,11 @@ pub struct Trade {
     /// statistics are built from this, so they can be reproduced from the log.
     pub net_pnl: f64,
     pub bars_held: usize,
+    /// True when the position was force-closed by a liquidation rather than by an
+    /// order. A forced close used to be booked nowhere at all, so a death and an
+    /// ordinary exit were not merely alike in the log, one of them was absent
+    /// (ADR 0003).
+    pub liquidated: bool,
 }
 
 /// Side buffers for the equity curve and the trade log. Never part of the
@@ -121,6 +126,7 @@ mod tests {
             pnl: 20.0,
             net_pnl: 19.9,
             bars_held: 4,
+            liquidated: false,
         }
     }
 
