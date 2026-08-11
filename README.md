@@ -300,7 +300,7 @@ Anything not in that table, Windows on ARM for instance, builds from source in t
 **The version below is the one to change.** It appears once here on purpose, because a hardcoded tag in a README goes stale the day after a release; take the current one from the badge at the top of this page or from the releases page.
 
 ```bash
-pip install --find-links https://github.com/atOCEANO/embeddable-market-simulation-library/releases/expanded_assets/v0.3.1 emsl
+pip install --find-links https://github.com/atOCEANO/embeddable-market-simulation-library/releases/expanded_assets/v0.4.0 emsl
 ```
 
 The optional extras use the same `--find-links` URL and stack:
@@ -321,7 +321,7 @@ Building from source needs the Rust toolchain ([rustup](https://rustup.rs)), and
 
 ```bash
 pip install "git+https://github.com/atOCEANO/embeddable-market-simulation-library.git"          # main
-pip install "git+https://github.com/atOCEANO/embeddable-market-simulation-library.git@v0.3.1"   # or a tag
+pip install "git+https://github.com/atOCEANO/embeddable-market-simulation-library.git@v0.4.0"   # or a tag
 ```
 
 From a local checkout, either as a plain install or as a development build:
