@@ -49,6 +49,7 @@
   "stats.cagr_pct",
   "stats.calmar",
   "stats.exposure_pct",
+  "stats.funding_paid",
   "stats.max_drawdown_pct",
   "stats.net_profit_pct",
   "stats.num_fills",

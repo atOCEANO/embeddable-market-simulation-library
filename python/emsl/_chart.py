@@ -1220,7 +1220,9 @@ def chart(
         raise ValueError(f"theme must be 'dark' or 'light', got {mode!r}")
 
     spec = {
-        "schema": 1,
+        # 2 adds stats.funding_paid, which arrives because the spec mirrors the
+        # whole stats dict and the engine now reports the funding a perp run paid
+        "schema": 2,
         "n": num_bars,
         # both built by numpy rather than by a comprehension. The candles are the
         # largest thing in the document by far, and rounding each of the four
