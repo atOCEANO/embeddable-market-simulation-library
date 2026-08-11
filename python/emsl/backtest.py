@@ -8,8 +8,40 @@ logic lives here; the engine does all of it.
 
 from __future__ import annotations
 
+import hashlib
+
 from ._data import annualization, prepare
 from ._emsl import Engine
+
+
+def _version():
+    try:
+        from importlib.metadata import version
+
+        return version("emsl")
+    except Exception:
+        return "0.0.0"
+
+
+def _name(strategy):
+    # the class name plus whatever the strategy chose to say about itself. A
+    # __repr__ is worth defining on a tunable strategy for exactly this reason:
+    # two rows reading "SmaCross" and "SmaCross" tell you nothing
+    kind = type(strategy).__name__
+    try:
+        shown = repr(strategy)
+    except Exception:
+        return kind
+    return kind if shown.startswith("<") else f"{kind} {shown}"
+
+
+def _fingerprint(candles):
+    # eight hex characters over the candle bytes and their shape. Enough to answer
+    # the only question asked of it, whether two runs saw the same bars, and short
+    # enough to sit in a printed row beside a hundred others
+    digest = hashlib.blake2b(candles.tobytes(), digest_size=4)
+    digest.update(repr(candles.shape).encode("ascii"))
+    return digest.hexdigest()
 
 
 class Strategy:
@@ -57,16 +89,46 @@ class BacktestResult:
     for the same reason: anything reading the curve again, ``emsl.metrics`` most
     of all, has to reach the same numbers this result already reports, and
     inferring it twice is how two readings come to disagree (ADR 0048).
+
+    ``config``, ``data_hash``, ``strategy`` and ``version`` are what make a run
+    identifiable a week later. A notebook accumulates two hundred of these, and
+    without them "was Tuesday's 2.1 sharpe on the same fees as today's 1.9" has no
+    answer at all (ADR 0051). ``to_dict`` returns the lot as plain data.
     """
 
     def __init__(self, stats, equity_curve, trades, initial=None,
-                 periods_per_year=None, risk_free=0.0):
+                 periods_per_year=None, risk_free=0.0, config=None,
+                 data_hash=None, strategy=None):
         self.stats = stats
         self.equity_curve = equity_curve
         self.trades = trades
         self.initial = initial
         self.periods_per_year = periods_per_year
         self.risk_free = risk_free
+        self.config = dict(config) if config else {}
+        self.data_hash = data_hash
+        self.strategy = strategy
+        self.version = _version()
+
+    def to_dict(self):
+        """The run's identity and its headline, as plain JSON-safe data.
+
+        Not the equity curve and not the trade log: this is what you keep beside a
+        hundred other runs to tell them apart, and both of those are large and
+        neither distinguishes anything. ``data_hash`` does, in eight characters.
+        """
+        out = {
+            "strategy": self.strategy,
+            "data_hash": self.data_hash,
+            "version": self.version,
+            "initial": self.initial,
+            "periods_per_year": self.periods_per_year,
+            "risk_free": self.risk_free,
+            "bars": len(self.equity_curve) + 1 if self.equity_curve is not None else 0,
+        }
+        out.update({f"config_{k}": v for k, v in self.config.items()})
+        out.update(self.stats or {})
+        return out
 
     def __repr__(self):
         stats = self.stats or {}
@@ -124,6 +186,9 @@ class Backtester:
         )
         self._periods_per_year = annualization(periods_per_year, self._index)
         self._risk_free = risk_free
+        # fingerprinted once here rather than per run, so a sweep pays for it a
+        # single time no matter how many trials it drives through this backtester
+        self._data_hash = _fingerprint(self._candles)
 
     def run(self, strategy):
         engine = Engine(self._candles, report=True, **self._config)
@@ -137,6 +202,9 @@ class Backtester:
             initial=self._config["quote"],
             periods_per_year=self._periods_per_year,
             risk_free=self._risk_free,
+            config=self._config,
+            data_hash=self._data_hash,
+            strategy=_name(strategy),
         )
 
     def _stamp_times(self, trades):

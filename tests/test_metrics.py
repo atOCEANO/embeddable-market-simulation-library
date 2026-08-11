@@ -399,3 +399,65 @@ def test_an_unknown_bucket_is_refused():
     with pytest.raises(ValueError) as excinfo:
         metrics.session_buckets(result, series(), by="minute")
     assert "'hour' or 'weekday'" in str(excinfo.value)
+
+
+# ------------------------------------------------------------ identity
+
+
+def test_a_result_knows_what_data_and_what_costs_produced_it():
+    data = series()
+    result = Backtester(data, market="perp", fee_taker=0.001,
+                        periods_per_year=365.0).run(Alternate())
+    assert result.config["market"] == "perp"
+    assert result.config["fee_taker"] == 0.001
+    assert result.strategy.startswith("Alternate")
+    assert len(result.data_hash) == 8
+    assert result.version == emsl.__version__
+
+
+def test_the_same_bars_fingerprint_the_same_and_different_bars_do_not():
+    same = Backtester(series(), periods_per_year=365.0).run(Alternate())
+    again = Backtester(series(), periods_per_year=365.0).run(Alternate())
+    other = Backtester(series(seed=9), periods_per_year=365.0).run(Alternate())
+    assert same.data_hash == again.data_hash
+    assert same.data_hash != other.data_hash
+
+
+def test_a_single_changed_bar_changes_the_fingerprint():
+    data = series()
+    nudged = data.copy()
+    nudged[50, 3] += 1e-9
+    assert (Backtester(data, periods_per_year=365.0).run(Alternate()).data_hash
+            != Backtester(nudged, periods_per_year=365.0).run(Alternate()).data_hash)
+
+
+def test_to_dict_carries_the_identity_and_the_headline_but_not_the_curve():
+    out = run().to_dict()
+    for key in ("strategy", "data_hash", "version", "initial", "bars",
+                "config_market", "config_fee_taker", "sharpe", "total_return_pct"):
+        assert key in out
+    assert "equity_curve" not in out
+    assert "trades" not in out
+
+
+def test_compare_lines_runs_up_and_says_which_saw_the_same_bars(capsys):
+    data = series()
+    cheap = Backtester(data, fee_taker=0.0, periods_per_year=365.0).run(Alternate())
+    dear = Backtester(data, fee_taker=0.01, periods_per_year=365.0).run(Alternate())
+    rows = metrics.compare({"cheap": cheap, "dear": dear})
+    printed = capsys.readouterr().out
+    assert "cheap" in printed and "dear" in printed
+    assert printed.count(data_hash := cheap.data_hash) == 2  # same bars, both rows
+    assert dear.data_hash == data_hash
+    assert [r["name"] for r in rows] == ["cheap", "dear"]
+    assert rows[0]["config_fee_taker"] == 0.0
+
+
+def test_compare_takes_a_plain_list_too():
+    rows = metrics.compare([run(), run()])
+    assert len(rows) == 2
+    assert all(r["name"].startswith("Alternate") for r in rows)
+
+
+def test_comparing_nothing_is_not_an_error():
+    assert metrics.compare([]) == []

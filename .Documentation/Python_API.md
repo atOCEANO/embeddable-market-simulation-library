@@ -307,7 +307,7 @@ print(result.stats["sharpe"], result.stats["max_drawdown_pct"])
 print(result.equity_curve[-1], len(result.trades))
 ```
 
-`Backtester(candles, market, quote, fee_taker, fee_maker, slippage_bps, max_fill_fraction, max_open_orders, leverage, impact, funding_rate, funding_interval, periods_per_year, risk_free)` shares the engine knobs and adds the two stats parameters. `run(strategy)` returns a `BacktestResult` with `.stats` (dict), `.equity_curve` (numpy array), `.trades` (list of dicts), `.initial` (the balance the run opened with, which the curve does not contain because it records a point per advance), and `.periods_per_year` (the annualization the stats were computed at).
+`Backtester(candles, market, quote, fee_taker, fee_maker, slippage_bps, max_fill_fraction, max_open_orders, leverage, impact, funding_rate, funding_interval, periods_per_year, risk_free)` shares the engine knobs and adds the two stats parameters. `run(strategy)` returns a `BacktestResult` with `.stats` (dict), `.equity_curve` (numpy array), `.trades` (list of dicts), `.initial` (the balance the run opened with, which the curve does not contain because it records a point per advance), `.periods_per_year` (the annualization the stats were computed at), and the identity fields `.config`, `.data_hash`, `.strategy` and `.version` that let one run be told from another ([Telling two runs apart](#telling-two-runs-apart)).
 
 **`periods_per_year` is read from the candles.** Hand it a DataFrame or a parquet path with a datetime index and it takes the median gap between bars, so hourly candles annualize at 8760 without being told and a run whose feed is missing a day is still hourly. It snaps to a real interval only when already within one percent of one, and says so when the spacing matches none: a series typically five hours apart is a mixed or decimated feed, not four-hour candles. A numpy array carries no timestamps, so it warns and falls back to 365 rather than assuming. Passing a number overrides all of it ([ADR 0048](Decisions.md)). Subclass `Strategy` and override `next(state, engine)`; `init(engine)` is optional. The same `Strategy` is the unit [tuning](#tuning) searches: declare the tunable parameters as constructor arguments, and `tune` builds a fresh strategy per trial.
 
@@ -524,6 +524,16 @@ Three things to know before quoting either. The benchmark is stated **annualized
 Neither of them corrects for having searched. A tuned parameter set is in-sample no matter what probability is attached to it afterwards, and the answer to that is the [holdout](#in-sample-and-out-of-sample), not a statistic.
 
 `report(result, frame=None)` returns everything above as one flat dict, for storing or comparing runs; `summary(result, frame=None)` prints the headline and returns the same dict.
+
+### Telling two runs apart
+
+A `BacktestResult` carries `config` (the engine settings it ran under), `data_hash` (eight characters over the candles it saw), `strategy` (the class name plus its `repr`), `version`, `periods_per_year` and `risk_free`. `to_dict()` returns all of it plus the stats as plain data, without the equity curve or the trade log, since neither distinguishes anything and both are large.
+
+```python
+metrics.compare({"cheap": cheap_run, "dear": expensive_run})
+```
+
+prints one row per run, leading with the data fingerprint, and returns the rows. A notebook accumulates a great many backtests and nothing on a bare result says which bars or which fees produced it, so "was Tuesday's 2.1 sharpe on the same costs as today's 1.9" had no answer at all ([ADR 0051](Decisions.md)). Defining `__repr__` on a tunable strategy is worth it here: two rows both reading `SmaCross` tell you nothing.
 
 <br>
 

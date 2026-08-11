@@ -44,6 +44,7 @@ __all__ = [
     "probabilistic_sharpe",
     "min_track_record_length",
     "autocorrelation",
+    "compare",
     "report",
     "summary",
 ]
@@ -669,6 +670,48 @@ def report(result, frame=None):
     if frame is not None:
         out.update({f"hold_{k}": v for k, v in buy_and_hold(result, frame).items()})
     return out
+
+
+def compare(results, keys=None):
+    """Line several runs up against each other and print the rows, one per result.
+
+    A notebook accumulates a great many backtests and nothing about a
+    ``BacktestResult`` on its own says which data or which costs produced it. Each
+    row therefore leads with the fingerprint of the bars and the strategy that ran
+    on them, so two rows that differ only in a fee are visibly two rows that differ
+    only in a fee. Returns the rows it printed.
+
+    ``results`` may be a list or a dict keyed by whatever you want the rows called.
+    """
+    if hasattr(results, "items"):
+        named = list(results.items())
+    else:
+        named = [(r.strategy or f"run {i}", r) for i, r in enumerate(results)]
+    if not named:
+        return []
+    shown = list(keys) if keys else ["total_return_pct", "sharpe",
+                                     "max_drawdown_pct", "num_trades"]
+    width = max(len(str(name)) for name, _ in named)
+    header = f"  {'':<{width}}  {'data':<8}"
+    for key in shown:
+        header += f"{_short(key):>14}"
+    print(header)
+    rows = []
+    for name, result in named:
+        stats = result.stats or {}
+        line = f"  {name:<{width}}  {result.data_hash or '':<8}"
+        for key in shown:
+            value = stats.get(key)
+            line += f"{value:>14,.3f}" if isinstance(value, float) else f"{value!s:>14}"
+        print(line)
+        row = {"name": name}
+        row.update(result.to_dict())
+        rows.append(row)
+    return rows
+
+
+def _short(key):
+    return key.replace("_pct", " %").replace("_", " ")
 
 
 def summary(result, frame=None):
