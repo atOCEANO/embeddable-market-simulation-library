@@ -414,13 +414,26 @@ result = tune(
     candles,                               # numpy, DataFrame, or parquet path
     objective="sharpe",
     n_trials=200,
+    oos=0.3,                               # search the first 70%, keep the rest back
     n_jobs=-1,                             # every core; 1 runs in this process
 )
-print(result.best_params, result.best_value)
+print(result.best_params)
+print(result.best_value)                  # in-sample: the best of 200 tries
+print(result.oos_stats["sharpe"])         # the same strategy on bars no trial saw
 best = result.best_strategy()             # a fresh SmaCross with the best parameters
 ```
 
 `tune(strategy, space, data, ...)` takes the strategy, the search space, the data, and then the same engine knobs as the `Backtester` (`market`, `quote`, the costs, `leverage`, `periods_per_year`, `risk_free`), plus the search controls below. It returns a `TuneResult`.
+
+### In-sample and out-of-sample
+
+`TuneResult.best_stats` is in-sample. It is the maximum of a noisy score over every trial, on the bars the search was allowed to see, so it is biased upward by the act of searching and by more the harder you searched. Quoting it as a result is the most common way a backtest misleads, and no statistic computed from the same bars can undo it.
+
+`oos=0.3` fits every trial on the first 70% of the series and re-runs the winner on the last 30%, which no trial ever saw, into `TuneResult.oos_stats` and `TuneResult.oos_result`. The split is always the **end** of the series, never a random slice, because a strategy is a claim about what comes next and shuffling would let a trial fit around the very bars meant to test it ([ADR 0049](Decisions.md)).
+
+Two costs worth knowing. The search sees less data, which matters on a short series. And the winner warms up **inside** the held-out bars rather than being handed history across the boundary, so a strategy with a 200-bar warm-up gives up its first 200 bars there; that understates the out-of-sample result rather than flattering it, which is the direction to err in.
+
+Leaving `oos` out warns, because the default cannot be silent without being a trap. `oos=0` says you meant to search the whole series and passes quietly.
 
 ### The search space
 

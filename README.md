@@ -193,10 +193,15 @@ result = tune(
     SmaCross,                                 # your strategy, or any callable that builds one
     {"fast": (5, 40), "slow": (40, 200)},     # the space to search
     ohlcv,
-    objective="sharpe", n_trials=200, n_jobs=-1,   # -1 uses every core
+    objective="sharpe", n_trials=200, oos=0.3,     # search 70%, keep 30% back
+    n_jobs=-1,                                     # -1 uses every core
 )
-print(result.best_params, result.best_value)
+print(result.best_params)
+print(result.best_value)                      # in-sample: the best of 200 tries
+print(result.oos_stats["sharpe"])             # on bars no trial ever saw
 ```
+
+**Read the second number, not the first.** `best_value` is the maximum of a noisy score over 200 attempts on the bars the search was allowed to see, so it is biased upward by the searching itself, by more the harder you search. `oos=0.3` fits every trial on the first 70% of the series and scores the winner on the last 30%, which no trial ever touched. The gap between the two is what the search invented. Leave `oos` out and it says so ([ADR 0049](.Documentation/Decisions.md)).
 
 `objective` takes any stats key, or a function of your own over the finished run, so you can score on something the stats set does not name. It receives the whole `BacktestResult`, which puts the equity curve and every trade in reach, and a lambda or a closure survives the trip to the worker processes:
 
@@ -208,10 +213,10 @@ def risk_adjusted(result):
     return stats["sharpe"] - 0.1 * stats["max_drawdown_pct"]
 
 result = tune(SmaCross, {"fast": (5, 40), "slow": (40, 200)}, ohlcv,
-              objective=risk_adjusted, n_trials=200, n_jobs=-1)
+              objective=risk_adjusted, n_trials=200, oos=0.3, n_jobs=-1)
 ```
 
-Higher wins by default; pass `direction="minimize"` when your metric is a cost. A trial whose objective returns `NaN` is failed and the search moves on.
+Higher wins by default; pass `direction="minimize"` when your metric is a cost. A trial whose objective returns `NaN` is failed and the search moves on. `n_jobs=-1` spreads the trials over every core, and the cost is reproducibility: a parallel search asks for trials before earlier ones have reported, so the sampler follows a different path each run. Pin `n_jobs=1` when a result has to reproduce from its seed ([ADR 0036](.Documentation/Decisions.md)).
 
 `tune` needs optuna and cloudpickle (`pip install 'emsl[tune]'`); the [Python API](.Documentation/Python_API.md#tuning) covers the search space, objective, and result in full.
 

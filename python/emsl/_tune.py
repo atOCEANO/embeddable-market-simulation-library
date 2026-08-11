@@ -22,6 +22,15 @@ declares its tunables as constructor arguments and stores them as fields.
   where a handful of samples produces the widest interval and the best-looking
   number, so a floor is the cheapest defence against a winner that is really noise
   (ADR 0034).
+- **Holding data back**: ``oos=0.3`` fits every trial on the first 70% of the
+  bars and scores the winner on the last 30%, which no trial ever saw, into
+  ``TuneResult.oos_stats``. Without it the search fits everything, and
+  ``best_stats`` is then the maximum of a noisy score over every trial: biased
+  upward by the act of searching, by more the harder you searched. The tail is
+  always the END of the series, never a random slice, because a strategy is a
+  claim about what comes next (ADR 0049). The winner warms up inside the held-out
+  bars rather than being handed history across the boundary, so a strategy with a
+  long warm-up gives up its first few bars there.
 - **Annualization**: ``periods_per_year`` is read once from the candles' own
   timestamps and handed to every trial, so a parallel search cannot end up with
   workers annualizing differently from the one that inferred it. Pass a number to
@@ -409,15 +418,23 @@ class TuneResult:
     winning run's full stats, plus a record of every trial. ``study`` is the
     underlying optuna study for deeper inspection, and ``best_strategy()`` builds a
     fresh strategy from ``best_params``.
+
+    **``best_stats`` is in-sample.** It is the maximum of a noisy score over every
+    trial, on the bars the search was allowed to see, so it is biased upward by
+    the act of searching and by exactly as much as the search worked. ``oos_stats``
+    is the same strategy scored on bars no trial ever saw, and it is the number to
+    quote. It is ``None`` when nothing was held out (ADR 0049).
     """
 
-    def __init__(self, study, strategy):
+    def __init__(self, study, strategy, oos_result=None):
         self._study = study
         self._strategy = strategy
         best = study.best_trial
         self.best_params = dict(best.params)
         self.best_value = float(best.value)
         self.best_stats = dict(best.user_attrs.get("stats", {}))
+        self.oos_result = oos_result
+        self.oos_stats = dict(oos_result.stats) if oos_result is not None else None
         self.trials = [
             {
                 "number": t.number,
@@ -437,7 +454,11 @@ class TuneResult:
         return self._strategy(**self.best_params)
 
     def __repr__(self):
-        return f"TuneResult(best_value={self.best_value:.6g}, n_trials={len(self.trials)})"
+        held = "" if self.oos_stats is None else ", held out"
+        return (
+            f"TuneResult(best_value={self.best_value:.6g} in-sample, "
+            f"n_trials={len(self.trials)}{held})"
+        )
 
 
 def tune(
@@ -450,6 +471,7 @@ def tune(
     n_jobs=1,
     seed=None,
     verbose=False,
+    oos=None,
     min_trades=0,
     market="spot",
     quote=10_000.0,
@@ -499,6 +521,7 @@ def tune(
     # search they run in a worker that never saw the frame at all
     candles, index = prepare(data)
     periods_per_year = annualization(periods_per_year, index)
+    candles, held_out = _split(candles, oos)
     config = dict(
         market=market,
         quote=quote,
@@ -539,7 +562,47 @@ def tune(
         raise RuntimeError(
             "every trial failed; the last error was: " + repr(last_error)
         ) from last_error
-    return TuneResult(study, strategy)
+
+    oos_result = None
+    if held_out is not None:
+        winner = strategy(**study.best_trial.params)
+        oos_result = Backtester(
+            held_out, periods_per_year=periods_per_year, risk_free=risk_free, **config
+        ).run(winner)
+    return TuneResult(study, strategy, oos_result)
+
+
+def _split(candles, oos):
+    # the head every trial is scored on, and the tail no trial ever sees. The tail
+    # is the END of the series, never a random slice, because a strategy is a
+    # claim about what comes next and shuffling would let a trial fit around the
+    # very bars meant to test it
+    if oos is None:
+        warnings.warn(
+            f"every trial was fitted on all {len(candles):,} bars, so best_stats "
+            f"is in-sample: it is the maximum of a noisy score over the trials, "
+            f"biased upward by the searching itself. Pass oos=0.3 to hold out the "
+            f"last 30% and score the winner on bars no trial saw, or oos=0 to say "
+            f"you meant to search the whole series",
+            stacklevel=2,
+        )
+        return candles, None
+    oos = float(oos)
+    if not 0.0 <= oos < 1.0:
+        raise ValueError(f"oos must be at least 0 and below 1, got {oos}")
+    if oos == 0.0:
+        return candles, None
+    split = int(round(len(candles) * (1.0 - oos)))
+    # both halves have to be long enough to reset and step at least once, and a
+    # split that leaves either one too short is a mistake in the caller's fraction
+    # rather than something to silently ignore
+    if split < 2 or len(candles) - split < 2:
+        raise ValueError(
+            f"oos={oos} splits {len(candles)} bars into {split} to fit on and "
+            f"{len(candles) - split} to test on, and each side needs at least 2; "
+            f"use a longer series or a smaller fraction"
+        )
+    return candles[:split], candles[split:]
 
 
 def _import_optuna():
