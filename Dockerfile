@@ -50,6 +50,8 @@ RUN cargo fmt --all --check \
 FROM python:3.9-slim AS test39
 COPY --from=builder /wheels /wheels
 COPY tests /tests
+COPY .Documentation /docs
+COPY README.md /README.md
 RUN pip install --no-cache-dir /wheels/*.whl numpy gymnasium pandas pyarrow optuna cloudpickle pytest \
     && python -c "import emsl; print('py39 wheel import OK')" \
     && pytest -q /tests
@@ -57,6 +59,8 @@ RUN pip install --no-cache-dir /wheels/*.whl numpy gymnasium pandas pyarrow optu
 FROM python:3.11-slim AS test311
 COPY --from=builder /wheels /wheels
 COPY tests /tests
+COPY .Documentation /docs
+COPY README.md /README.md
 RUN pip install --no-cache-dir /wheels/*.whl numpy gymnasium pandas pyarrow optuna cloudpickle pytest \
     && python -c "import emsl; print('py311 wheel import OK')" \
     && pytest -q /tests
@@ -64,6 +68,8 @@ RUN pip install --no-cache-dir /wheels/*.whl numpy gymnasium pandas pyarrow optu
 FROM python:3.12-slim AS test312
 COPY --from=builder /wheels /wheels
 COPY tests /tests
+COPY .Documentation /docs
+COPY README.md /README.md
 RUN pip install --no-cache-dir /wheels/*.whl numpy gymnasium pandas pyarrow optuna cloudpickle pytest \
     && python -c "import emsl; print('py312 wheel import OK')" \
     && pytest -q /tests
@@ -90,6 +96,8 @@ CMD ["python", "/benchmarks/surfaces.py"]
 FROM python:3.11-slim AS test-sb3
 COPY --from=builder /wheels /wheels
 COPY tests /tests
+COPY .Documentation /docs
+COPY README.md /README.md
 RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu \
     && pip install --no-cache-dir /wheels/*.whl numpy gymnasium stable-baselines3 pytest \
     && pytest -q /tests/test_sb3.py
