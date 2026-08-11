@@ -123,7 +123,7 @@ eng = Engine(
 
 | Call | Returns | Does |
 | :--- | :--- | :--- |
-| `market_buy(size)` / `market_sell(size)` | order id | Taker order; fills at the next bar's open, pays the taker fee, takes slippage. |
+| `market_buy(size)` / `market_sell(size)` | id or `None` | Taker order; fills at the next bar's open, pays the taker fee, takes slippage. `None` when the queue already holds `max_open_orders` for this bar. |
 | `limit_buy(size, price)` / `limit_sell(size, price)` | id or `None` | Maker order; rests until a later bar reaches the price. `None` if the book is full. |
 | `stop(side, size, trigger, reduce_only=False)` | id or `None` | Becomes a market order once a bar crosses `trigger`. `side` is `"buy"` or `"sell"`. Pass `reduce_only=True` for a stop-loss. |
 | `order(side, size, type, price, trigger, reduce_only, post_only, tif)` | id or `None` | The primitive the shortcuts wrap; the only call that sets `post_only` and `tif`. |
@@ -163,7 +163,7 @@ You decide on a bar and the order fills on the next one; there is no same-bar lo
 
 <br>
 
-A market order crosses the spread and fills at the next open; a limit rests at your price and fills only when a candle reaches it, and a price that gaps through your limit still fills at the limit, never better. A `post_only` limit that would cross is rejected rather than turned into a taker. Fills are volume-capped by `max_fill_fraction`, so one order cannot take more than that slice of a bar. Resting orders use `max_open_orders` fixed slots; market orders never occupy one, and beyond the cap a new resting order is rejected.
+A market order crosses the spread and fills at the next open; a limit rests at your price and fills only when a candle reaches it, and a price that gaps through your limit still fills at the limit, never better. A limit that is already through the market when the bar opens is marketable, so it pays the taker fee even though it fills at your price; one that the bar has to come to pays the maker fee. A `post_only` limit that would cross is rejected rather than turned into a taker. Fills are volume-capped by `max_fill_fraction`, so one order cannot take more than that slice of a bar. Resting orders and the market orders waiting for the next bar each use `max_open_orders` slots, and beyond either cap a new order is rejected; the market queue empties every bar. The cap is per order, so several orders resolving against one bar each get their own slice ([ADR 0005](Decisions.md)), which is why the queue is bounded at all.
 
 The position is netted: net long, net short, or flat, never both. Adding on the same side averages the entries; reducing or closing books the realized PnL on the part closed; flipping through zero closes the old side and reopens the rest at the new fill. On spot the position cannot go below zero: a sell is clamped to the current long, since shorting base needs a borrow this tier does not model, so a short and a flip through zero are perp behaviors ([ADR 0015](Decisions.md)).
 

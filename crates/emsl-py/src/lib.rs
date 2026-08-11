@@ -476,14 +476,16 @@ impl Engine {
         candle_view(engine.inner.candles_all(), container)
     }
 
-    /// Queue a market buy; it fills on the next bar's open. Returns the order id.
-    fn market_buy(&mut self, size: f64) -> u64 {
-        self.inner.market_buy(size).0
+    /// Queue a market buy; it fills on the next bar's open. Returns the order id,
+    /// or None if the queue already holds max_open_orders for this bar.
+    fn market_buy(&mut self, size: f64) -> Option<u64> {
+        self.inner.market_buy(size).map(|id| id.0)
     }
 
-    /// Queue a market sell; it fills on the next bar's open. Returns the order id.
-    fn market_sell(&mut self, size: f64) -> u64 {
-        self.inner.market_sell(size).0
+    /// Queue a market sell; it fills on the next bar's open. Returns the order id,
+    /// or None if the queue already holds max_open_orders for this bar.
+    fn market_sell(&mut self, size: f64) -> Option<u64> {
+        self.inner.market_sell(size).map(|id| id.0)
     }
 
     /// Rest a buy limit. Returns the order id, or None if the book is full.

@@ -222,12 +222,21 @@ impl Engine {
         size: f64,
         reduce_only: bool,
         tif: TimeInForce,
-    ) -> OrderId {
+    ) -> Option<OrderId> {
+        // The queue holds the same number of orders the resting book does. It was
+        // unbounded, and since the volume cap is per order (ADR 0005), one order
+        // split into a hundred took a hundred times the cap against a single bar,
+        // every slice priced as though it were the only participant. Bounding it
+        // does not make the cap honest, it makes the evasion finite; a liquidity
+        // budget shared across a bar is the real answer (ADR 0047)
+        if self.pending.len() >= self.config.max_open_orders {
+            return None;
+        }
         let id = self.next_id();
         let mut order = Order::market(id, side, Qty(size), reduce_only);
         order.tif = tif;
         self.pending.push(order);
-        id
+        Some(id)
     }
 
     fn place_limit(
@@ -303,19 +312,21 @@ impl Engine {
         tif: TimeInForce,
     ) -> Option<OrderId> {
         match kind {
-            OrderType::Market => Some(self.place_market(side, size, reduce_only, tif)),
+            OrderType::Market => self.place_market(side, size, reduce_only, tif),
             OrderType::Limit => self.place_limit(side, size, price?, reduce_only, post_only, tif),
             OrderType::Stop => self.place_stop(side, size, trigger?, reduce_only),
         }
     }
 
-    /// Queue a market buy; it fills on the next bar's open.
-    pub fn market_buy(&mut self, size: f64) -> OrderId {
+    /// Queue a market buy; it fills on the next bar's open. `None` if the queue is
+    /// already holding `max_open_orders` for this bar.
+    pub fn market_buy(&mut self, size: f64) -> Option<OrderId> {
         self.place_market(Side::Buy, size, false, TimeInForce::Ioc)
     }
 
-    /// Queue a market sell; it fills on the next bar's open.
-    pub fn market_sell(&mut self, size: f64) -> OrderId {
+    /// Queue a market sell; it fills on the next bar's open. `None` if the queue is
+    /// already holding `max_open_orders` for this bar.
+    pub fn market_sell(&mut self, size: f64) -> Option<OrderId> {
         self.place_market(Side::Sell, size, false, TimeInForce::Ioc)
     }
 
@@ -421,7 +432,7 @@ impl Engine {
         } else {
             (Side::Buy, -pos)
         };
-        Some(self.place_market(side, size, true, TimeInForce::Ioc))
+        self.place_market(side, size, true, TimeInForce::Ioc)
     }
 
     /// Advance one bar and resolve the bar, then mark and return the state. At the
@@ -2108,6 +2119,27 @@ mod tests {
         let s = e.step(); // reaches 50, fills 100 (10% of 1000), cancels the other 400
         assert_eq!(s.position, 100.0);
         assert!(s.open_orders.is_empty()); // IOC: nothing rests
+    }
+
+    #[test]
+    fn splitting_an_order_cannot_take_more_than_its_slots_of_a_bar() {
+        // the volume cap is per order (ADR 0005) and the pending queue was
+        // unbounded, so a hundred small market buys took the whole bar while every
+        // slice was priced as though it were the only participant (ADR 0047)
+        let config = EngineConfig {
+            max_open_orders: 3,
+            max_fill_fraction: 0.01, // 10 base units per order, against volume 1000
+            quote: 1_000_000.0,
+            ..cfg()
+        };
+        let mut e = Engine::new(series(), config);
+        e.reset();
+        let placed = (0..100).filter(|_| e.market_buy(50.0).is_some()).count();
+        assert_eq!(placed, 3);
+        let s = e.step();
+        assert_eq!(s.position, 30.0); // three slots at the 10-unit cap, not a hundred
+        // the queue drains with the bar, so the next bar gets its slots back
+        assert!(e.market_buy(50.0).is_some());
     }
 
     #[test]
