@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>__TITLE__</title>
+<style>__CSS__</style>
+</head>
+<body>
+
+<div class="head" id="head" hidden>
+  <span id="title"></span>
+  <span id="stats"></span>
+</div>
+
+<div id="frame">
+  <div id="plot">
+    <div id="chart"></div>
+    <div id="paneCtls"></div>
+  </div>
+  <div class="footer" id="tools">
+    <button id="fit" title="Fit all bars">FIT</button>
+    <button id="tbl" aria-pressed="false" title="Trade log">TABLE</button>
+    <button id="theme" title="Toggle theme">LIGHT</button>
+    <span class="grow"></span>
+    <span class="hint" id="hint"></span>
+  </div>
+</div>
+
+<div id="tablePanel" hidden>
+  <table>
+    <thead><tr>
+      <th>#</th><th>Side</th><th>Entry bar</th><th>Exit bar</th><th>Size</th>
+      <th>Entry</th><th>Exit</th><th>Fees</th><th>Net PnL</th><th>Bars</th>
+    </tr></thead>
+    <tbody id="tbody"></tbody>
+  </table>
+</div>
+
+<script>__LIBRARY__</script>
+<script>
+(function () {
+__BUNDLE__
+mount(__SPEC__, document.getElementById("chart"));
+})();
+</script>
+</body>
+</html>

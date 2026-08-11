@@ -1,0 +1,142 @@
+/* Every colour here is a custom property that core.js writes from spec.theme at
+   mount and again on every toggle, so this file and the chart read one source.
+   The values below are the dark palette as a fallback, for the one frame before
+   the script runs. */
+:root {
+  --ui: 1;
+  color-scheme: dark;
+  --plane:    #05090e;
+  --surface:  #070d13;
+  --grid:     #131c26;
+  --axis:     #1f2a36;
+  --ink:      #e9ebee;
+  --ink-2:    #aab1bb;
+  --muted:    #717a85;
+  --hairline: rgba(255,255,255,0.16);
+  --win:      #2fe0a8;
+  --loss:     #ff5470;
+  --s1:       #4d9fff;
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0; padding: 10px;
+  display: flex; flex-direction: column;
+  background: var(--plane); color: var(--ink);
+  font: calc(13px * var(--ui))/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+/* what the chart is, and the handful of numbers that decide whether to keep it.
+   A file arrives in an inbox with only its filename, so a chart that cannot say
+   which strategy over which period is an untitled squiggle. */
+.head {
+  flex: 0 0 auto;
+  display: flex; align-items: baseline; flex-wrap: wrap;
+  gap: calc(3px * var(--ui)) calc(14px * var(--ui));
+  padding: 0 calc(2px * var(--ui)) calc(8px * var(--ui));
+}
+.head[hidden] { display: none; }
+#title {
+  font: 600 calc(13px * var(--ui))/1.3 system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: var(--ink);
+}
+#stats {
+  display: flex; flex-wrap: wrap;
+  gap: calc(4px * var(--ui)) calc(13px * var(--ui));
+  margin-left: auto;
+}
+#stats span { white-space: nowrap; font-size: calc(11px * var(--ui)); }
+#stats i {
+  color: var(--muted); font-style: normal;
+  margin-right: calc(4px * var(--ui));
+}
+#stats b {
+  color: var(--ink-2); font-weight: 600; font-variant-numeric: tabular-nums;
+}
+
+#frame {
+  flex: 1 1 auto; min-height: 260px;
+  display: flex; flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+/* the scale controls sit inside the price-axis gutter, so they cover chrome
+   and never data */
+#plot { position: relative; flex: 1 1 auto; min-height: 0; }
+#chart { position: absolute; inset: 0; }
+
+/* one A / L / % group per pane, at the bottom right of that pane's gutter.
+   Button width comes from the live gutter width so the group cannot bleed
+   over the plot on a narrow axis. The backdrop is solid at the bottom and
+   fades out upward so the price labels above it keep no hard edge. Hidden
+   until the pane is hovered, and not clickable while hidden. */
+.panectl {
+  position: absolute; z-index: 4;
+  display: flex; align-items: flex-end; justify-content: center; gap: 1px;
+  padding-bottom: calc(4px * var(--ui));
+  background: linear-gradient(to top,
+    var(--surface) 0%,
+    var(--surface) 46%,
+    color-mix(in srgb, var(--surface) 55%, transparent) 74%,
+    transparent 100%);
+  opacity: 0; pointer-events: none; transition: opacity .12s;
+}
+.panectl[data-active="true"] { opacity: 1; pointer-events: auto; }
+.panectl button {
+  width: var(--bw); height: calc(18px * var(--ui)); padding: 0; cursor: pointer;
+  font: 600 calc(10px * var(--ui))/1 system-ui, -apple-system, "Segoe UI", sans-serif;
+  border: 1px solid var(--hairline); border-radius: 3px;
+  background: var(--surface); color: var(--muted);
+}
+.panectl button:hover { color: var(--ink); border-color: var(--muted); }
+.panectl button[aria-pressed="true"] { color: var(--s1); border-color: var(--s1); }
+
+/* the controls take a real row of layout, so nothing is overlaid on the plot */
+.footer {
+  flex: 0 0 auto;
+  display: flex; align-items: center; flex-wrap: wrap;
+  gap: calc(3px * var(--ui));
+  padding: calc(6px * var(--ui)) calc(9px * var(--ui));
+  border-top: 1px solid var(--hairline);
+}
+.footer .grow { flex: 1 1 auto; }
+.footer .hint { color: var(--muted); font-size: calc(11px * var(--ui)); }
+.footer button {
+  padding: 0 calc(7px * var(--ui)); height: calc(21px * var(--ui));
+  line-height: 1; cursor: pointer;
+  font: 600 calc(11px * var(--ui))/1 system-ui, -apple-system, "Segoe UI", sans-serif;
+  letter-spacing: .02em;
+  border: 1px solid var(--hairline); border-radius: 3px;
+  background: var(--surface); color: var(--muted);
+}
+.footer button:hover { color: var(--ink); border-color: var(--muted); }
+.footer button[aria-pressed="true"] { color: var(--ink); border-color: var(--muted); }
+
+#tablePanel {
+  flex: 0 0 auto;
+  margin-top: calc(8px * var(--ui));
+  border: 1px solid var(--hairline); border-radius: 6px;
+  background: var(--surface);
+  padding: calc(8px * var(--ui)) calc(10px * var(--ui));
+  max-height: 34vh; overflow: auto;
+}
+#tablePanel[hidden] { display: none; }
+table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; font-size: calc(12px * var(--ui)); }
+th {
+  text-align: right; color: var(--muted); font-weight: 500;
+  padding: calc(4px * var(--ui)) calc(8px * var(--ui));
+  border-bottom: 1px solid var(--hairline);
+  position: sticky; top: calc(-8px * var(--ui)); background: var(--surface);
+}
+th:first-child, td:first-child { text-align: left; }
+td { text-align: right; padding: calc(3px * var(--ui)) calc(8px * var(--ui)); color: var(--ink-2); }
+tbody tr { cursor: pointer; }
+tbody tr:hover { background: var(--hairline); }
+tbody tr.sel { background: color-mix(in srgb, var(--s1) 18%, transparent); }
+tbody tr.sel td { color: var(--ink); }
+tbody tr.sel td:first-child { box-shadow: inset 2px 0 0 var(--s1); }
+.win { color: var(--win); } .loss { color: var(--loss); }
