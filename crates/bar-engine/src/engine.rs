@@ -2244,7 +2244,7 @@ mod tests {
         assert_eq!(placed, 3);
         let s = e.step();
         assert_eq!(s.position, 30.0); // three slots at the 10-unit cap, not a hundred
-        // the queue drains with the bar, so the next bar gets its slots back
+                                      // the queue drains with the bar, so the next bar gets its slots back
         assert!(e.market_buy(50.0).is_some());
     }
 
