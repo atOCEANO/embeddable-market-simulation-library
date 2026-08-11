@@ -188,7 +188,7 @@ The observation is a fresh array each step (the batched windows differ once envs
 
 ## Reward
 
-Pass `reward_fn(state, prev)` and it is called once per step, after the step, with the current and previous batched state. Both arguments expose the per-env account fields as `(num_envs,)` arrays: `equity`, `position`, `unrealized_pnl`, `realized_pnl`, `mark_price`. Return one value per env.
+Pass `reward_fn(state, prev)` and it is called once per step, after the step, with the current and previous batched state. Both arguments expose the per-env account fields as `(num_envs,)` arrays: `equity`, `position`, `unrealized_pnl`, `realized_pnl`, `mark_price`, `funding_paid`. Return one value per env. `funding_paid` is cumulative since that env's reset, positive when paid away, so a reward that wants to price the carry reads the difference between the two arguments.
 
 ```python
 def reward_fn(state, prev):

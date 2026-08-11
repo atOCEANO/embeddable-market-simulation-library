@@ -96,6 +96,7 @@ impl Reporter {
         periods_per_year: f64,
         risk_free: f64,
         num_fills: usize,
+        funding_paid: f64,
     ) -> Stats {
         Stats::compute(
             initial,
@@ -105,6 +106,7 @@ impl Reporter {
             risk_free,
             self.in_position_steps,
             num_fills,
+            funding_paid,
         )
     }
 }

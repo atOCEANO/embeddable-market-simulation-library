@@ -280,6 +280,7 @@ fn state_to_dict<'py>(py: Python<'py>, state: &State) -> PyResult<Bound<'py, PyD
     d.set_item("bar_volume", state.bar_volume)?;
     d.set_item("realized_pnl", state.realized_pnl)?;
     d.set_item("unrealized_pnl", state.unrealized_pnl)?;
+    d.set_item("funding_paid", state.funding_paid)?;
     let orders = PyList::empty_bound(py);
     for order in &state.open_orders {
         orders.append(order_to_dict(py, order)?)?;
@@ -312,6 +313,7 @@ fn stats_to_dict<'py>(py: Python<'py>, stats: &Stats) -> PyResult<Bound<'py, PyD
     d.set_item("num_trades", stats.num_trades)?;
     d.set_item("avg_trade_pct", stats.avg_trade_pct)?;
     d.set_item("num_fills", stats.num_fills)?;
+    d.set_item("funding_paid", stats.funding_paid)?;
     Ok(d)
 }
 
@@ -1035,7 +1037,7 @@ impl Batch {
 
     /// A batched per-env account snapshot as a dict of `(num_envs,)` arrays, for
     /// building a reward: equity, position, unrealized_pnl, realized_pnl,
-    /// mark_price.
+    /// mark_price, funding_paid.
     fn snapshot<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let snap = self.inner.snapshot();
         let d = PyDict::new_bound(py);
@@ -1050,6 +1052,10 @@ impl Batch {
             PyArray1::from_vec_bound(py, snap.realized_pnl),
         )?;
         d.set_item("mark_price", PyArray1::from_vec_bound(py, snap.mark_price))?;
+        d.set_item(
+            "funding_paid",
+            PyArray1::from_vec_bound(py, snap.funding_paid),
+        )?;
         Ok(d)
     }
 }

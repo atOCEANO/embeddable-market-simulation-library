@@ -26,6 +26,11 @@ pub struct State {
     pub bar_volume: f64,
     pub realized_pnl: f64,
     pub unrealized_pnl: f64,
+    /// Funding paid since the reset, in quote: positive is paid away, negative is
+    /// received. Zero on spot. The account charged it and returned it and nothing
+    /// kept it, so the one cost unique to a perp could not be measured at all, and
+    /// a carry strategy could not be told apart from a directional one (ADR 0017).
+    pub funding_paid: f64,
     pub open_orders: Vec<Order>,
 }
 

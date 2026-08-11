@@ -184,6 +184,7 @@ Every `reset` and `step` returns a plain dict:
 | `bar_volume` | float | The current candle's volume. |
 | `realized_pnl` | float | Cumulative booked PnL. |
 | `unrealized_pnl` | float | Open-position PnL at the mark. |
+| `funding_paid` | float | Funding paid since the reset: positive is paid away, negative is received. Zero on spot. |
 | `open_orders` | list | Resting limit and stop orders, each a dict. |
 
 Each order in `open_orders` carries `id`, `side`, `kind` (`market`, `limit`, `stop`), `price`, `trigger`, `size`, `filled`, `remaining`, `status` (always `resting` here, since these are the resting orders), `reduce_only`, and `post_only`.
@@ -344,6 +345,7 @@ The stop rests only once a position is held (orders fill on the next bar, so the
 | `num_trades` | count | Closed round trips. A position still open at the end is in the return and the exposure but in none of these four. |
 | `avg_trade_pct` | percent | Mean net trade PnL as a percent of **starting** equity, not of the equity the trade opened with. |
 | `num_fills` | count | Fills applied over the run. Zero beside orders you placed means the feed never filled them. |
+| `funding_paid` | quote | Funding over the run: positive is paid away, negative is received. Zero on spot. A perp result cannot be decomposed without it, since a carry and a direction otherwise look the same ([ADR 0017](Decisions.md)). |
 
 The four trade metrics count completed round trips only, so `exposure_pct > 0` beside `num_trades == 0` means "still holding", not "never traded"; buy and hold reports a real return with zero trades ([ADR 0009](Decisions.md)). They read each trade's `net_pnl`, its whole round trip after fees, because on gross PnL a strategy whose edge is smaller than its costs reports a perfect win rate and an infinite profit factor beside a negative return ([ADRs 0029, 0030](Decisions.md)). So they reproduce from the log:
 

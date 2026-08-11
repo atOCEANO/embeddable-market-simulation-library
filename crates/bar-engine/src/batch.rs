@@ -181,6 +181,7 @@ impl EnvBatch {
             unrealized_pnl: states.iter().map(|s| s.unrealized_pnl).collect(),
             realized_pnl: states.iter().map(|s| s.realized_pnl).collect(),
             mark_price: states.iter().map(|s| s.mark_price).collect(),
+            funding_paid: states.iter().map(|s| s.funding_paid).collect(),
         }
     }
 }
@@ -192,6 +193,9 @@ pub struct BatchSnapshot {
     pub unrealized_pnl: Vec<f64>,
     pub realized_pnl: Vec<f64>,
     pub mark_price: Vec<f64>,
+    /// Funding paid per env since its reset, positive when paid away. A perp
+    /// reward that does not see it cannot separate a carry from a direction.
+    pub funding_paid: Vec<f64>,
 }
 
 #[cfg(test)]

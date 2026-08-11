@@ -36,6 +36,11 @@ pub struct Stats {
     /// never filled, which a zero-volume series does silently; without this a dead
     /// feed and a strategy that never triggered look identical (ADR 0031).
     pub num_fills: usize,
+    /// Funding paid over the run, in quote: positive is paid away, negative is
+    /// received. Zero on spot. It is the one cost unique to a perp, and until it
+    /// was kept a carry strategy and a directional one could not be told apart in
+    /// the result (ADR 0017).
+    pub funding_paid: f64,
 }
 
 /// A reward over a risk that can be zero, ranked so the set stays orderable.
@@ -62,6 +67,7 @@ impl Stats {
     /// Compute stats from the starting equity, the per-step equity curve, the
     /// closed trades, and the annualization inputs. Degenerate inputs return
     /// zeros rather than errors, so the result is always defined.
+    #[allow(clippy::too_many_arguments)]
     pub fn compute(
         initial: f64,
         curve: &[f64],
@@ -70,6 +76,7 @@ impl Stats {
         risk_free: f64,
         in_position_steps: usize,
         num_fills: usize,
+        funding_paid: f64,
     ) -> Stats {
         // A non-positive or non-finite annualization has no per-period rate and no
         // square root: `risk_free / periods_per_year` would be NaN and poison sharpe,
@@ -207,6 +214,7 @@ impl Stats {
             num_trades,
             avg_trade_pct,
             num_fills,
+            funding_paid,
         }
     }
 }
@@ -250,6 +258,7 @@ mod tests {
             risk_free,
             in_position_steps,
             0,
+            0.0,
         )
     }
 

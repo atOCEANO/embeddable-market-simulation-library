@@ -104,6 +104,7 @@ _STAT_KEYS = frozenset(
         "num_trades",
         "avg_trade_pct",
         "num_fills",
+        "funding_paid",
     }
 )
 

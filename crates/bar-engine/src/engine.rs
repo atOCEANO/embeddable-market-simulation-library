@@ -95,6 +95,9 @@ pub struct Engine {
     /// series with no volume say, is otherwise indistinguishable from one that never
     /// placed an order (ADR 0031).
     fills: usize,
+    /// Funding paid since the last reset, in quote, positive when paid away. The
+    /// account returned each payment and this is what keeps it (ADR 0017).
+    funding_paid: f64,
     /// Set when the account is dead: force-closed by a perp liquidation, or marked
     /// at a non-positive equity on either market, which is terminal too (ADR 0019).
     /// A terminal event for the RL env. Cleared on reset.
@@ -133,6 +136,7 @@ impl Engine {
             position_entry_tick: 0,
             open_fee: 0.0,
             fills: 0,
+            funding_paid: 0.0,
             bust: false,
             candles,
             config,
@@ -158,6 +162,7 @@ impl Engine {
         self.position_entry_tick = self.tick;
         self.open_fee = 0.0;
         self.fills = 0;
+        self.funding_paid = 0.0;
         self.bust = false;
         if self.reporter.is_some() {
             self.reporter = Some(Reporter::new());
@@ -469,7 +474,8 @@ impl Engine {
             //    into the bar), marked at the close, and before liquidation so a
             //    funding debit can bust the account this bar (ADR 0017)
             if self.config.funding_interval > 0 && self.tick % self.config.funding_interval == 0 {
-                self.account
+                self.funding_paid += self
+                    .account
                     .apply_funding(self.config.funding_rate, Price(bar.close));
             }
 
@@ -840,7 +846,13 @@ impl Engine {
     /// starting equity is the configured quote.
     pub fn stats(&self, periods_per_year: f64, risk_free: f64) -> Option<Stats> {
         self.reporter.as_ref().map(|reporter| {
-            reporter.stats(self.config.quote, periods_per_year, risk_free, self.fills)
+            reporter.stats(
+                self.config.quote,
+                periods_per_year,
+                risk_free,
+                self.fills,
+                self.funding_paid,
+            )
         })
     }
 
@@ -881,6 +893,7 @@ impl Engine {
             bar_volume: bar.volume,
             realized_pnl: self.account.realized(),
             unrealized_pnl: self.account.unrealized(mark),
+            funding_paid: self.funding_paid,
             open_orders: self.book.iter().copied().collect(),
         }
     }
@@ -2151,6 +2164,36 @@ mod tests {
         let s = e.step(); // reaches 50, fills 100 (10% of 1000), cancels the other 400
         assert_eq!(s.position, 100.0);
         assert!(s.open_orders.is_empty()); // IOC: nothing rests
+    }
+
+    #[test]
+    fn funding_is_kept_where_the_result_can_read_it() {
+        // the account returned every payment and nothing kept it, so the one cost
+        // unique to a perp was unmeasurable from a finished run, and a carry could
+        // not be told apart from a direction (ADR 0017)
+        let config = EngineConfig {
+            market: Market::Perp,
+            funding_rate: 0.001,
+            funding_interval: 1,
+            report: true,
+            ..cfg()
+        };
+        let mut long = Engine::new(series(), config);
+        long.reset();
+        long.market_buy(1.0);
+        let s1 = long.step(); // fills at the open of 200, funded at the close of 250
+        assert!((s1.funding_paid - 0.25).abs() < CLOSE_EPS);
+        let s2 = long.step(); // funded again at the close of 350
+        assert!((s2.funding_paid - 0.60).abs() < CLOSE_EPS);
+        let stats = long.stats(365.0, 0.0).expect("reporting is on");
+        assert!((stats.funding_paid - 0.60).abs() < CLOSE_EPS);
+
+        // a positive rate is paid BY the long and TO the short, so the sign flips
+        let mut short = Engine::new(series(), config);
+        short.reset();
+        short.market_sell(1.0);
+        let s = short.step();
+        assert!((s.funding_paid + 0.25).abs() < CLOSE_EPS);
     }
 
     #[test]
