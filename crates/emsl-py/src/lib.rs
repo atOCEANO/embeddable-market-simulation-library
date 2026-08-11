@@ -364,6 +364,36 @@ fn candle_view<'py>(window: &[Candle], container: Bound<'py, PyAny>) -> Bound<'p
     array
 }
 
+/// One field of every candle, as a zero-copy read-only view. `column` is the
+/// index into open/high/low/close/volume.
+fn column_view<'py>(
+    window: &[Candle],
+    column: usize,
+    container: Bound<'py, PyAny>,
+) -> Bound<'py, PyArray1<f64>> {
+    let rows = window.len();
+
+    // SAFETY: the same layout guarantee `candle_view` rests on. Candle is repr(C)
+    // with five f64 fields and no padding (guarded by emsl-core's layout test), so
+    // the buffer is `rows * 5` contiguous f64 and one field is every fifth of them
+    // starting at `column`, which is exactly a strided column of the (rows, 5) view.
+    let flat: &[f64] =
+        unsafe { std::slice::from_raw_parts(window.as_ptr() as *const f64, rows * 5) };
+    let view =
+        ArrayView2::from_shape((rows, 5), flat).expect("candle slice length is exactly rows * 5");
+
+    // SAFETY: as in `candle_view`, the view points into the immutable candle buffer,
+    // which outlives the array because `container` (the engine, holding the Arc) is
+    // its base, and the array is made read-only immediately below.
+    let array = unsafe { PyArray1::borrow_from_array_bound(&view.column(column), container) };
+    // SAFETY: the array was just created and is not yet shared with Python, so
+    // clearing its WRITEABLE flag races with nothing.
+    unsafe {
+        (*array.as_array_ptr()).flags &= !(NPY_ARRAY_WRITEABLE as std::os::raw::c_int);
+    }
+    array
+}
+
 /// The market simulation engine, exposed to Python as `emsl.Engine`. It wraps one
 /// single-env bar engine; orders decided on a bar fill on the next.
 #[pyclass]
@@ -477,6 +507,48 @@ impl Engine {
         let container = slf.clone().into_any();
         let engine = slf.borrow();
         candle_view(engine.inner.candles_all(), container)
+    }
+
+    /// Every open, as a zero-copy read-only view. The named companions to `data`,
+    /// so a strategy reads `engine.closes` rather than remembering that the close
+    /// is column 3 of a `(T, 5)` array.
+    #[getter]
+    fn opens<'py>(slf: Bound<'py, Self>) -> Bound<'py, PyArray1<f64>> {
+        let container = slf.clone().into_any();
+        let engine = slf.borrow();
+        column_view(engine.inner.candles_all(), 0, container)
+    }
+
+    /// Every high, as a zero-copy read-only view.
+    #[getter]
+    fn highs<'py>(slf: Bound<'py, Self>) -> Bound<'py, PyArray1<f64>> {
+        let container = slf.clone().into_any();
+        let engine = slf.borrow();
+        column_view(engine.inner.candles_all(), 1, container)
+    }
+
+    /// Every low, as a zero-copy read-only view.
+    #[getter]
+    fn lows<'py>(slf: Bound<'py, Self>) -> Bound<'py, PyArray1<f64>> {
+        let container = slf.clone().into_any();
+        let engine = slf.borrow();
+        column_view(engine.inner.candles_all(), 2, container)
+    }
+
+    /// Every close, as a zero-copy read-only view.
+    #[getter]
+    fn closes<'py>(slf: Bound<'py, Self>) -> Bound<'py, PyArray1<f64>> {
+        let container = slf.clone().into_any();
+        let engine = slf.borrow();
+        column_view(engine.inner.candles_all(), 3, container)
+    }
+
+    /// Every volume, as a zero-copy read-only view. Base units (ADR 0005).
+    #[getter]
+    fn volumes<'py>(slf: Bound<'py, Self>) -> Bound<'py, PyArray1<f64>> {
+        let container = slf.clone().into_any();
+        let engine = slf.borrow();
+        column_view(engine.inner.candles_all(), 4, container)
     }
 
     /// Queue a market buy; it fills on the next bar's open. Returns the order id,
@@ -719,13 +791,31 @@ impl Engine {
             strategy.call_method1("init", (slf.clone(),))?;
         }
 
+        // A declared warm-up is read once, after init, so a strategy can compute it
+        // from the data it just looked at. The bars before it still advance and
+        // still fill whatever is resting; only the decision is skipped, which is
+        // what makes the guard everybody writes by hand unnecessary (ADR 0050).
+        let warmup: usize = match strategy.getattr("warmup") {
+            Ok(value) if !value.is_none() => value.extract().map_err(|_| {
+                PyValueError::new_err(format!(
+                    "warmup must be a non-negative whole number of bars, got {}",
+                    value.repr().map(|r| r.to_string()).unwrap_or_default()
+                ))
+            })?,
+            _ => 0,
+        };
+
+        let mut tick = 0usize;
         while !slf.borrow().inner.done() {
-            strategy.call_method1("next", (state.clone(), slf.clone()))?;
+            if tick >= warmup {
+                strategy.call_method1("next", (state.clone(), slf.clone()))?;
+            }
             state = {
                 let mut engine = slf.borrow_mut();
                 let next = engine.inner.step();
                 state_to_dict(py, &next)?
             };
+            tick += 1;
         }
 
         Ok(state)

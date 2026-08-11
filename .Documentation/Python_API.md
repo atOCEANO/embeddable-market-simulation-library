@@ -196,11 +196,15 @@ Each order in `open_orders` carries `id`, `side`, `kind` (`market`, `limit`, `st
 
 `observation(lookback)` returns a read-only numpy `(rows, 5)` view of the `lookback` bars ending at the current bar, straight onto the shared candle buffer with no copy. It is `rows = lookback`, or fewer early in the series. The array is read-only, and because the candle buffer is never mutated a view held across a `step()` stays a snapshot of that tick's window rather than going stale; it stays valid for the whole life of the engine (numpy keeps the engine alive as the array's base), so you never need to copy it ([ADR 0008](Decisions.md)).
 
-`eng.data` is the same kind of read-only, zero-copy view over the whole `(T, 5)` series rather than a window, so `eng.data[:, 3]` reads every close (columns are OHLCV by position). It is the full-series companion to `observation`, cursor-independent.
+`eng.data` is the same kind of read-only, zero-copy view over the whole `(T, 5)` series rather than a window (columns are OHLCV by position). It is the full-series companion to `observation`, cursor-independent.
+
+`eng.opens`, `eng.highs`, `eng.lows`, `eng.closes` and `eng.volumes` are the same view one field at a time, so a strategy reads `engine.closes` rather than remembering that the close is column 3. They are strided views into the same buffer, not copies, so taking all five costs nothing.
 
 ### Running a strategy
 
 `run(strategy)` resets, calls `strategy.init(engine)` if it exists, then for each bar calls `strategy.next(state, engine)` and steps, returning the final state. The strategy places orders through the engine, so it can use any order type. It should not call `step` itself; the driver does.
+
+If the strategy carries a `warmup`, read once after `init` so it can be computed there, `next` is not called until that many bars exist. The bars before it still advance and still fill whatever is resting; only the decision is skipped. It replaces the `if i < self.slow: return` a strategy would otherwise open with, and it closes what that guard is really for: on an early bar `close[i - 50]` is a **negative** index, numpy resolves it from the end of the array, and the rule reads prices from the future, reports a wonderful result, and raises nothing ([ADR 0050](Decisions.md)).
 
 ```python
 class BuyAndHold:
@@ -284,13 +288,13 @@ The full contract, every constructor argument, the observation and reward shapes
 from emsl.backtest import Backtester, Strategy
 
 class SmaCross(Strategy):
+    warmup = 30                               # next() waits for 30 bars of history
+
     def init(self, engine):
-        self.close = engine.data[:, 3]        # optional; runs once after reset
+        self.close = engine.closes            # optional; runs once after reset
 
     def next(self, state, engine):
         i = state["tick_index"]
-        if i < 30:
-            return
         fast = self.close[i - 10:i].mean()
         slow = self.close[i - 30:i].mean()
         if state["position"] == 0 and fast > slow:
@@ -315,12 +319,11 @@ class SmaWithStop(Strategy):
         self.fast, self.slow, self.stop_pct = fast, slow, stop_pct
 
     def init(self, engine):
-        self.close = engine.data[:, 3]                 # zero-copy view of every close
+        self.close = engine.closes                     # zero-copy view of every close
+        self.warmup = self.slow                        # read after init, so compute it here
 
     def next(self, state, engine):
         i = state["tick_index"]
-        if i < self.slow:
-            return
         fast = self.close[i - self.fast:i].mean()
         slow = self.close[i - self.slow:i].mean()
         pos = state["position"]
@@ -397,12 +400,11 @@ class SmaCross(Strategy):
         self.slow = slow
 
     def init(self, engine):
-        self.close = engine.data[:, 3]
+        self.close = engine.closes
+        self.warmup = self.slow
 
     def next(self, state, engine):
         i = state["tick_index"]
-        if i < self.slow:
-            return
         fast = self.close[i - self.fast:i].mean()
         slow = self.close[i - self.slow:i].mean()
         if state["position"] == 0 and fast > slow:

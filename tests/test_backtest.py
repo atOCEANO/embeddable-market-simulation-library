@@ -87,3 +87,66 @@ def test_hourly_candles_are_annualized_hourly_without_being_told():
     data.index = pd.date_range("2025-01-01", periods=len(raw), freq="1h", tz="UTC")
     result = Backtester(data).run(BuyThenClose())
     assert result.periods_per_year == 8760.0
+
+
+def test_the_named_price_views_are_the_columns_of_data():
+    from emsl import Engine
+
+    eng = Engine(series())
+    for name, column in (("opens", 0), ("highs", 1), ("lows", 2),
+                         ("closes", 3), ("volumes", 4)):
+        view = getattr(eng, name)
+        assert view.shape == (len(series()),)
+        assert np.array_equal(view, eng.data[:, column])
+
+
+def test_a_price_view_is_read_only_and_copies_nothing():
+    from emsl import Engine
+
+    eng = Engine(series())
+    assert not eng.closes.flags.writeable
+    with pytest.raises(ValueError):
+        eng.closes[0] = 1.0
+    # a view, not a copy: it shares the engine's buffer rather than duplicating it
+    assert eng.closes.base is not None
+
+
+class Late(Strategy):
+    """Reads five bars of history, and declares it rather than guarding by hand."""
+
+    warmup = 5
+
+    def init(self, engine):
+        self.closes = engine.closes
+        self.seen = []
+
+    def next(self, state, engine):
+        i = state["tick_index"]
+        self.seen.append(i)
+        # with the warm-up declared this can never be a negative index, which numpy
+        # would resolve from the END of the array and read the future from
+        assert self.closes[i - 5] == self.closes[max(i - 5, 0)]
+
+
+def test_a_declared_warmup_skips_the_bars_that_could_index_backwards():
+    long_series = np.repeat(series(), 4, axis=0)
+    strategy = Late()
+    Backtester(long_series, periods_per_year=365.0).run(strategy)
+    assert strategy.seen[0] == 5
+    assert strategy.seen == list(range(5, len(long_series) - 1))
+
+
+def test_a_warmup_longer_than_the_series_simply_never_decides():
+    strategy = Late()
+    strategy.warmup = 10_000
+    result = Backtester(series(), periods_per_year=365.0).run(strategy)
+    assert strategy.seen == []
+    assert result.stats["num_trades"] == 0
+
+
+def test_a_warmup_that_is_not_a_count_of_bars_is_refused():
+    strategy = Late()
+    strategy.warmup = "soon"
+    with pytest.raises(ValueError) as excinfo:
+        Backtester(series(), periods_per_year=365.0).run(strategy)
+    assert "non-negative whole number of bars" in str(excinfo.value)

@@ -57,12 +57,11 @@ class SmaCross(Strategy):
         self.slow = slow
 
     def init(self, engine):
-        self.close = engine.data[:, 3]
+        self.close = engine.closes
+        self.warmup = self.slow
 
     def next(self, state, engine):
         i = state["tick_index"]
-        if i < self.slow:
-            return
         fast = self.close[i - self.fast:i].mean()
         slow = self.close[i - self.slow:i].mean()
         if state["position"] == 0 and fast > slow:

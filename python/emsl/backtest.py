@@ -20,12 +20,22 @@ class Strategy:
     ``limit_buy``, ``stop``, ``close``, ...). ``init`` is optional and runs once
     after reset, before the first bar.
 
+    Set ``warmup`` to the longest history any decision reads, and ``next`` is not
+    called until that many bars exist. It replaces the ``if i < self.slow: return``
+    every strategy opens with, and it closes what that guard is really there for:
+    ``self.closes[i - self.slow]`` on an early bar is a NEGATIVE index, which numpy
+    resolves from the END of the array, so the rule reads prices from the future,
+    reports a wonderful result, and raises nothing. Declare it once instead. It is
+    read after ``init``, so it can be computed there (ADR 0050).
+
     It is called on every bar but the last. An order decided on a bar fills on the
     next one, so on the final bar there is no bar left to fill against and nothing
     a decision could do; a ``T``-bar series therefore calls ``next`` ``T - 1``
     times. A position still open at the end is marked into the equity curve and the
     return, but it never closes, so it appears in no trade metric (ADR 0009).
     """
+
+    warmup = 0
 
     def init(self, engine):
         pass

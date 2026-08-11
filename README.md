@@ -78,7 +78,7 @@ Then step through it. `emsl.to_ohlcv` turns that DataFrame (or a parquet path, o
 from emsl import Engine, to_ohlcv
 
 eng = Engine(to_ohlcv(candles), market="spot", quote=10_000)
-close = eng.data[:, 3]                         # zero-copy view of every close
+close = eng.closes                             # zero-copy view of every close
 state = eng.reset()
 while not eng.done():
     i = state["tick_index"]
@@ -100,22 +100,26 @@ print(state["equity"], state["position"])      # account value and position at t
 
 ### Raw engine
 
+The candles are readable as named zero-copy views, `engine.opens`, `engine.highs`, `engine.lows`, `engine.closes` and `engine.volumes`, so nothing has to remember that the close is column 3. `engine.data` is still the whole `(T, 5)` array.
+
 The order verbs mirror a real exchange, so a strategy is written against the same calls it would use live. `market_buy` / `market_sell` (taker, fills at the next open), `limit_buy` / `limit_sell` (maker, rests until a candle reaches it), `stop(side, size, trigger)`, `close()`, `cancel(order_id)`, and `cancel_all()`. The full `order(side, size, type=, price=, trigger=, reduce_only=, post_only=, tif=)` primitive sets the flags the shortcuts leave default (a reduce-only stop-loss, a post-only limit, an IOC or FOK fill), and `qty_from_weight` / `qty_from_quote` size an order from a fraction of equity or a cash amount. One netted position: net long, net short, or flat, never both, and never short on spot. Every `step` returns a state dict; see the [Python API](.Documentation/Python_API.md) for the full field list and order semantics.
 
 ### Backtest
 
-A classic `Strategy` class with `init` and `next`, driven over the series, returning stats, the equity curve, and the trade log.
+A classic `Strategy` class with `init` and `next`, driven over the series, returning stats, the equity curve, and the trade log. Set `warmup` to the longest history a decision reads and `next` is not called until that many bars exist, which replaces the guard every strategy used to open with and closes what that guard was really for: on an early bar `close[i - 50]` is a negative index, numpy resolves it from the **end** of the array, and the rule reads prices from the future without raising anything.
 
 ```python
 from emsl.backtest import Backtester, Strategy
 
 class BuyDip(Strategy):
+    warmup = 1                                # next() waits until a previous bar exists
+
     def init(self, engine):
-        self.close = engine.data[:, 3]        # zero-copy view of the closes
+        self.close = engine.closes            # zero-copy view of the closes
 
     def next(self, state, engine):
         i = state["tick_index"]
-        if i > 0 and state["position"] == 0 and self.close[i] < self.close[i - 1]:
+        if state["position"] == 0 and self.close[i] < self.close[i - 1]:
             engine.market_buy(1.0)            # buy after a down bar
         elif state["position"] > 0 and self.close[i] > self.close[i - 1]:
             engine.close()                    # close into the next up bar
@@ -176,12 +180,11 @@ class SmaCross(Strategy):
         self.fast, self.slow = fast, slow
 
     def init(self, engine):
-        self.close = engine.data[:, 3]
+        self.close = engine.closes
+        self.warmup = self.slow               # read after init, so it can be computed
 
     def next(self, state, engine):
         i = state["tick_index"]
-        if i < self.slow:
-            return
         fast = self.close[i - self.fast:i].mean()
         slow = self.close[i - self.slow:i].mean()
         if state["position"] == 0 and fast > slow:
