@@ -83,9 +83,17 @@ impl FillModel {
 
     /// Fill a resting limit against `bar`. A buy fills if the bar trades at or
     /// below its price, a sell if at or above. It fills AT the limit price, never
-    /// better (a bar that gaps through still fills at the limit), pays no slippage
-    /// (a maker), and is capped at the volume fraction. `None` if untouched or the
+    /// better (a bar that gaps through still fills at the limit), pays no
+    /// slippage, and is capped at the volume fraction. `None` if untouched or the
     /// bar gives no volume.
+    ///
+    /// Whether it pays the maker or the taker rate is decided against the bar's
+    /// OPEN, not against the order type. A limit already through the market when
+    /// the bar opens is marketable: it is lifted on arrival and takes liquidity,
+    /// so it pays the taker rate. Booking every limit as a maker meant a buy and a
+    /// sell resting at the same price both filled on one wide bar as makers, and
+    /// since a maker rate is legally a rebate, that straddle ended flat and richer
+    /// every bar, without bound (ADR 0045).
     pub fn fill_limit(&self, order: &Order, bar: &Candle) -> Option<Fill> {
         let limit = order.price?.get();
         let touched = match order.side {
@@ -103,7 +111,7 @@ impl FillModel {
             side: order.side,
             size: Qty(size),
             price: Price(limit),
-            is_taker: false,
+            is_taker: self.limit_crosses(order.side, Price(limit), Price(bar.open)),
         })
     }
 
@@ -369,6 +377,29 @@ mod tests {
             )
             .unwrap();
         assert_eq!(f.price.get(), 100.0);
+        // and it is marketable at that open, so it takes rather than makes
+        assert!(f.is_taker);
+    }
+
+    #[test]
+    fn a_limit_pays_maker_or_taker_by_where_the_bar_opened() {
+        let m = model(0.0, 1.0);
+        // the bar opens away from the limit and has to come to it: a maker
+        let made = m
+            .fill_limit(
+                &limit(Side::Buy, 1.0, 100.0),
+                &ohlc(101.0, 102.0, 98.0, 101.0, 1000.0),
+            )
+            .unwrap();
+        assert!(!made.is_taker);
+        // the bar opens at the limit, so it is lifted on arrival: a taker. This is
+        // the straddle case, where a buy and a sell at one price both fill on one
+        // bar and used to collect two maker rebates for a flat position (ADR 0045)
+        let bar = ohlc(100.0, 101.0, 99.0, 100.0, 1000.0);
+        let bought = m.fill_limit(&limit(Side::Buy, 1.0, 100.0), &bar).unwrap();
+        let sold = m.fill_limit(&limit(Side::Sell, 1.0, 100.0), &bar).unwrap();
+        assert!(bought.is_taker);
+        assert!(sold.is_taker);
     }
 
     #[test]

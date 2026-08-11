@@ -845,7 +845,7 @@ impl Engine {
 
 #[cfg(test)]
 mod tests {
-    use super::{Engine, EngineConfig};
+    use super::{Engine, EngineConfig, CLOSE_EPS};
     use crate::candles::Candles;
     use emsl_core::{Candle, Fill, Market, OrderType, Price, Qty, Side, TimeInForce};
 
@@ -2108,6 +2108,43 @@ mod tests {
         let s = e.step(); // reaches 50, fills 100 (10% of 1000), cancels the other 400
         assert_eq!(s.position, 100.0);
         assert!(s.open_orders.is_empty()); // IOC: nothing rests
+    }
+
+    #[test]
+    fn a_straddle_of_limits_at_one_price_never_ends_richer() {
+        // ADR 0006 accepts that a buy and a sell resting at the same price can both
+        // fill against one wide bar, which is a bar-fidelity artifact. Booking both
+        // as makers turned that artifact into a money printer, because a maker rate
+        // is legally a rebate: the account came back flat and richer every bar,
+        // without bound, and a search over anything placing limits walks into it
+        for maker in [-0.0002, 0.0, 0.0002] {
+            for market in [Market::Spot, Market::Perp] {
+                let config = EngineConfig {
+                    market,
+                    quote: 10_000.0,
+                    fee_maker: maker,
+                    fee_taker: 0.0006,
+                    max_leverage: 10.0,
+                    ..cfg()
+                };
+                let candles = Candles::new(vec![
+                    ohlc(100.0, 101.0, 99.0, 100.0, 1000.0),
+                    ohlc(100.0, 101.0, 99.0, 100.0, 1000.0),
+                    ohlc(100.0, 101.0, 99.0, 100.0, 1000.0),
+                ]);
+                let mut e = Engine::new(candles, config);
+                e.reset();
+                e.place_limit(Side::Buy, 1.0, 100.0, false, false, TimeInForce::Gtc);
+                e.place_limit(Side::Sell, 1.0, 100.0, false, false, TimeInForce::Gtc);
+                let s = e.step();
+                assert!(s.position.abs() <= CLOSE_EPS, "{market:?} left a position");
+                assert!(
+                    s.equity <= 10_000.0 + CLOSE_EPS,
+                    "{market:?} at maker {maker} ended with {}",
+                    s.equity
+                );
+            }
+        }
     }
 
     #[test]
