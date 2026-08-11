@@ -12,6 +12,7 @@
   <a href="../README.md">Introduction</a> &nbsp;•&nbsp;
   <a href="Python_API.md">Python API</a> &nbsp;•&nbsp;
   <a href="RL_Guide.md">RL Guide</a> &nbsp;•&nbsp;
+  <a href="Plotting.md">Plotting</a> &nbsp;•&nbsp;
   <a href="Architecture.md">Architecture</a> &nbsp;•&nbsp;
   <a href="Decisions.md">Decisions</a> &nbsp;•&nbsp;
   <b>Contributor Guide</b> &nbsp;•&nbsp;
@@ -37,8 +38,12 @@ The library is a cargo workspace of three crates plus a thin Python package. The
 | A bar-level behavior (fills, the step machine, the reporter, batched stepping) | `crates/bar-engine` |
 | A Python binding (a pyclass method, an argument type, a numpy bridge) | `crates/emsl-py` |
 | A convenience over the bindings (a new runner, a wrapper) | `python/emsl` |
+| Anything a chart draws (a mark, a guard, a panel rule) | `python/emsl/_chart.py` and `plot.py` |
+| How a chart is painted (a primitive, the legend, the controls) | `python/emsl/_static` |
 
 A good test of placement: could a future tick or L2 engine reuse it? If yes, it is a core primitive and belongs in `emsl-core`, which holds no candle series and no bar-level logic. If it only makes sense per candle, it belongs in `bar-engine`. The Python crate and package hold no simulation logic at all; they parse, convert, and orchestrate.
+
+The chart layer splits on the same principle one layer further out: Python decides what is drawn and where, and the JavaScript decides only how it is painted, so no colour, threshold, number format or arithmetic lives on that side ([ADR 0043](Decisions.md)). A test greps the shipped assets for a colour, and the only hit it allows is full transparency. Every asset is a plain script that declares and executes nothing at load, which is what lets the same files run as separate script tags in the development harness and as one bundle in the wheel; there is no npm and no build step anywhere in the project.
 
 <br>
 

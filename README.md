@@ -12,6 +12,7 @@
   <b>Introduction</b> &nbsp;•&nbsp;
   <a href=".Documentation/Python_API.md">Python API</a> &nbsp;•&nbsp;
   <a href=".Documentation/RL_Guide.md">RL Guide</a> &nbsp;•&nbsp;
+  <a href=".Documentation/Plotting.md">Plotting</a> &nbsp;•&nbsp;
   <a href=".Documentation/Architecture.md">Architecture</a> &nbsp;•&nbsp;
   <a href=".Documentation/Decisions.md">Decisions</a> &nbsp;•&nbsp;
   <a href=".Documentation/Contributor_Guide.md">Contributor Guide</a> &nbsp;•&nbsp;
@@ -31,13 +32,13 @@ The point is research speed. A single backtest, a parameter search over thousand
 
 The whole engine is one small loop: load candles, place an order if you want to, call `step` to advance exactly one candle, read your new state, repeat until the data runs out. Everything else, the RL env and the backtester, is a thin wrapper that drives that same loop for you.
 
-**Embeddable, not a framework.** You own the loop, so it drops into a system you already have instead of forcing you into its own. The core knows nothing about rewards, indicators, or charts; it advances a candle and returns a state. That is what lets one engine serve both a five-line backtest and a batched RL rollout, and it is why each word of the name is a fact rather than a brand.
+**Embeddable, not a framework.** You own the loop, so it drops into a system you already have instead of forcing you into its own. The core knows nothing about rewards or indicators; it advances a candle and returns a state. That is what lets one engine serve both a five-line backtest and a batched RL rollout, and it is why each word of the name is a fact rather than a brand. The chart layer sits outside that core and holds to the same rule: it computes nothing and knows no indicator names, it draws the arrays you hand it.
 
 <br>
 
 <div align="center">
   <img src=".Documentation/imgs/205310.png" alt="One engine behind every surface" width="80%" />
-  <p style="margin: 0;"><i>One engine and one fill model behind a backtest, a Gymnasium RL env, and a parameter search.</i></p>
+  <p style="margin: 0;"><i>One engine and one fill model behind a backtest, a Gymnasium RL env, and a parameter search</i></p>
 </div>
 
 <br>
@@ -45,7 +46,7 @@ The whole engine is one small loop: load candles, place an order if you want to,
 
 ## Scope and Fidelity
 
-It **does**: event-driven bar simulation, thousands of parallel runs over one shared series, the order types a real venue offers, a cost model (maker/taker fees, perp funding, slippage, market impact, a per-order volume cap), and a small Python API.
+It **does**: event-driven bar simulation, thousands of parallel runs over one shared series, the order types a real venue offers, a cost model (maker/taker fees, perp funding, slippage, market impact, a per-order volume cap), a small Python API, and a chart layer that draws a run and your own arrays into one self-contained HTML file.
 
 It **does not**: model the full order book (L2), latency, or queue position, and it places no live orders. This is the bar-level, approximate member of a planned family; a future sibling is a tick and L2 engine at higher resolution. At bar granularity the fill model cannot see the intrabar path, so it can be slightly more generous than a live book would be; the costs it charges are the real ones. The bar-level resolution limits are recorded in [ADR 0006](.Documentation/Decisions.md).
 
@@ -214,6 +215,53 @@ Higher wins by default; pass `direction="minimize"` when your metric is a cost. 
 
 `tune` needs optuna and cloudpickle (`pip install 'emsl[tune]'`); the [Python API](.Documentation/Python_API.md#tuning) covers the search space, objective, and result in full.
 
+### Looking at the result
+
+The four paths above produce numbers. `emsl.chart` is how you look at them: candles, the fills on the bars they happened on, an equity curve, a drawdown panel, a trade log, and any array of your own beside them.
+
+```python
+import emsl
+from emsl.plot import Line
+
+strategy = SmaCross(fast=20, slow=50)
+
+result = emsl.backtest.Backtester(candles=frame, market="perp").run(strategy)
+
+emsl.chart(
+    frame=frame,
+    marks=[
+        Line(values=strategy.fast, name="SMA 20"),
+        Line(values=strategy.slow, name="SMA 50", style="dashed"),
+    ],
+    run=result,
+).show()
+```
+
+<div align="center">
+  <img src=".Documentation/imgs/charts/chart-backtest.png" alt="A backtest drawn: candles, two averages, fills on the bars they filled on, momentum, equity and drawdown" width="100%" />
+  <p style="margin: 0;"><i>One call, one year of hourly candles. Nothing above configures a panel, an axis, or a colour</i></p>
+</div>
+
+<br>
+
+**Everything above the fold came free**, and everything else is one more mark in the same list. You add a `Line` for a moving average or an equity curve of your own, a `Band` for a channel or a conditional shading, a `Level` for a threshold, `Markers` for a glyph on every bar a condition holds, a `Background` for a regime, a `Histogram` for anything per-bar. Any of them goes on the candles or on a panel of its own, just by naming one, and panels are stretched, pinned to a range, put on a log scale, or hidden. Every mark takes one colour or **one colour per bar**, so a line can carry a second variable in its own shading, and the candles themselves can be tinted the same way. A series can even be drawn past the last candle, which is what an Ichimoku cloud needs.
+
+None of it is required. A frame alone is a chart, an array finds its own home, and a run brings its own panels.
+
+**`show()` draws it in the notebook cell**, inline, where you are already working. No second window, no server, no separate viewer.
+
+**The chart stays in the notebook.** It is stored in the `.ipynb` itself, so opening that file next year shows the same charts, scrollable and zoomable, with no kernel running and nothing re-executed. Send somebody the notebook and they see what you saw.
+
+**`save()` writes one HTML file** you open in a browser by double-clicking it, for the people who want the picture without the notebook.
+
+```python
+emsl.chart(frame=frame, run=result).save(path="reports/run.html")
+```
+
+It computes nothing and knows no indicator names: pass the strategy's own arrays and the line on screen cannot drift from the line that made the decision.
+
+The [Plotting](.Documentation/Plotting.md) guide shows every one of those marks with the picture it draws, the length contract that keeps a series on the bar it belongs to, and what cannot be charted.
+
 <br>
 <br>
 
@@ -236,13 +284,26 @@ These move with hardware and workload, so treat them as shape, not a promise. Ru
 
 ## Install
 
-Every [release](https://github.com/atOCEANO/embeddable-market-simulation-library/releases) carries prebuilt wheels for Linux (x86_64 and aarch64), macOS (Intel and Apple silicon in one universal2 file), and Windows. Installing from those needs no compiler, and pip picks the one matching your machine:
+Every [release](https://github.com/atOCEANO/embeddable-market-simulation-library/releases) carries prebuilt wheels, so installing one needs no compiler. **emsl is not on PyPI**, so a bare `pip install emsl` finds nothing; point pip at a release instead.
+
+Each build covers one platform, and one wheel per platform serves **Python 3.9 and up**, because the extension is stable-ABI:
+
+| Platform | Wheel | Built |
+| :--- | :--- | :--- |
+| Linux x86_64 | manylinux | every release |
+| Linux aarch64 | manylinux | best effort, cross-compiled; a release may not have one |
+| macOS, Intel and Apple silicon | one universal2 file covering both | every release |
+| Windows x64 | win_amd64 | every release |
+
+Anything not in that table, Windows on ARM for instance, builds from source in the same command; you just need the Rust toolchain for it.
+
+**The version below is the one to change.** It appears once here on purpose, because a hardcoded tag in a README goes stale the day after a release; take the current one from the badge at the top of this page or from the releases page.
 
 ```bash
 pip install --find-links https://github.com/atOCEANO/embeddable-market-simulation-library/releases/expanded_assets/v0.3.1 emsl
 ```
 
-The optional extras work the same way and stack:
+The optional extras use the same `--find-links` URL and stack:
 
 | Extra | Pulls | For |
 | :--- | :--- | :--- |
@@ -251,19 +312,16 @@ The optional extras work the same way and stack:
 | `sb3` | stable-baselines3 | the Stable-Baselines3 adapter |
 
 ```bash
-pip install --find-links https://github.com/atOCEANO/embeddable-market-simulation-library/releases/expanded_assets/v0.3.1 "emsl[tune,sb3]"
+pip install --find-links <the url above> "emsl[tune,sb3]"
 ```
 
-To choose the wheel yourself, take its URL from the release assets:
+To pick a wheel by hand, copy its link from the assets list on the [releases page](https://github.com/atOCEANO/embeddable-market-simulation-library/releases) and pass that URL to `pip install` directly.
+
+Building from source needs the Rust toolchain ([rustup](https://rustup.rs)), and pip drives the build for you:
 
 ```bash
-pip install https://github.com/atOCEANO/embeddable-market-simulation-library/releases/download/v0.3.1/emsl-0.3.1-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
-```
-
-Building from source instead needs the Rust toolchain ([rustup](https://rustup.rs)), and pip drives the build for you. Pin the tag when a build has to be reproducible:
-
-```bash
-pip install "git+https://github.com/atOCEANO/embeddable-market-simulation-library.git@v0.3.1"
+pip install "git+https://github.com/atOCEANO/embeddable-market-simulation-library.git"          # main
+pip install "git+https://github.com/atOCEANO/embeddable-market-simulation-library.git@v0.3.1"   # or a tag
 ```
 
 From a local checkout, either as a plain install or as a development build:
@@ -285,7 +343,7 @@ maturin build --release --out dist
 pip install dist/*.whl
 ```
 
-That one stable-ABI wheel covers Python 3.9 and up, so the same file serves every interpreter in that range, and `numpy` and `gymnasium` install with the package. emsl is not published on PyPI, so a bare `pip install emsl` finds nothing; use one of the forms above.
+`numpy` and `gymnasium` install with the package either way.
 
 <br>
 <br>

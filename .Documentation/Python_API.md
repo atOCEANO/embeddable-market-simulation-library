@@ -12,6 +12,7 @@
   <a href="../README.md">Introduction</a> &nbsp;•&nbsp;
   <b>Python API</b> &nbsp;•&nbsp;
   <a href="RL_Guide.md">RL Guide</a> &nbsp;•&nbsp;
+  <a href="Plotting.md">Plotting</a> &nbsp;•&nbsp;
   <a href="Architecture.md">Architecture</a> &nbsp;•&nbsp;
   <a href="Decisions.md">Decisions</a> &nbsp;•&nbsp;
   <a href="Contributor_Guide.md">Contributor Guide</a> &nbsp;•&nbsp;
@@ -35,6 +36,9 @@ Everything the package exports, and where each piece is documented in full:
 | `emsl.tune` | Search a strategy's parameters, each trial a full backtest, across worker processes. [Below](#tuning). |
 | `emsl.rl` | `VectorEnv`, the Gymnasium vector env. [Below](#reinforcement-learning), in full in the [RL Guide](RL_Guide.md). |
 | `emsl.sb3` | `EmslVecEnv`, the Stable-Baselines3 adapter. [RL Guide](RL_Guide.md#training). |
+| `emsl.chart` | Draw a frame, your own arrays and a run as one self-contained HTML document. [Below](#plotting), in full in the [Plotting](Plotting.md) guide. |
+| `emsl.chart_defaults` | Set the theme, height and palette every later chart uses. [Plotting](Plotting.md#output). |
+| `emsl.plot` | `Line`, `Histogram`, `Band`, `Level`, `Marker`, `Background`, `Panel`, and `ramp`: the marks a chart carries. [Plotting](Plotting.md#the-marks). |
 | `emsl.to_ohlcv` | Turn a DataFrame, a parquet path, or an array into the `(T, 5)` the engine takes. [Below](#data-input). |
 
 All of it sits on the one Rust engine, so a backtest, an RL rollout, and a parameter search see the same fill model and the same costs.
@@ -295,7 +299,7 @@ print(result.stats["sharpe"], result.stats["max_drawdown_pct"])
 print(result.equity_curve[-1], len(result.trades))
 ```
 
-`Backtester(candles, market, quote, fee_taker, fee_maker, slippage_bps, max_fill_fraction, max_open_orders, leverage, impact, funding_rate, funding_interval, periods_per_year, risk_free)` shares the engine knobs and adds the two stats parameters. `run(strategy)` returns a `BacktestResult` with `.stats` (dict), `.equity_curve` (numpy array), and `.trades` (list of dicts). Subclass `Strategy` and override `next(state, engine)`; `init(engine)` is optional. The same `Strategy` is the unit [tuning](#tuning) searches: declare the tunable parameters as constructor arguments, and `tune` builds a fresh strategy per trial.
+`Backtester(candles, market, quote, fee_taker, fee_maker, slippage_bps, max_fill_fraction, max_open_orders, leverage, impact, funding_rate, funding_interval, periods_per_year, risk_free)` shares the engine knobs and adds the two stats parameters. `run(strategy)` returns a `BacktestResult` with `.stats` (dict), `.equity_curve` (numpy array), `.trades` (list of dicts), and `.initial` (the balance the run opened with, which the curve does not contain because it records a point per advance). Subclass `Strategy` and override `next(state, engine)`; `init(engine)` is optional. The same `Strategy` is the unit [tuning](#tuning) searches: declare the tunable parameters as constructor arguments, and `tune` builds a fresh strategy per trial.
 
 A strategy uses any order type, the sizing helpers, and the state's `open_orders` to manage risk. This one sizes each entry to half of equity and rests a reduce-only stop-loss under the position:
 
@@ -444,3 +448,36 @@ best = result.best_strategy()             # a fresh SmaCross with the best param
 The `TuneResult` carries `.best_params` (a dict), `.best_value` (the objective at the best trial), `.best_stats` (the winning run's full [stats](#statistics) dict, so its return, drawdown, and trade count are there without a re-run), `.trials` (a list of `{number, params, value, state, stats}`), and `.study` (the underlying optuna study for deeper inspection). `.best_strategy()` builds a fresh strategy from `.best_params`.
 
 With `n_jobs=1` a seeded search is reproducible, since the sampler is told results in a fixed order. With `n_jobs>1` the sampler sees results in completion order, so the exact sequence of trials can vary run to run even with a seed; each trial's score is still deterministic. On Windows, calling `tune` with `n_jobs>1` from a script means putting the call under `if __name__ == "__main__":`, the standard requirement for the spawn start method; a notebook needs no guard.
+
+<br>
+
+## Plotting
+
+`emsl.chart` draws a frame, your own arrays and a run. `show()` puts the chart in the notebook cell, and it is stored in the `.ipynb`, so reopening that notebook shows the same charts with no kernel running. `save(path)` writes one HTML file that opens in a browser instead.
+
+It computes nothing and knows no indicator names: you bring arrays, it turns them into marks ([ADR 0042](Decisions.md)). Everything is precomputed, which is what lets a chart outlive the process that made it ([ADR 0041](Decisions.md)). No dependency beyond numpy and the standard library: pandas is duck-typed, and IPython is imported only inside `show`.
+
+```python
+import emsl
+from emsl.plot import Line, Band, Level, Panel
+
+result = emsl.backtest.Backtester(frame, market="perp", fee_taker=0.0005).run(s)
+
+emsl.chart(frame, [                                  # matched by type, in any order
+    Line(s.fast, "SMA 20"),                          # the strategy's own array, not a copy
+    Line(s.slow, "SMA 50", style="dashed"),
+    Line(rsi, "RSI 14", panel="momentum"),           # a name not yet used makes a panel
+    Level(70, panel="momentum", style="dotted"),
+    Band(rsi, 70, only="above", panel="momentum",    # shaded only where it is past 70
+         fill=("#ff547000", "#ff547059")),
+], result,                                           # candles, arrows, equity, drawdown, log
+    panels=[Panel("momentum", weight=1.6, range=(0, 100))],
+    title="SMA cross 20/50",
+).show()
+```
+
+`chart(frame, *args, panels=, focus=, candle_color=, theme=, height=, title=)` returns a `Chart`, with `show()` for a notebook cell, `save(path)` for a file, and `spec()` for the underlying document. `frame` is a DataFrame with a DatetimeIndex or a parquet path, narrower than the `Backtester` deliberately: a chart cannot omit its x axis, and fabricating one is how a file ends up reading 1970.
+
+Arrays are read by position. Length `T` maps entry `i` to bar `i` and length `T - 1` maps entry `i` to bar `i + 1`, which is what `equity_curve` and a diff are; any other length raises and names both numbers ([ADR 0037](Decisions.md)). A `NaN` is drawn as a gap rather than a dropped row ([ADR 0038](Decisions.md)).
+
+The full contract, the mark reference, the padding helpers for values recorded inside `next`, and what cannot be charted are in the [Plotting](Plotting.md) guide.
