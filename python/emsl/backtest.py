@@ -8,7 +8,7 @@ logic lives here; the engine does all of it.
 
 from __future__ import annotations
 
-from ._data import prepare
+from ._data import annualization, prepare
 from ._emsl import Engine
 
 
@@ -42,13 +42,20 @@ class BacktestResult:
     reading a peak off the curve alone cannot see a fall from the starting balance.
     The engine seeds its own drawdown from it, and it is carried here so a second
     reading cannot disagree (ADR 0042). It is ``None`` on a result built by hand.
+
+    ``periods_per_year`` is the annualization the stats were computed at, carried
+    for the same reason: anything reading the curve again, ``emsl.metrics`` most
+    of all, has to reach the same numbers this result already reports, and
+    inferring it twice is how two readings come to disagree (ADR 0048).
     """
 
-    def __init__(self, stats, equity_curve, trades, initial=None):
+    def __init__(self, stats, equity_curve, trades, initial=None,
+                 periods_per_year=None):
         self.stats = stats
         self.equity_curve = equity_curve
         self.trades = trades
         self.initial = initial
+        self.periods_per_year = periods_per_year
 
     def __repr__(self):
         stats = self.stats or {}
@@ -64,6 +71,11 @@ class Backtester:
     ``to_ohlcv``). The remaining arguments are the engine's configuration;
     reporting is always on so the result carries stats, the equity curve, and the
     trade log.
+
+    ``periods_per_year`` is read from the candles' own spacing when they carry a
+    datetime index, so hourly candles annualize at 8760 without being told. Pass
+    a number to state it yourself. A numpy input has no index to read, and it
+    says so rather than assuming (ADR 0048).
     """
 
     def __init__(
@@ -80,7 +92,7 @@ class Backtester:
         impact=0.0,
         funding_rate=0.0,
         funding_interval=0,
-        periods_per_year=365.0,
+        periods_per_year=None,
         risk_free=0.0,
     ):
         # one read: a parquet path used to be decoded twice, once for the candles
@@ -99,7 +111,7 @@ class Backtester:
             funding_rate=funding_rate,
             funding_interval=funding_interval,
         )
-        self._periods_per_year = periods_per_year
+        self._periods_per_year = annualization(periods_per_year, self._index)
         self._risk_free = risk_free
 
     def run(self, strategy):
@@ -112,6 +124,7 @@ class Backtester:
             equity_curve=engine.equity_curve(),
             trades=trades,
             initial=self._config["quote"],
+            periods_per_year=self._periods_per_year,
         )
 
     def _stamp_times(self, trades):

@@ -22,6 +22,10 @@ declares its tunables as constructor arguments and stores them as fields.
   where a handful of samples produces the widest interval and the best-looking
   number, so a floor is the cheapest defence against a winner that is really noise
   (ADR 0034).
+- **Annualization**: ``periods_per_year`` is read once from the candles' own
+  timestamps and handed to every trial, so a parallel search cannot end up with
+  workers annualizing differently from the one that inferred it. Pass a number to
+  state it; a numpy input has no timestamps and says so (ADR 0048).
 - **Parallelism**: ``n_jobs=1`` runs in this process; ``n_jobs>1`` (or ``-1`` for
   every core) runs trials in worker processes, rebuilding the engine in each worker
   rather than shipping a live one across the boundary (ADR 0021). Note that only
@@ -80,7 +84,7 @@ import warnings
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from concurrent.futures.process import BrokenProcessPool
 
-from ._data import to_ohlcv
+from ._data import annualization, prepare
 from .backtest import Backtester
 
 __all__ = ["tune", "Int", "Float", "Categorical", "TuneResult"]
@@ -458,7 +462,7 @@ def tune(
     impact=0.0,
     funding_rate=0.0,
     funding_interval=0,
-    periods_per_year=365.0,
+    periods_per_year=None,
     risk_free=0.0,
 ):
     """Search ``strategy``'s parameters over ``space`` for the best ``objective``.
@@ -490,7 +494,11 @@ def tune(
     n_jobs = _resolve_n_jobs(n_jobs)
     _validate_param_names(strategy, space)
 
-    candles = to_ohlcv(data)
+    # resolve the annualization here, from the index, rather than letting each
+    # Backtester read it: the trials run on the bare array, and in a parallel
+    # search they run in a worker that never saw the frame at all
+    candles, index = prepare(data)
+    periods_per_year = annualization(periods_per_year, index)
     config = dict(
         market=market,
         quote=quote,

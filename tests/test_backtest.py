@@ -65,3 +65,25 @@ def test_trades_carry_times_when_a_datetime_index_is_given():
 def test_trades_stay_tick_only_for_numpy_input():
     result = Backtester(series(), market="spot", fee_taker=0.0, fee_maker=0.0).run(BuyThenClose())
     assert "entry_time" not in result.trades[0]  # no index, so no timestamps
+
+
+def test_the_result_carries_the_annualization_its_stats_were_computed_at():
+    # anything reading the curve a second time, emsl.metrics most of all, has to
+    # reach the numbers this result already reports, and inferring it twice is how
+    # two readings come to disagree (ADR 0048)
+    with pytest.warns(UserWarning):
+        result = Backtester(series()).run(BuyThenClose())
+    assert result.periods_per_year == 365.0
+
+    stated = Backtester(series(), periods_per_year=8760.0).run(BuyThenClose())
+    assert stated.periods_per_year == 8760.0
+    assert stated.stats["sharpe"] != result.stats["sharpe"]
+
+
+def test_hourly_candles_are_annualized_hourly_without_being_told():
+    pd = pytest.importorskip("pandas")
+    raw = series()
+    data = pd.DataFrame(raw, columns=["open", "high", "low", "close", "volume"])
+    data.index = pd.date_range("2025-01-01", periods=len(raw), freq="1h", tz="UTC")
+    result = Backtester(data).run(BuyThenClose())
+    assert result.periods_per_year == 8760.0

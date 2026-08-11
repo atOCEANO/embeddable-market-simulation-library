@@ -7,6 +7,7 @@ import pandas as pd
 import pytest
 
 from emsl import to_ohlcv
+from emsl._data import annualization, bars_per_year
 
 
 def frame(n=10):
@@ -77,3 +78,60 @@ def test_duplicate_datetime_index_is_rejected():
     df.index = pd.to_datetime(["2024-01-01", "2024-01-01", "2024-01-02"])
     with pytest.raises(ValueError):
         to_ohlcv(df)
+
+
+def stamped(n, freq):
+    data = frame(n)
+    data.index = pd.date_range("2025-01-01", periods=n, freq=freq, tz="UTC")
+    return data
+
+
+def test_hourly_candles_annualize_at_eight_thousand_seven_hundred_and_sixty():
+    assert bars_per_year(stamped(200, "1h").index.to_numpy()) == 8760.0
+
+
+def test_a_handful_of_missing_bars_does_not_move_the_annualization():
+    # the median gap decides it, so dropping bars leaves the interval intact
+    data = stamped(200, "1h")
+    data = data.drop(data.index[[10, 11, 12, 80, 150]])
+    assert bars_per_year(data.index.to_numpy()) == 8760.0
+
+
+def test_a_spacing_that_is_no_real_interval_is_reported_rather_than_rounded():
+    # five hours is not a candle interval anyone ships, so this is a mixed or
+    # decimated feed. Rounding it to the four-hour neighbour would state a bar
+    # count nothing in the data supports, so it says what it saw instead
+    data = stamped(40, "1h")
+    with pytest.warns(UserWarning) as caught:
+        inferred = bars_per_year(data.index[::5].to_numpy())
+    assert "not within one percent" in str(caught[0].message)
+    assert inferred == 365.0 * 24.0 * 60.0 * 60.0 / (5 * 3600.0)
+
+
+def test_an_outage_leaves_the_interval_alone():
+    # a whole day missing out of a year of hourly candles does not make them
+    # something other than hourly, and the median is what keeps that true
+    data = stamped(200, "1h")
+    data = data.drop(data.index[40:64])
+    assert bars_per_year(data.index.to_numpy()) == 8760.0
+
+
+def test_five_minute_and_daily_candles_are_read_too():
+    assert bars_per_year(stamped(50, "5min").index.to_numpy()) == 105_120.0
+    assert bars_per_year(stamped(50, "1D").index.to_numpy()) == 365.0
+
+
+def test_candles_with_no_datetime_index_have_no_annualization_to_read():
+    assert bars_per_year(None) is None
+    assert bars_per_year(np.arange(10)) is None
+    assert bars_per_year(stamped(2, "1h").index.to_numpy()) is None  # too few gaps
+
+
+def test_the_annualization_the_caller_states_is_used_unchanged():
+    assert annualization(252.0, stamped(50, "1h").index.to_numpy()) == 252.0
+
+
+def test_a_series_without_times_says_so_instead_of_assuming_daily():
+    with pytest.warns(UserWarning) as caught:
+        assert annualization(None, None) == 365.0
+    assert "no datetime index" in str(caught[0].message)
