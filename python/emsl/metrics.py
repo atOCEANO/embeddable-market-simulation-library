@@ -26,6 +26,10 @@ import numpy as np
 
 __all__ = [
     "returns",
+    "cost_curve",
+    "breakeven_bps",
+    "excursions",
+    "session_buckets",
     "sharpe",
     "skew",
     "kurtosis",
@@ -459,6 +463,187 @@ def _normal_ppf(p):
     r = q * q
     return (((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q / \
            (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1.0)
+
+
+def cost_curve(strategy, data, costs=(0.0, 2.0, 5.0, 10.0, 20.0), **config):
+    """Re-run ``strategy`` over ``data`` at each round-trip cost in ``costs``, in
+    basis points, and report what survives.
+
+    The shipped defaults are a frictionless venue: no slippage, no impact, and one
+    order allowed to eat a whole bar. An edge found there is an edge nobody can
+    trade, and the useful question is not whether a strategy makes money but how
+    much friction it survives. Each cost is split evenly across the two sides of a
+    round trip and applied to both fee rates, so 10 means five basis points in and
+    five out. Anything else in ``config`` goes to the ``Backtester`` unchanged.
+
+    ``strategy`` is a ``Strategy`` subclass, which is rebuilt for each run, or an
+    instance, which is reused.
+    """
+    from .backtest import Backtester
+
+    _own_the_fees(config, "cost_curve")
+    out = []
+    for bps in costs:
+        rate = float(bps) / 2.0 / 10_000.0
+        result = Backtester(
+            data, fee_taker=rate, fee_maker=rate, **config
+        ).run(_fresh(strategy))
+        out.append({
+            "round_trip_bps": float(bps),
+            "total_return_pct": result.stats["total_return_pct"],
+            "sharpe": result.stats["sharpe"],
+            "num_trades": result.stats["num_trades"],
+            "fees": float(sum(t["fees"] for t in result.trades)),
+        })
+    return out
+
+
+def breakeven_bps(strategy, data, ceiling=100.0, tolerance=0.05, **config):
+    """The round-trip cost, in basis points, at which ``strategy`` stops making
+    money. ``None`` when it is already losing at zero cost, and ``ceiling`` when it
+    survives all the way there.
+
+    "This dies at 8 basis points round trip and you pay 6" is a sentence worth more
+    in the first week than any probability, because it says how much of the edge is
+    real and how much is the absence of friction.
+    """
+    from .backtest import Backtester
+
+    _own_the_fees(config, "breakeven_bps")
+
+    def earned(bps):
+        rate = float(bps) / 2.0 / 10_000.0
+        run = Backtester(data, fee_taker=rate, fee_maker=rate, **config)
+        return run.run(_fresh(strategy)).stats["total_return_pct"]
+
+    if earned(0.0) <= 0.0:
+        return None
+    if earned(ceiling) > 0.0:
+        return float(ceiling)
+    # bisect: the return is monotone in the cost for a fixed set of decisions, and
+    # not quite monotone once the costs change which trades happen, so this finds
+    # a crossing rather than the crossing. It is the honest kind of answer anyway
+    low, high = 0.0, float(ceiling)
+    while high - low > tolerance:
+        middle = (low + high) / 2.0
+        if earned(middle) > 0.0:
+            low = middle
+        else:
+            high = middle
+    return (low + high) / 2.0
+
+
+def _fresh(strategy):
+    # a class is rebuilt per run so nothing carries over between them; an instance
+    # is taken as given, since the caller may have configured it
+    return strategy() if isinstance(strategy, type) else strategy
+
+
+def _own_the_fees(config, where):
+    # sweeping the fee IS the job, so one arriving in the configuration is a
+    # contradiction rather than an override. Without this it surfaced as Python's
+    # own "got multiple values for keyword argument", which says nothing about why
+    clash = sorted(key for key in ("fee_taker", "fee_maker") if key in config)
+    if clash:
+        raise TypeError(
+            f"{where} sets {clash} itself, because sweeping the cost is what it "
+            f"does; pass the rest of the configuration and leave those out. To "
+            f"vary a cost it does not set, slippage_bps and impact go through"
+        )
+
+
+def excursions(result, frame):
+    """The worst and best each trade went while it was open, in percent of its entry.
+
+    The maximum adverse excursion is where a stop would have been hit, and the
+    maximum favourable is what a target would have caught. A trade log says what a
+    rule earned; this says what it lived through, and it is the direct answer to
+    "where does my stop go".
+    """
+    high, low = _highs_lows(frame)
+    out = []
+    for trade in result.trades or []:
+        first, last = trade["entry_tick"], trade["exit_tick"]
+        if not 0 <= first <= last < len(high):
+            continue
+        entry = trade["entry_price"]
+        peak, trough = float(high[first:last + 1].max()), float(low[first:last + 1].min())
+        if trade["side"] == "buy":
+            best, worst = peak - entry, trough - entry
+        else:
+            best, worst = entry - trough, entry - peak
+        out.append({
+            "entry_tick": first,
+            "exit_tick": last,
+            "side": trade["side"],
+            "net_pnl": trade["net_pnl"],
+            "best_pct": best / entry * 100.0 if entry else 0.0,
+            "worst_pct": worst / entry * 100.0 if entry else 0.0,
+        })
+    return out
+
+
+def session_buckets(result, frame, by="hour"):
+    """Trade PnL grouped by hour of day or day of week, booked at the exit bar.
+
+    Crypto trades around the clock, and an hourly strategy routinely has its whole
+    edge inside the few hours a day funding is stamped. A single number cannot show
+    that, and a bucket that holds the entire result is a stronger sign of an overfit
+    than any statistic.
+    """
+    if by not in ("hour", "weekday"):
+        raise ValueError(f"by must be 'hour' or 'weekday', got {by!r}")
+    stamps = _stamps(frame)
+    unit = stamps.astype("datetime64[h]").astype("int64")
+    keys = (unit % 24) if by == "hour" else ((unit // 24 + 4) % 7)
+    buckets = {}
+    for trade in result.trades or []:
+        exit_tick = trade["exit_tick"]
+        if not 0 <= exit_tick < keys.size:
+            continue
+        slot = buckets.setdefault(
+            int(keys[exit_tick]), {"trades": 0, "net_pnl": 0.0, "wins": 0}
+        )
+        slot["trades"] += 1
+        slot["net_pnl"] += trade["net_pnl"]
+        slot["wins"] += 1 if trade["net_pnl"] > 0.0 else 0
+    for slot in buckets.values():
+        slot["win_rate"] = slot["wins"] / slot["trades"] if slot["trades"] else 0.0
+    return dict(sorted(buckets.items()))
+
+
+def _highs_lows(frame):
+    if hasattr(frame, "high") and hasattr(frame, "low"):
+        return (np.asarray(frame.high, dtype=np.float64),
+                np.asarray(frame.low, dtype=np.float64))
+    data = np.asarray(frame, dtype=np.float64)
+    if data.ndim != 2 or data.shape[1] != 5:
+        raise TypeError(
+            "frame must be a DataFrame with high and low columns, or a (T, 5) "
+            "OHLCV array"
+        )
+    return data[:, 1], data[:, 2]
+
+
+def _stamps(frame):
+    # only a real clock can be bucketed by hour; an array of bars carries none, and
+    # bucketing by bar index instead would look like an answer and be one about
+    # nothing
+    index = getattr(frame, "index", None)
+    if index is None:
+        raise TypeError(
+            "session_buckets needs the timestamps, so pass the DataFrame the "
+            "backtest ran on rather than the (T, 5) array"
+        )
+    from ._data import _epoch_seconds
+
+    seconds = _epoch_seconds(np.asarray(index))
+    if seconds is None:
+        raise TypeError(
+            "the frame's index carries no timestamps, so its bars cannot be "
+            "grouped by hour or by weekday"
+        )
+    return seconds.astype("int64").astype("datetime64[s]")
 
 
 def report(result, frame=None):

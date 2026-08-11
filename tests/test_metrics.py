@@ -287,3 +287,115 @@ def test_the_summary_prints_and_returns_the_same_numbers(capsys):
 def test_metrics_is_exported_from_the_package():
     assert emsl.metrics is metrics
     assert "metrics" in emsl.__all__
+
+
+# ------------------------------------------------------------ costs and shape
+
+
+def test_the_cost_curve_charges_more_as_the_friction_rises():
+    curve = metrics.cost_curve(Alternate, series(), costs=(0.0, 10.0, 50.0),
+                               periods_per_year=365.0)
+    assert [row["round_trip_bps"] for row in curve] == [0.0, 10.0, 50.0]
+    assert curve[0]["fees"] == 0.0
+    assert curve[1]["fees"] < curve[2]["fees"]
+    assert curve[0]["total_return_pct"] > curve[2]["total_return_pct"]
+
+
+def test_a_strategy_class_is_rebuilt_for_each_run_and_an_instance_is_reused():
+    # a class comes back fresh per run, so nothing carries over between them
+    assert metrics._fresh(Alternate) is not metrics._fresh(Alternate)
+    instance = Alternate()
+    assert metrics._fresh(instance) is instance
+
+
+def trending(n=120):
+    # a straight line up, so the strategy is reliably profitable at zero cost and
+    # the breakeven is a real number rather than a coin flip on the seed
+    close = 100.0 + np.arange(n, dtype=np.float64) * 0.5
+    return np.column_stack(
+        [close, close + 1.0, close - 1.0, close, np.full(n, 1000.0)]
+    )
+
+
+def test_breakeven_finds_the_cost_that_kills_the_edge():
+    data = trending()
+    breakeven = metrics.breakeven_bps(Alternate, data, ceiling=500.0,
+                                      periods_per_year=365.0)
+    assert breakeven is not None and 0.0 < breakeven < 500.0
+    # comfortably under it the run is up, comfortably over it the run is down
+    below = metrics.cost_curve(Alternate, data, costs=(breakeven * 0.5,),
+                               periods_per_year=365.0)[0]
+    above = metrics.cost_curve(Alternate, data, costs=(breakeven * 2.0,),
+                               periods_per_year=365.0)[0]
+    assert below["total_return_pct"] > 0.0
+    assert above["total_return_pct"] < 0.0
+
+
+def test_a_strategy_that_survives_every_cost_reports_the_ceiling():
+    # the ceiling is an answer, not a failure: it says the edge outlives the sweep
+    assert metrics.breakeven_bps(Alternate, trending(), ceiling=1.0,
+                                 periods_per_year=365.0) == 1.0
+
+
+def test_a_strategy_that_loses_for_free_has_no_breakeven():
+    # slippage is a cost the sweep does not set, so it goes through and makes this
+    # run a loser even at a zero fee
+    assert metrics.breakeven_bps(Alternate, series(), slippage_bps=200.0,
+                                 periods_per_year=365.0) is None
+
+
+def test_setting_a_fee_on_a_cost_sweep_is_a_contradiction_not_an_override():
+    for call in (metrics.cost_curve, metrics.breakeven_bps):
+        with pytest.raises(TypeError) as excinfo:
+            call(Alternate, series(), fee_taker=0.001)
+        assert "sweeping the cost is what it does" in str(excinfo.value)
+
+
+def test_every_trade_lived_through_at_least_what_it_finished_with():
+    data = series()
+    result = Backtester(data, periods_per_year=365.0).run(Alternate())
+    rows = metrics.excursions(result, data)
+    assert len(rows) == len(result.trades)
+    for row in rows:
+        # the best it ever showed is never below the worst it ever showed
+        assert row["best_pct"] >= row["worst_pct"]
+        assert row["worst_pct"] <= 0.0 or row["best_pct"] >= 0.0
+
+
+def test_excursions_needs_the_highs_and_lows():
+    result = run()
+    with pytest.raises(TypeError) as excinfo:
+        metrics.excursions(result, np.zeros((10, 2)))
+    assert "high and low" in str(excinfo.value)
+
+
+def test_trades_bucket_by_the_hour_they_closed_on():
+    pd = pytest.importorskip("pandas")
+    raw = series()
+    data = pd.DataFrame(raw, columns=["open", "high", "low", "close", "volume"])
+    data.index = pd.date_range("2025-01-01", periods=len(raw), freq="1h", tz="UTC")
+    result = Backtester(data).run(Alternate())
+    buckets = metrics.session_buckets(result, data, by="hour")
+    assert set(buckets) <= set(range(24))
+    assert sum(b["trades"] for b in buckets.values()) == len(result.trades)
+    assert math.isclose(
+        sum(b["net_pnl"] for b in buckets.values()),
+        sum(t["net_pnl"] for t in result.trades),
+        abs_tol=1e-9,
+    )
+    weekdays = metrics.session_buckets(result, data, by="weekday")
+    assert set(weekdays) <= set(range(7))
+
+
+def test_bucketing_without_a_clock_says_so_rather_than_counting_bars():
+    result = run()
+    with pytest.raises(TypeError) as excinfo:
+        metrics.session_buckets(result, series())
+    assert "timestamps" in str(excinfo.value)
+
+
+def test_an_unknown_bucket_is_refused():
+    result = run()
+    with pytest.raises(ValueError) as excinfo:
+        metrics.session_buckets(result, series(), by="minute")
+    assert "'hour' or 'weekday'" in str(excinfo.value)

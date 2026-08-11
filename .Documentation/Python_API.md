@@ -496,11 +496,24 @@ metrics.probabilistic_sharpe(result)      # the chance the true sharpe beats zer
 
 `long_short_split(result)` gives trades, net PnL, fees, win rate and average holding time for each side separately, because almost every naive crypto rule earns long and bleeds short, and one win rate averages the two into something describing neither.
 
+### How much friction it survives
+
+The shipped defaults are a frictionless venue: `slippage_bps=0.0`, `impact=0.0`, `max_fill_fraction=1.0`, and on a perp `funding_rate=0.0`. An edge found there is an edge nobody can trade, so the useful question is not whether a strategy makes money but how much cost it lives through.
+
+```python
+metrics.cost_curve(SmaCross, candles, costs=(0.0, 2.0, 5.0, 10.0, 20.0))
+metrics.breakeven_bps(SmaCross, candles)      # the round-trip cost that kills it
+```
+
+Both re-run the backtest, so they take the strategy and the data rather than a finished result. Costs are **round trip** in basis points, split evenly across the two sides, so `10` is five in and five out. A `Strategy` subclass is rebuilt for each run; an instance is reused as given. Anything else you pass goes to the `Backtester` unchanged, except `fee_taker` and `fee_maker`, which the sweep sets itself and refuses as a contradiction. `breakeven_bps` returns `None` when the strategy already loses for free, and the ceiling when it survives all the way there.
+
 ### The shape of the ride
 
 `drawdown(result)` is the fall from the running peak at every bar, seeded from the opening balance so a loss on the first bar shows on the first bar. `drawdown_table(result, top=5)` gives the worst falls with where each began, bottomed and recovered. `time_under_water(result)` reports the longest and average stretch below a previous high, and the share of the run spent there: five shallow dips and one long one are the same `max_drawdown_pct` and not remotely the same thing to hold.
 
 `buy_and_hold(result, frame)` answers the first question anyone asks, with the excess return, the beta against holding, and the information ratio.
+
+`excursions(result, frame)` gives the worst and best each trade went while it was open, in percent of its entry. A trade log says what a rule earned; this says what it lived through, and it is the direct answer to where a stop belongs. `session_buckets(result, frame, by="hour")` groups trade PnL by hour of day or day of week, booked at the exit bar; it needs the DataFrame rather than the array, because only a real clock can be bucketed by hour. Crypto trades around the clock and an hourly strategy routinely has its whole edge inside the few hours a day funding is stamped, which one bucket holding the entire result will show faster than any statistic.
 
 ### What the number is worth
 
