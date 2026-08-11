@@ -79,6 +79,8 @@ print(state["equity"], state["position"])      # account value and position at t
 | pandas DataFrame | Needs `open`, `high`, `low`, `close`, `volume` columns; any extra column is ignored. |
 | parquet path | Read with pandas, then treated as the DataFrame case. |
 
+**Volume is in base units**, the same units an order's size is in. The volume cap compares one against the other and the market-impact term divides one by the other, so a feed shipping quote volume instead inflates the cap by roughly the price: `max_fill_fraction` stops binding, impact goes to zero, and nothing says so. The router's frames carry base `volume` alongside a separate `volume_usd`, and only the first is read.
+
 A frame carrying a real (datetime) index must be sorted ascending and unique; a plain `RangeIndex` holds no timestamps, so it is exempt. A missing column, a wrong shape, or an unsorted index raises `ValueError`, and an unsupported type raises `TypeError`. pandas and pyarrow are imported only when a frame or a path is passed, so the numpy path needs neither installed.
 
 The wrappers call it for you, so a DataFrame can go straight into `Backtester` or `VectorEnv`. Handing the `Backtester` a datetime index is also what stamps each trade with `entry_time` and `exit_time` ([Trades](#trades)).

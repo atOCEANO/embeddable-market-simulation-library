@@ -25,6 +25,14 @@ _INTERVALS = (
 def to_ohlcv(data):
     """Return a `(T, 5)` float64 OHLCV array from a numpy array, a pandas DataFrame
     with the columns open/high/low/close/volume, or a path to a parquet file.
+
+    **Volume is in base units**, the same units an order's size is in, because the
+    volume cap compares one against the other and the market-impact term divides
+    one by the other. A feed shipping quote volume instead inflates the cap by
+    roughly the price, so `max_fill_fraction` stops binding and impact goes to
+    zero: no error, no warning, just a better backtest than the market would have
+    given. The router's frames carry base `volume` and a separate `volume_usd`,
+    and only the first is read.
     """
     if isinstance(data, np.ndarray):
         arr = np.ascontiguousarray(data, dtype=np.float64)

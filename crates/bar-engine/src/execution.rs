@@ -17,10 +17,11 @@ pub struct FillModel {
     /// Adverse slippage on a taker fill, in basis points off the reference price.
     pub slippage_bps: Bps,
     /// The most of a bar's volume ONE order may take, as a fraction (1.0 is the
-    /// whole bar), so no single fill exceeds that slice of what the bar traded. The
-    /// cap is per order, not a shared per-bar budget: several orders resolving
-    /// against the same bar each get it, which ADR 0006 names as a bar-fidelity
-    /// approximation.
+    /// whole bar), so no single fill exceeds that slice of what the bar traded.
+    /// Volume is in base units, as an order's size is (ADR 0005). The cap is per
+    /// order, not a shared per-bar budget: several orders resolving against the
+    /// same bar each get it, which is why the queue of pending market orders is
+    /// bounded rather than unlimited (ADR 0047).
     pub max_fill_fraction: f64,
     /// Market-impact coefficient: extra adverse slippage equal to `impact` times
     /// the fill's fraction of the bar volume, so a larger order pays more. Zero

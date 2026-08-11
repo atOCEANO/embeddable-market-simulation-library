@@ -162,7 +162,11 @@ class VectorEnv(gym.vector.VectorEnv):
                 raise ValueError("a cost range must be a (low, high) pair")
             low, high = float(value[0]), float(value[1])
             drawn = self._cost_rng.uniform(low, high, size=self.num_envs).astype(np.float64)
-            return low, drawn
+            # the per-env array is what actually applies, and the scalar beside it
+            # is only what would stand if it ever failed to. Handing back the low
+            # end made that failure the cheapest possible market, which is the one
+            # direction a cost model must never fail in
+            return high, drawn
         return float(value), None
 
     def _random_offsets(self, n):

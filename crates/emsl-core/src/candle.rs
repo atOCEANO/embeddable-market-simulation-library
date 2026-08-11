@@ -16,6 +16,11 @@ pub struct Candle {
     pub high: f64,
     pub low: f64,
     pub close: f64,
+    /// Traded volume in BASE units, the same units an order's size is in. The
+    /// volume cap compares one against the other and the impact term divides one
+    /// by the other, so both are meaningless if this arrives denominated in quote:
+    /// the cap stops binding and impact goes to zero, silently and in the caller's
+    /// favour (ADRs 0005, 0013).
     pub volume: f64,
 }
 
