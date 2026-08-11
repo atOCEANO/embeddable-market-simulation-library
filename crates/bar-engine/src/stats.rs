@@ -4,7 +4,9 @@
 use crate::reporter::Trade;
 
 /// A run's performance summary. Percent fields are in percent (10.0 is 10%);
-/// ratios (sharpe, sortino, calmar, profit_factor) are unitless.
+/// ratios (sharpe, sortino, calmar, profit_factor) are unitless, and each is
+/// infinite when it earned something against no measured risk at all, so the set
+/// stays orderable (ADR 0046). Nothing here is ever NaN (ADR 0007).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Stats {
     pub total_return_pct: f64,
@@ -34,6 +36,26 @@ pub struct Stats {
     /// never filled, which a zero-volume series does silently; without this a dead
     /// feed and a strategy that never triggered look identical (ADR 0031).
     pub num_fills: usize,
+}
+
+/// A reward over a risk that can be zero, ranked so the set stays orderable.
+///
+/// A positive reward earned against no measured risk is the best outcome there
+/// is, so it goes to the top. Returning zero instead ranked a run that never
+/// fell BELOW one that dipped a single percent and recovered: same start, same
+/// end, same CAGR, calmar 0 against 10.05. Sortino did the same to a run with no
+/// losing bar at all. That is the argmax inversion ADR 0029 exists to prevent,
+/// surviving in the branch its drawdown cap could not reach, while
+/// `profit_factor` had answered the identical question correctly all along
+/// (ADR 0046).
+fn ranked(reward: f64, risk: f64, annualizer: f64) -> f64 {
+    if risk > 0.0 {
+        reward / risk * annualizer
+    } else if reward > 0.0 {
+        f64::INFINITY
+    } else {
+        0.0
+    }
 }
 
 impl Stats {
@@ -103,17 +125,12 @@ impl Stats {
                 .sum::<f64>()
                 / count)
                 .sqrt();
-            let sharpe = if std > 0.0 {
-                (mean - rf_per) / std * ann
-            } else {
-                0.0
-            };
-            let sortino = if downside > 0.0 {
-                (mean - rf_per) / downside * ann
-            } else {
-                0.0
-            };
-            (sharpe, sortino, std * ann)
+            let excess = mean - rf_per;
+            (
+                ranked(excess, std, ann),
+                ranked(excess, downside, ann),
+                std * ann,
+            )
         } else {
             (0.0, 0.0, 0.0)
         };
@@ -134,7 +151,7 @@ impl Stats {
             }
         }
 
-        let calmar = if max_dd > 0.0 { cagr / max_dd } else { 0.0 };
+        let calmar = ranked(cagr, max_dd, 1.0);
 
         let exposure_pct = if !curve.is_empty() {
             in_position_steps as f64 / curve.len() as f64 * 100.0
@@ -168,13 +185,7 @@ impl Stats {
         } else {
             0.0
         };
-        let profit_factor = if net_loss > 0.0 {
-            net_profit / net_loss
-        } else if net_profit > 0.0 {
-            f64::INFINITY
-        } else {
-            0.0
-        };
+        let profit_factor = ranked(net_profit, net_loss, 1.0);
         let avg_trade_pct = if num_trades > 0 && initial > 0.0 {
             (total_pnl / num_trades as f64) / initial * 100.0
         } else {
@@ -375,6 +386,33 @@ mod tests {
             deep.calmar,
             shallow.calmar
         );
+    }
+
+    #[test]
+    fn a_run_that_never_fell_outranks_one_that_dipped() {
+        // the same run with a single 0.9% loss added: same start, same end, same
+        // CAGR. Ranking a zero drawdown at zero put the clean run BELOW it, which
+        // is the inversion the drawdown cap was written to prevent (ADR 0046)
+        let clean = compute(100.0, &[110.0, 120.0, 130.0], &[], 1.0, 0.0, 3);
+        let dipped = compute(100.0, &[110.0, 109.0, 130.0], &[], 1.0, 0.0, 3);
+        assert!(approx(clean.cagr_pct, dipped.cagr_pct));
+        assert_eq!(clean.max_drawdown_pct, 0.0);
+        assert!(approx(dipped.max_drawdown_pct, 100.0 / 110.0));
+        assert!(clean.calmar.is_infinite());
+        assert!(clean.calmar > dipped.calmar);
+    }
+
+    #[test]
+    fn no_downside_outranks_some_downside_but_a_loser_still_does_not() {
+        // no losing bar means no downside deviation, which used to report sortino
+        // 0.0 beside a healthy sharpe and rank it last
+        let rising = compute(100.0, &[101.0, 103.0, 104.0], &[], 1.0, 0.0, 3);
+        assert!(rising.sharpe > 0.0 && rising.sharpe.is_finite());
+        assert!(rising.sortino.is_infinite());
+        // a constant LOSER also has zero volatility, and must not be rewarded for it
+        let falling = compute(100.0, &[90.0, 81.0, 72.9], &[], 1.0, 0.0, 3);
+        assert_eq!(falling.sharpe, 0.0);
+        assert!(approx(falling.sortino, -1.0));
     }
 
     #[test]
