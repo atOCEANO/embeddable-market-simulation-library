@@ -50,12 +50,13 @@ class BacktestResult:
     """
 
     def __init__(self, stats, equity_curve, trades, initial=None,
-                 periods_per_year=None):
+                 periods_per_year=None, risk_free=0.0):
         self.stats = stats
         self.equity_curve = equity_curve
         self.trades = trades
         self.initial = initial
         self.periods_per_year = periods_per_year
+        self.risk_free = risk_free
 
     def __repr__(self):
         stats = self.stats or {}
@@ -125,6 +126,7 @@ class Backtester:
             trades=trades,
             initial=self._config["quote"],
             periods_per_year=self._periods_per_year,
+            risk_free=self._risk_free,
         )
 
     def _stamp_times(self, trades):

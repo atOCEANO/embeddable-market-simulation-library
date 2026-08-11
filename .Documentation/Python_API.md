@@ -34,6 +34,7 @@ Everything the package exports, and where each piece is documented in full:
 | `emsl.Batch` | Many independent envs over one shared series, stepped in parallel with the GIL released. [Below](#batch). |
 | `emsl.backtest` | `Backtester` and `Strategy`: drive a strategy over a series, get stats, equity, and trades. [Below](#backtesting). |
 | `emsl.tune` | Search a strategy's parameters, each trial a full backtest, across worker processes. [Below](#tuning). |
+| `emsl.metrics` | Evaluate a finished run: where the money went, and what the number is worth believing. [Below](#metrics). |
 | `emsl.rl` | `VectorEnv`, the Gymnasium vector env. [Below](#reinforcement-learning), in full in the [RL Guide](RL_Guide.md). |
 | `emsl.sb3` | `EmslVecEnv`, the Stable-Baselines3 adapter. [RL Guide](RL_Guide.md#training). |
 | `emsl.chart` | Draw a frame, your own arrays and a run as one self-contained HTML document. [Below](#plotting), in full in the [Plotting](Plotting.md) guide. |
@@ -466,6 +467,46 @@ Leaving `oos` out warns, because the default cannot be silent without being a tr
 The `TuneResult` carries `.best_params` (a dict), `.best_value` (the objective at the best trial), `.best_stats` (the winning run's full [stats](#statistics) dict, so its return, drawdown, and trade count are there without a re-run), `.trials` (a list of `{number, params, value, state, stats}`), and `.study` (the underlying optuna study for deeper inspection). `.best_strategy()` builds a fresh strategy from `.best_params`.
 
 With `n_jobs=1` a seeded search is reproducible, since the sampler is told results in a fixed order. With `n_jobs>1` the sampler sees results in completion order, so the exact sequence of trials can vary run to run even with a seed; each trial's score is still deterministic. On Windows, calling `tune` with `n_jobs>1` from a script means putting the call under `if __name__ == "__main__":`, the standard requirement for the spawn start method; a notebook needs no guard.
+
+<br>
+
+## Metrics
+
+The fourteen [statistics](#statistics) come back from the engine. `emsl.metrics` is what you read afterwards: where the money actually went, and whether the number is worth believing. It simulates nothing and every function takes the `BacktestResult` itself, so it reads the opening balance and the annualization the run recorded rather than being told them again.
+
+```python
+from emsl import metrics
+
+result = Backtester(candles, market="perp", funding_rate=0.0001, funding_interval=8).run(MyStrategy())
+
+metrics.summary(result, candles)          # the headline, printed
+metrics.decompose(result)                 # gross, fees, funding, still open, net
+metrics.long_short_split(result)          # the same trade stats, by side
+metrics.drawdown_table(result, top=5)     # the five worst falls, with durations
+metrics.probabilistic_sharpe(result)      # the chance the true sharpe beats zero
+```
+
+### Where the money went
+
+`decompose(result)` splits the change in equity into `gross_pnl`, `fees`, `funding`, and `unrealized`, and the four add up to `net` by construction. On a perp this is the first thing to look at: a large share of what looks like alpha in crypto is a funding carry wearing a costume, and a larger share of dead strategies died on the fee line rather than on the idea. `unrealized` is whatever a position still open at the end contributes; it is zero on a run that ends flat.
+
+`long_short_split(result)` gives trades, net PnL, fees, win rate and average holding time for each side separately, because almost every naive crypto rule earns long and bleeds short, and one win rate averages the two into something describing neither.
+
+### The shape of the ride
+
+`drawdown(result)` is the fall from the running peak at every bar, seeded from the opening balance so a loss on the first bar shows on the first bar. `drawdown_table(result, top=5)` gives the worst falls with where each began, bottomed and recovered. `time_under_water(result)` reports the longest and average stretch below a previous high, and the share of the run spent there: five shallow dips and one long one are the same `max_drawdown_pct` and not remotely the same thing to hold.
+
+`buy_and_hold(result, frame)` answers the first question anyone asks, with the excess return, the beta against holding, and the information ratio.
+
+### What the number is worth
+
+`probabilistic_sharpe(result, benchmark=0.0)` is the probability the true Sharpe is above the benchmark, given the sample length and how far the returns are from normal. `min_track_record_length(result)` is how many bars it would take to distinguish the two at 95%.
+
+Three things to know before quoting either. The benchmark is stated **annualized**, like everything else here, and de-annualized internally, because handing the estimator an annualized figure is the standard way to get a confidently wrong answer. Both assume the returns are independent, which a strategy holding a position for two days on hourly candles badly violates: read `autocorrelation(result)` beside them, and read `num_trades`, because forty round trips over three thousand bars is forty bets and it is the bets that carry the information. And a sample that cannot support the estimate raises rather than returning `NaN` ([ADR 0007](Decisions.md)).
+
+Neither of them corrects for having searched. A tuned parameter set is in-sample no matter what probability is attached to it afterwards, and the answer to that is the [holdout](#in-sample-and-out-of-sample), not a statistic.
+
+`report(result, frame=None)` returns everything above as one flat dict, for storing or comparing runs; `summary(result, frame=None)` prints the headline and returns the same dict.
 
 <br>
 
