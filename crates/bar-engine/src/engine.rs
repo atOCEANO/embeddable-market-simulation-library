@@ -604,9 +604,13 @@ impl Engine {
             fill.size = Qty(fill.size.get().min(pos.abs()));
         }
         // a clamp can leave NaN or a negative remainder; normalize so the caller only
-        // has to test for a positive size
+        // has to test for a positive size. The gate is the dust epsilon, not zero,
+        // because the position refuses anything at or below it: a size in between
+        // moved no cash and no position, but still counted a fill and banked a fee,
+        // which shows up as a phantom fill in the dead-feed canary and as drift in
+        // the round-trip fee identity (ADRs 0030, 0031)
         let clamped = fill.size.get();
-        if clamped.is_nan() || clamped <= 0.0 {
+        if clamped.is_nan() || clamped <= CLOSE_EPS {
             fill.size = Qty(0.0);
         }
         fill
@@ -843,7 +847,7 @@ impl Engine {
 mod tests {
     use super::{Engine, EngineConfig};
     use crate::candles::Candles;
-    use emsl_core::{Candle, Market, OrderType, Side, TimeInForce};
+    use emsl_core::{Candle, Fill, Market, OrderType, Price, Qty, Side, TimeInForce};
 
     fn ohlc(open: f64, high: f64, low: f64, close: f64, volume: f64) -> Candle {
         Candle {
@@ -2104,5 +2108,25 @@ mod tests {
         let s = e.step(); // reaches 50, fills 100 (10% of 1000), cancels the other 400
         assert_eq!(s.position, 100.0);
         assert!(s.open_orders.is_empty()); // IOC: nothing rests
+    }
+
+    #[test]
+    fn a_sub_dust_fill_moves_nothing_and_counts_nothing() {
+        // the position refuses a size at or below its dust epsilon, so one in
+        // (0, 1e-9] used to pass the engine's own gate, move no cash and no
+        // position, and still count a fill and bank its fee. The leverage cap
+        // produces exactly such a residual when a position sits a sub-ulp under it
+        let mut e = Engine::new(series(), cfg());
+        e.reset();
+        let dust = Fill {
+            side: Side::Buy,
+            size: Qty(5e-13),
+            price: Price(100.0),
+            is_taker: true,
+        };
+        assert_eq!(e.clamp_fill(false, &dust).size.get(), 0.0);
+        assert_eq!(e.apply_fill_clamped(false, dust), 0.0);
+        assert_eq!(e.num_fills(), 0);
+        assert_eq!(e.state().position, 0.0);
     }
 }
