@@ -35,12 +35,20 @@ class Strategy:
 
 
 class BacktestResult:
-    """The outcome of a run: performance stats, the equity curve, and trades."""
+    """The outcome of a run: performance stats, the equity curve, and trades.
 
-    def __init__(self, stats, equity_curve, trades):
+    ``initial`` is the equity the run opened with. The curve records a point only
+    on a real advance, so the opening balance is not the first entry, and anything
+    reading a peak off the curve alone cannot see a fall from the starting balance.
+    The engine seeds its own drawdown from it, and it is carried here so a second
+    reading cannot disagree (ADR 0042). It is ``None`` on a result built by hand.
+    """
+
+    def __init__(self, stats, equity_curve, trades, initial=None):
         self.stats = stats
         self.equity_curve = equity_curve
         self.trades = trades
+        self.initial = initial
 
     def __repr__(self):
         stats = self.stats or {}
@@ -103,6 +111,7 @@ class Backtester:
             stats=engine.stats(self._periods_per_year, self._risk_free),
             equity_curve=engine.equity_curve(),
             trades=trades,
+            initial=self._config["quote"],
         )
 
     def _stamp_times(self, trades):
