@@ -18,6 +18,18 @@ use crate::execution::FillModel;
 use crate::reporter::{Reporter, Trade};
 use crate::stats::Stats;
 
+/// How badly a fill ends for the position currently held: the price PnL per unit
+/// it would realize, so the most adverse sorts first. A fill that does not reduce
+/// the position is not part of the question a wide bar asks, and sorts last.
+fn adversity(position: f64, entry: f64, fill: &Fill) -> f64 {
+    let reduces =
+        (position > 0.0 && fill.side == Side::Sell) || (position < 0.0 && fill.side == Side::Buy);
+    if !reduces {
+        return f64::INFINITY;
+    }
+    (fill.price.get() - entry) * position.signum()
+}
+
 /// A position moved toward zero by less than this counts as no close, mirroring
 /// the position's own dust epsilon so a non-representable fractional close does
 /// not log a phantom trade.
@@ -807,6 +819,25 @@ impl Engine {
                     order.remaining().get(),
                 ));
             }
+        }
+
+        // A bar that reaches both a stop and a target says nothing about which it
+        // reached first, and the answer used to be slot order, which is the order
+        // those two lines happen to appear in the strategy: place the stop first
+        // and every ambiguous bar books a loss, swap the two lines and every one
+        // books a win. They are ordered by how badly they end for the position
+        // instead, worst first, which does not depend on how the strategy was
+        // typed and is the same pessimism the rest of the engine already applies
+        // (ADR 0056). The sort is stable, so anything that is not an exit keeps
+        // its slot order.
+        let position = self.account.position.qty.get();
+        if fills.len() > 1 && position != 0.0 {
+            let entry = self.account.position.avg_entry.get();
+            fills.sort_by(|a, b| {
+                adversity(position, entry, &a.1)
+                    .partial_cmp(&adversity(position, entry, &b.1))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
         }
 
         for (id, fill, kind, reduce_only, tif, requested) in fills {
@@ -2256,6 +2287,63 @@ mod tests {
         assert!(s.equity.abs() < CLOSE_EPS, "left {}", s.equity);
         assert!(trades[0].fees > 1.0); // the entry fee, plus a real fee on the exit
         assert_eq!(e.open_fee, 0.0); // nothing left over to charge the next position
+    }
+
+    #[test]
+    fn a_bar_reaching_both_a_stop_and_a_target_books_the_stop_either_way() {
+        // the engine cannot know which the bar touched first. It used to answer
+        // with slot order, so placing the stop before the target booked a loss on
+        // every ambiguous bar and swapping the two lines booked a win: the sign of
+        // a bracket strategy's result was decided by the order it was typed in
+        for stop_first in [true, false] {
+            let candles = Candles::new(vec![
+                ohlc(100.0, 101.0, 99.0, 100.0, 1000.0),
+                ohlc(100.0, 101.0, 99.0, 100.0, 1000.0),
+                // one wide bar that reaches the stop at 90 AND the target at 110
+                ohlc(100.0, 120.0, 80.0, 100.0, 1000.0),
+                ohlc(100.0, 101.0, 99.0, 100.0, 1000.0),
+            ]);
+            let mut e = Engine::new(candles, report_cfg()); // spot, so a sell clamps
+            e.reset();
+            e.market_buy(1.0);
+            e.step(); // long 1 at 100
+            if stop_first {
+                e.stop(Side::Sell, 1.0, 90.0, true);
+                e.limit_sell(1.0, 110.0);
+            } else {
+                e.limit_sell(1.0, 110.0);
+                e.stop(Side::Sell, 1.0, 90.0, true);
+            }
+            let s = e.step();
+            assert_eq!(s.position, 0.0, "stop_first={stop_first}");
+            let trades = e.reporter().expect("reporting is on").trades();
+            assert_eq!(trades.len(), 1, "stop_first={stop_first}");
+            assert_eq!(trades[0].exit_price, 90.0, "stop_first={stop_first}");
+            assert!(trades[0].pnl < 0.0, "stop_first={stop_first}");
+        }
+    }
+
+    #[test]
+    fn ordering_the_exits_leaves_an_unambiguous_bar_alone() {
+        // only a bar reaching BOTH legs is ambiguous; one that reaches the target
+        // and never the stop still books the target
+        let candles = Candles::new(vec![
+            ohlc(100.0, 101.0, 99.0, 100.0, 1000.0),
+            ohlc(100.0, 101.0, 99.0, 100.0, 1000.0),
+            ohlc(100.0, 120.0, 99.0, 115.0, 1000.0), // reaches 110, never 90
+            ohlc(100.0, 101.0, 99.0, 100.0, 1000.0),
+        ]);
+        let mut e = Engine::new(candles, report_cfg());
+        e.reset();
+        e.market_buy(1.0);
+        e.step();
+        e.stop(Side::Sell, 1.0, 90.0, true);
+        e.limit_sell(1.0, 110.0);
+        e.step();
+        let trades = e.reporter().expect("reporting is on").trades();
+        assert_eq!(trades.len(), 1);
+        assert_eq!(trades[0].exit_price, 110.0);
+        assert!(trades[0].pnl > 0.0);
     }
 
     #[test]
