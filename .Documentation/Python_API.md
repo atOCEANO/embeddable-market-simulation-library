@@ -515,7 +515,7 @@ Leaving `oos` out warns, because the default cannot be silent without being a tr
 
 The `TuneResult` carries `.best_params` (a dict), `.best_value` (the objective at the best trial), `.best_stats` (the winning run's full [stats](#statistics) dict, so its return, drawdown, and trade count are there without a re-run), `.trials` (a list of `{number, params, value, state, stats}`), and `.study` (the underlying optuna study for deeper inspection). `.best_strategy()` builds a fresh strategy from `.best_params`.
 
-It also carries `.best_result`, the winner re-run on the bars it was chosen on, so it can be charted or measured without rebuilding the search's configuration by hand, plus `.objective`, `.sampler` and `.data_hash`, which is what lets [`deflated_sharpe`](#what-the-number-is-worth) check that a null belongs to this search rather than trusting you.
+It also carries `.best_result`, the winner re-run on the bars it was chosen on, so it can be charted or measured without rebuilding the search's configuration by hand, plus `.oos_result` and `.oos_stats` when a [holdout](#in-sample-and-out-of-sample) was kept. The last four, `.objective`, `.sampler`, `.min_trades` and `.data_hash`, are what a search knows about itself, and they exist so that [`deflated_sharpe`](#what-the-number-is-worth) can check a null belongs to this search rather than trusting you: the right statistic, an honest sampler, no activity floor narrowing its spread, and the same bars.
 
 `sampler` is `"tpe"` by default, which learns where the good parameters are, or `"random"`, which does not. Random search is worse at finding a winner and is exactly what you want for a null.
 
@@ -572,6 +572,8 @@ metrics.long_short_split(result)          # the same trade stats, by side
 metrics.drawdown_table(result, top=5)     # the five worst falls, with durations
 metrics.probabilistic_sharpe(result)      # the chance the true sharpe beats zero
 ```
+
+`returns(result)` is the per-period return series everything else here is built on, and it is worth knowing the rule because two of this library's bugs came from a second reading of it. It is seeded from the opening balance, so a strategy that loses on its first bar shows that loss: the engine records an equity point only on a real advance, so the balance a run opened with is not in `equity_curve` and anything reading that array alone cannot see the first bar's move. A bar following a non-positive equity contributes zero rather than a ratio through zero. That is the identical rule the engine uses, which is what lets `metrics.sharpe` reproduce `result.stats["sharpe"]` exactly, and a test pins the two together.
 
 ### Where the money went
 
@@ -664,7 +666,7 @@ A `BacktestResult` carries `config` (the engine settings it ran under), `data_ha
 metrics.compare({"cheap": cheap_run, "dear": expensive_run})
 ```
 
-prints one row per run, leading with the data fingerprint, and returns the rows. A notebook accumulates a great many backtests and nothing on a bare result says which bars or which fees produced it, so "was Tuesday's 2.1 sharpe on the same costs as today's 1.9" had no answer at all ([ADR 0051](Decisions.md)). Defining `__repr__` on a tunable strategy is worth it here: two rows both reading `SmaCross` tell you nothing.
+prints one row per run, leading with the data fingerprint, and returns the rows. `keys=` picks the columns, and a key no result reports is refused rather than printed as the word `None` in every row, which reads as a run that scored nothing instead of a column that does not exist. A notebook accumulates a great many backtests and nothing on a bare result says which bars or which fees produced it, so "was Tuesday's 2.1 sharpe on the same costs as today's 1.9" had no answer at all ([ADR 0051](Decisions.md)). Defining `__repr__` on a tunable strategy is worth it here: two rows both reading `SmaCross` tell you nothing.
 
 <br>
 
@@ -719,13 +721,15 @@ class Cross(emsl.Strategy):
 
 *One length, one alignment.* Every function returns a float64 array of length `T` aligned so entry `i` is bar `i`, with the warm-up as `NaN`, never a shorter array. So the same object goes into your rule and into [`emsl.chart`](#plotting) with no padding decision in between, and a gap in the input stays a gap in the output rather than being bridged.
 
-*The convention is written down.* `ema` is smoothed at `2 / (length + 1)` and seeded from the simple average of the first `length` values, not from the first value, which is TradingView's convention and stops one opening print steering the curve for hundreds of bars. `rsi` and `atr` use Wilder's `1 / length`, which is what those indicators were defined with. `stdev` is population, dividing by `length`, because that is what `bbands` is defined against. Each function repeats its own choice in its docstring.
+*The convention is written down.* `ema` is smoothed at `2 / (length + 1)` and seeded from the simple average of the first `length` values, not from the first value, which is TradingView's convention and stops one opening print steering the curve for hundreds of bars. `rsi`, `atr` and `adx` use Wilder's `1 / length`, which is what those indicators were defined with. `stdev` is population, dividing by `length`, because that is what `bbands` is defined against. `cci` divides by the mean **absolute** deviation and not the standard deviation, which is the definition and is what makes it behave differently from `zscore` on a fat-tailed series. `hma` floors both of its inner lengths to whole bars. Each function repeats its own choice in its docstring.
+
+*Where there is nothing to say, it says nothing rather than a number.* A window with no range has no position inside it, so `stoch` and `willr` are a gap there rather than a fifty; a window that traded nothing has no weighted price, so `vwap` and `vwma` are a gap rather than an unweighted average; a market with neither gains nor losses has no ratio of strength to weakness, so `rsi` and `mfi` are a gap rather than the 100 some implementations report, which would fire an overbought rule on a market that has not moved. `obv` restarts its running total after a gap rather than carrying across one, on the same rule the exponential averages use.
 
 *Nothing knows about the engine.* These are functions of arrays: no state, no engine, no pandas needed. Computing once in `init` and handing the same array to the chart is what keeps the line on screen from drifting from the line that made the decision ([ADR 0042](Decisions.md)).
 
 Functions with more than one output return a named object rather than a tuple to unpack, so a caller cannot one day unpack three anonymous arrays in the wrong order. There are five of them: `Bands` (`.upper`, `.middle`, `.lower`) from `bbands`, `keltner` and `donchian`; `Macd` (`.line`, `.signal`, `.histogram`); `Stochastic` (`.k`, `.d`); `Trend` (`.adx`, `.plus`, `.minus`); and `Channel` from `supertrend`, which adds `.direction` to the three band lines. Read `.direction`, which is `1.0` while long and `-1.0` while short, rather than comparing the close against the line: the line is the edge in force and that comparison is what set it.
 
-Two behaviours worth knowing. `vwap` is rolling over `length` bars rather than anchored to a session, because the engine has bars and no notion of a trading day. And `donchian`'s edges include the current bar, so a breakout of `upper` cannot happen on the bar that set it; compare against the previous bar's edge if that is what you mean.
+Three behaviours worth knowing. `vwap` is rolling over `length` bars rather than anchored to a session, because the engine has bars and no notion of a trading day. `donchian`, `highest` and `lowest` all include the current bar, so a breakout of `upper` cannot happen on the bar that set it; compare against `shift(highest(...), 1)` if that is what you mean. And `willr` is `stoch`'s `k` read from the top of the range rather than the bottom, so it runs -100 to 0 where `k` runs 0 to 100; both are here because both sign conventions are in wide use and quietly picking one is how a rule ends up backwards.
 
 <br>
 
