@@ -14,12 +14,13 @@ from ._emsl import Batch, Engine
 from ._data import to_ohlcv
 from . import backtest, metrics, plot, rl
 from .backtest import Strategy
+from .market import Market
 from ._tune import tune
 from ._chart import chart, chart_defaults
 
 __all__ = [
-    "Batch", "Engine", "Strategy", "chart", "chart_defaults", "to_ohlcv", "tune",
-    "backtest", "metrics", "plot", "rl",
+    "Batch", "Engine", "Market", "Strategy", "chart", "chart_defaults", "to_ohlcv",
+    "tune", "backtest", "metrics", "plot", "rl",
 ]
 
 try:

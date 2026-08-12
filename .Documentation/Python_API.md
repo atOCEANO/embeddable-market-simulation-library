@@ -34,6 +34,7 @@ Everything the package exports, and where each piece is documented in full:
 | `emsl.Batch` | Many independent envs over one shared series, stepped in parallel with the GIL released. [Below](#batch). |
 | `emsl.backtest` | `Backtester` and `Strategy`: drive a strategy over a series, get stats, equity, and trades. [Below](#backtesting). |
 | `emsl.tune` | Search a strategy's parameters, each trial a full backtest, across worker processes. [Below](#tuning). |
+| `emsl.Market` | The venue and its costs as one object, which hands out every surface configured identically. [Below](#the-market). |
 | `emsl.metrics` | Evaluate a finished run: where the money went, and what the number is worth believing. [Below](#metrics). |
 | `emsl.rl` | `VectorEnv`, the Gymnasium vector env. [Below](#reinforcement-learning), in full in the [RL Guide](RL_Guide.md). |
 | `emsl.sb3` | `EmslVecEnv`, the Stable-Baselines3 adapter. [RL Guide](RL_Guide.md#training). |
@@ -84,6 +85,46 @@ print(state["equity"], state["position"])      # account value and position at t
 A frame carrying a real (datetime) index must be sorted ascending and unique; a plain `RangeIndex` holds no timestamps, so it is exempt. A missing column, a wrong shape, or an unsorted index raises `ValueError`, and an unsupported type raises `TypeError`. pandas and pyarrow are imported only when a frame or a path is passed, so the numpy path needs neither installed.
 
 The wrappers call it for you, so a DataFrame can go straight into `Backtester` or `VectorEnv`. Handing the `Backtester` a datetime index is also what stamps each trade with `entry_time` and `exit_time` ([Trades](#trades)).
+
+<br>
+
+## The Market
+
+The engine takes eleven knobs, and a backtest, a search and an RL rollout each take the same eleven. Written out at three call sites they are three chances to disagree, and the claim that one fill model sits behind every surface was being held up by you retyping them identically. `emsl.Market` holds them once and hands out the surfaces itself.
+
+```python
+import emsl
+
+binance = emsl.Market(
+    kind="perp",              # "spot" or "perp"
+    fee_taker=0.0004,
+    fee_maker=0.0002,
+    slippage_bps=2.0,
+    leverage=5.0,
+    funding_rate=0.0001,
+    funding_interval=8,
+)
+
+result = binance.backtest(candles).run(MyStrategy())
+study = binance.tune(MyStrategy, space, candles, n_trials=200, oos=0.3)
+env = binance.env(candles, num_envs=4096, window=60)
+engine = binance.engine(candles)
+```
+
+Each method takes only the arguments that are **not** the venue, so a knob cannot be passed twice and no rule about which copy wins is needed: there is only ever one copy. Passing one anyway is refused rather than merged ([ADR 0053](Decisions.md)).
+
+| Call | Gives |
+| :--- | :--- |
+| `engine(candles, report=False)` | an `Engine`. |
+| `backtest(candles, periods_per_year=None, risk_free=0.0)` | a `Backtester`. |
+| `tune(strategy, space, data, **search)` | a `TuneResult`; `search` is the search controls only. |
+| `env(data, **rest)` | a `VectorEnv`; `rest` is the RL arguments only. |
+| `replace(**changes)` | a copy with some knobs changed. |
+| `as_dict()` | the knobs as the keyword arguments the engine takes. |
+
+`replace` is what makes a cost comparison honest: `binance.replace(fee_taker=0.001)` differs in exactly one number and is visibly the same venue otherwise. A market prints only the knobs that differ from the defaults, so `repr` reads as the handful of choices you actually made. Two markets with the same knobs compare equal.
+
+The keyword form is untouched and remains the right thing for a one-off: `Backtester(candles, market="perp", fee_taker=0.0004)`. `Market` is for when the venue is fixed and the surfaces are many.
 
 <br>
 
