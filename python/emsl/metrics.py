@@ -692,9 +692,12 @@ def compare(results, keys=None):
     shown = list(keys) if keys else ["total_return_pct", "sharpe",
                                      "max_drawdown_pct", "num_trades"]
     width = max(len(str(name)) for name, _ in named)
+    # one wider than the longest label, so a label that exactly fills the column
+    # cannot run into its neighbour; "max drawdown %" is precisely 14 characters
+    column = max(len(_short(key)) for key in shown) + 2
     header = f"  {'':<{width}}  {'data':<8}"
     for key in shown:
-        header += f"{_short(key):>14}"
+        header += f"{_short(key):>{column}}"
     print(header)
     rows = []
     for name, result in named:
@@ -702,7 +705,8 @@ def compare(results, keys=None):
         line = f"  {name:<{width}}  {result.data_hash or '':<8}"
         for key in shown:
             value = stats.get(key)
-            line += f"{value:>14,.3f}" if isinstance(value, float) else f"{value!s:>14}"
+            line += (f"{value:>{column},.3f}" if isinstance(value, float)
+                     else f"{value!s:>{column}}")
         print(line)
         row = {"name": name}
         row.update(result.to_dict())
