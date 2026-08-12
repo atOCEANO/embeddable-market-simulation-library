@@ -73,8 +73,16 @@ class WalkForward:
     because before that there was nothing fitted to trade.
 
     ``windows`` is one record per refit: the bars it was fitted on, the bars it
-    traded, the parameters it chose, the score it reached in the fit, and the
-    score the same parameters reached on the bars it then traded.
+    traded, the parameters it chose, the score it reached in the fit, and
+    ``traded``, the score those bars earned **in this run**, read off the real
+    equity curve rather than from a fresh isolated backtest (ADR 0060).
+
+    ``bars_traded`` is beside it: how many of the window's bars its own winner
+    could decide on, once its warm-up is taken off. A window whose warm-up is
+    longer than the window is a window nobody traded, and a score of zero there
+    used to be indistinguishable from a stretch that genuinely broke even.
+    ``traded`` is ``None`` when the objective is a callable, since a callable
+    takes a whole result and a window is a slice of one.
     """
 
     def __init__(self, result, windows, span):
@@ -178,34 +186,74 @@ def walk_forward(
             oos=0, sampler=sampler, min_trades=min_trades,
             periods_per_year=periods_per_year, risk_free=risk_free, **config,
         )
-        traded = Backtester(
-            candles[fit_to:test_to], periods_per_year=periods_per_year,
-            risk_free=risk_free, **config,
-        ).run(strategy(**study.best_params))
         records.append({
             "fitted_on": (fit_from, fit_to),
             "traded_on": (fit_to, test_to),
             "params": dict(study.best_params),
             "fitted": study.best_value,
-            "traded": _score(traded, objective),
         })
         schedule.append((fit_to, test_to, dict(study.best_params)))
 
     # one real pass over the whole series, so the account is continuous across the
     # seams and every warm-up has the history before its own window to use
+    composite = _Scheduled(strategy, schedule)
     result = Backtester(
         candles, periods_per_year=periods_per_year, risk_free=risk_free, **config,
-    ).run(_Scheduled(strategy, schedule))
+    ).run(composite)
+    _score_windows(records, result, composite, objective)
     return WalkForward(result, records, (layout[0][1], layout[-1][2]))
 
 
-def _score(result, objective):
+def _score_windows(records, result, composite, objective):
+    """Score each window on the bars the composite run actually traded.
+
+    The obvious way is a fresh ``Backtester`` over the window alone, and that is
+    the stitching ADR 0057 refuses, one level down. Such a run opens its own
+    account and restarts every warm-up inside the window, so a winner whose
+    warm-up is longer than its window never has ``next`` called at all and the
+    window reports a tidy ``0.0``, indistinguishable from a stretch that genuinely
+    broke even. On one 1,200-bar layout that happened to two windows of four, and
+    ``decay`` came back at 0.50 where the bars had earned 1.87.
+
+    The score is read off the pass that happened instead, through
+    ``metrics.segment``: the window's slice of the real equity curve, seeded from
+    the balance carried into it. That is also the only reading in which a loss in
+    one stretch shrinks the size available in the next, which is the thing
+    refitting a live strategy actually does (ADR 0060).
+
+    ``bars_traded`` is carried beside it, because a window whose winner could not
+    decide on most of its bars is a window whose score means less, and until now
+    nothing said so.
+    """
+    bars = len(result.equity_curve) + 1
+    for record in records:
+        first, last = record["traded_on"]
+        record["bars_traded"] = _decidable(composite, first, last, bars)
+        record["traded"] = _score(result, first, last, objective)
+
+
+def _decidable(composite, first, last, bars):
+    # the bars in this window on which its own winner could actually decide. A
+    # window shorter than the warm-up its parameters imply is not a stretch that
+    # broke even, it is a stretch nobody traded
+    for start, stop, part in composite.parts:
+        if (start, stop) == (first, last):
+            return max(0, min(last, bars) - max(first, getattr(part, "warmup", 0)))
+    return max(0, min(last, bars) - first)
+
+
+def _score(result, first, last, objective):
+    # a callable objective takes a whole BacktestResult and a window is a slice of
+    # one, so there is nothing honest to hand it. None rather than a number
+    # computed on the wrong basis, which is what the isolated run was
     if callable(objective):
-        try:
-            return float(objective(result))
-        except Exception:
-            return None
-    value = (result.stats or {}).get(objective)
+        return None
+    from .metrics import segment
+
+    try:
+        value = segment(result, first, last).get(objective)
+    except ValueError:
+        return None
     return None if value is None else float(value)
 
 

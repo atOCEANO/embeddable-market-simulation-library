@@ -30,3 +30,17 @@ try:
     __version__ = _version("emsl")
 except Exception:
     __version__ = "0.0.0"
+
+
+def __getattr__(name):
+    # sb3 is reachable as `emsl.sb3` but is not imported with the package, because
+    # it needs stable_baselines3 and almost no install has it. The export table
+    # listed it for four releases while `emsl.sb3` raised AttributeError, and the
+    # test that would have caught that carried an exemption for this one name
+    if name == "sb3":
+        # import_module rather than `from . import sb3`, which resolves the name
+        # through getattr on this very module and recurses until the stack ends
+        import importlib
+
+        return importlib.import_module(".sb3", __name__)
+    raise AttributeError(f"module 'emsl' has no attribute {name!r}")

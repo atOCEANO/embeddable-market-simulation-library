@@ -270,6 +270,29 @@ def test_the_winner_is_scored_on_bars_no_trial_ever_saw():
     assert result.oos_stats["total_return_pct"] != result.best_stats["total_return_pct"]
 
 
+def test_the_holdout_is_the_end_of_the_series_and_never_the_start():
+    # the load-bearing claim of ADR 0049: a strategy is a claim about what comes
+    # NEXT. Asserting the holdout's length alone is satisfied just as well by an
+    # inverted split, so this pins which bars each half actually saw
+    from emsl._tune import _split
+
+    data = series()
+    head, tail = _split(data, 0.3)
+    assert len(head) == 210 and len(tail) == 90
+    assert np.array_equal(head, data[:210])
+    assert np.array_equal(tail, data[210:])
+    # and the winner really is re-run on that tail rather than on the head
+    result = emsl.tune(SmaCross, SPACE, data, n_trials=6, seed=0, oos=0.3,
+                       periods_per_year=365.0, fee_taker=0.0, fee_maker=0.0)
+    expected = emsl.backtest.Backtester(
+        data[210:], periods_per_year=365.0, fee_taker=0.0, fee_maker=0.0
+    ).run(result.best_strategy())
+    assert result.oos_stats["total_return_pct"] == pytest.approx(
+        expected.stats["total_return_pct"]
+    )
+    assert result.oos_result.data_hash == expected.data_hash
+
+
 def test_stating_a_zero_holdout_is_not_the_same_as_not_saying():
     # oos=0 is a decision and passes quietly; leaving it out is not, and warns
     import warnings as _warnings

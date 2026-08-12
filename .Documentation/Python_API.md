@@ -544,12 +544,14 @@ emsl.chart(frame=candles, run=forward.result).show()
 | :--- | :--- |
 | `result` | The run, as any other `BacktestResult`. |
 | `stats` | Its stats, which are out of sample by construction. |
-| `windows` | One record per refit: `fitted_on`, `traded_on`, `params`, `fitted`, `traded`. |
+| `windows` | One record per refit: `fitted_on`, `traded_on`, `params`, `fitted`, `traded`, `bars_traded`. |
 | `decay` | Mean fitted score less traded score. How much the fit flattered itself, in the objective's own units. |
 | `consistency` | The share of stretches whose traded score cleared zero. |
 | `span` | The first and last bar any window traded. |
 
 `decay` is the interpretable part. A large positive number says the search keeps finding things that do not survive the next stretch, which is the failure a single holdout can see once and this one sees repeatedly.
+
+**`traded` is read off the run that happened**, through [`segment`](#over-time-rather-than-in-total), seeded from the balance the account carried into that stretch. It used to come from a fresh isolated backtest over the window's bars, which is the stitching ADR 0057 refuses one level down: that run restarts every warm-up inside the window, so a winner needing 150 bars of history never had `next` called on a 60-bar stretch and the window reported a tidy `0.0`, indistinguishable from a stretch that genuinely broke even ([ADR 0060](Decisions.md)). `bars_traded` is beside it for the same reason: it counts the bars of the window its own winner could decide on, so a window nobody traded reads as one. `traded` is `None` when the objective is a callable, since a callable takes a whole result and a window is a slice of one.
 
 **Window length and step are hyperparameters too.** Trying five layouts and reporting the best is the same mistake one level up, and nothing here can catch you at it.
 
@@ -575,7 +577,11 @@ metrics.probabilistic_sharpe(result)      # the chance the true sharpe beats zer
 
 `decompose(result)` splits the change in equity into `gross_pnl`, `fees`, `funding`, and `unrealized`, and the four add up to `net` by construction. On a perp this is the first thing to look at: a large share of what looks like alpha in crypto is a funding carry wearing a costume, and a larger share of dead strategies died on the fee line rather than on the idea. `unrealized` is whatever a position still open at the end contributes; it is zero on a run that ends flat.
 
+`decompose` also carries `fee_share`, the costs as a fraction of the gross edge, and `turnover`, the notional both sides of every round trip moved over the opening balance. Read together they say whether you have a cost problem or an idea problem, which neither says alone.
+
 `long_short_split(result)` gives trades, net PnL, fees, win rate and average holding time for each side separately, because almost every naive crypto rule earns long and bleeds short, and one win rate averages the two into something describing neither.
+
+`trade_stats(result)` is the shape of the trade distribution, which a win rate hides completely: `avg_win`, `avg_loss`, `payoff` (the two divided), `expectancy` per trade, `largest_win`, `largest_loss` and `max_consecutive_losses`. A 70% win rate at a payoff of 0.3 is a losing rule, and a win rate and a profit factor are the same pair for a strategy that grinds out small wins and for one that is short gamma waiting for the bar that ends it. `summary` prints the win rate and the payoff on adjacent lines for this reason and never one without the other.
 
 ### How much friction it survives
 
@@ -590,7 +596,22 @@ Both re-run the backtest, so they take the strategy and the data rather than a f
 
 ### The shape of the ride
 
-`drawdown(result)` is the fall from the running peak at every bar, seeded from the opening balance so a loss on the first bar shows on the first bar. `drawdown_table(result, top=5)` gives the worst falls with where each began, bottomed and recovered. `time_under_water(result)` reports the longest and average stretch below a previous high, and the share of the run spent there: five shallow dips and one long one are the same `max_drawdown_pct` and not remotely the same thing to hold.
+`drawdown(result)` is the fall from the running peak at every bar, seeded from the opening balance so a loss on the first bar shows on the first bar. `drawdown_table(result, top=5)` gives the worst falls with where each began, bottomed and recovered. `time_under_water(result)` reports the longest and average stretch below a previous high, and the share of the run spent there: five shallow dips and one long one are the same `max_drawdown_pct` and not remotely the same thing to hold. `ulcer_index(result)` charges for depth and duration together, so a year spent down 15% scores worse than a week at 30%, which is the right way round for anybody who has to hold it.
+
+`skew(result)` and `kurtosis(result)` describe the return distribution's third and fourth moments; negative skew means the losses are the fat tail. `kurtosis` is **not** excess by default, so a normal distribution scores 3.0, because that is the convention the probabilistic Sharpe below wants and handing it an excess figure is the standard way to get a confidently wrong answer. `value_at_risk(result, alpha=0.95)` is the per-period loss only one bar in twenty is worse than, and `conditional_value_at_risk` the mean across those bars, which is the one to read: the quantile says where the bad days start and this says how bad they are. `alpha` is a **confidence**, so it is at least 0.5; passing 0.05 asks about the top of the gains and is refused rather than answered. Both are historical, with no normal assumption, and `value_at_risk` comes back negative when even the worst bar in twenty made money.
+
+`omega(result)` is the total gain above a threshold over the total loss below it, which reads the whole distribution rather than its first two moments, so a fat left tail cannot hide behind a tidy standard deviation. `tail_ratio(result)` is the size of the right tail over the left: below one, the run makes its money in small pieces and gives it back in large ones.
+
+### Over time rather than in total
+
+`segment(result, start, stop)` restricts a finished run to a range of bars and computes the engine's own statistics over it, seeded from the balance the account carried into that range rather than a fresh one, so consecutive segments compound to the run. `exposure_pct` and `num_fills` are absent from it, because a finished result does not carry what they are computed from.
+
+```python
+metrics.period_returns(result, candles, by="month")   # or "quarter", "year"
+metrics.rolling_sharpe(result, window=720)            # length T, aligned, NaN warm-up
+```
+
+`period_returns` is the first stability question anybody asks of a crypto backtest, which is whether the whole edge sits in one quarter, and a single number cannot answer it. `rolling_sharpe` is the same question as a shape: aligned and padded on the same rule `emsl.ta` uses, so it drops straight into [`emsl.chart`](#plotting) beside the equity curve.
 
 `buy_and_hold(result, frame)` answers the first question anyone asks, with the excess return, the beta against holding, and the information ratio.
 
@@ -600,22 +621,32 @@ Both re-run the backtest, so they take the strategy and the data rather than a f
 
 `probabilistic_sharpe(result, benchmark=0.0)` is the probability the true Sharpe is above the benchmark, given the sample length and how far the returns are from normal. `min_track_record_length(result)` is how many bars it would take to distinguish the two at 95%.
 
-Three things to know before quoting either. The benchmark is stated **annualized**, like everything else here, and de-annualized internally, because handing the estimator an annualized figure is the standard way to get a confidently wrong answer. Both assume the returns are independent, which a strategy holding a position for two days on hourly candles badly violates: read `autocorrelation(result)` beside them, and read `num_trades`, because forty round trips over three thousand bars is forty bets and it is the bets that carry the information. And a sample that cannot support the estimate raises rather than returning `NaN` ([ADR 0007](Decisions.md)).
+`sharpe_interval(result)` is the same estimator read as an interval instead of a tail, which is usually the sentence you want: "sharpe 1.4, 95% interval 0.2 to 2.6". A `low` at or below zero says the run does not distinguish itself from nothing, however good the point estimate looks.
+
+Three things to know before quoting any of them. The benchmark is stated **annualized**, like everything else here, and de-annualized internally, because handing the estimator an annualized figure is the standard way to get a confidently wrong answer.
+
+The published estimators count bars and assume each is an independent bet, which a strategy holding a position for two days on hourly candles badly violates. So the sample size counted here is `effective_sample(result)`, the standard `n (1 - r) / (1 + r)` at the first autocorrelation, and not the bar count ([ADR 0061](Decisions.md)). The library used to report `autocorrelation(result)` beside these, say in its own docstring that every confidence figure computed from the bar count was therefore overstated, and then compute them from the bar count anyway. Pass `independent=True` for the unadjusted formula. Read `num_trades` too: forty round trips over three thousand bars is forty bets and it is the bets that carry the information.
+
+And a sample that cannot support the estimate raises rather than returning `NaN` ([ADR 0007](Decisions.md)).
 
 Neither of them corrects for having searched. `deflated_sharpe(study, null)` does:
 
 ```python
 study = venue.tune(SmaCross, space, candles, n_trials=200, oos=0.3)
-null  = venue.tune(SmaCross, space, candles, n_trials=200, sampler="random")
+null  = venue.tune(SmaCross, space, candles, n_trials=200, oos=0.3, sampler="random")
 
 metrics.deflated_sharpe(study, null)      # is the winner real, given 200 looks?
 ```
+
+Both take the same `oos`. The fingerprint is checked, and a holdout changes which bars a search actually ran on, so a null fitted on the whole series is not a null for a search fitted on 70% of it.
 
 A search returns the best of many noisy scores, so its winner is high partly because it is good and partly because you looked a lot. This computes the Sharpe the best of that many looks would reach **by luck alone** and asks for the probability the winner beats it.
 
 **The null is required, and that is the design rather than an inconvenience.** The threshold depends on how many independent looks were taken and how far the scores scatter, and a TPE search supplies neither honestly: it concentrates its trials in the winning basin, so they are not independent draws and the spread between them *shrinks as it converges*. Computed from the search's own trials this number would grow more permissive the harder you overfit, which is exactly backwards. A random search over the same space is an honest "best of N looks here" and cannot do that ([ADR 0054](Decisions.md)).
 
-Four things are refused rather than guessed: a null that is not a random search, a null over different bars (checked by fingerprint), a search that selected on something other than `sharpe`, and a null too small to set a threshold. `deflation_threshold(spread, looks)` is the bar itself, if you want to see it.
+**The two arguments answer different halves of the threshold.** The null says how far a sharpe scatters over this space and these bars, and nothing else. How many times you looked is a property of your search, so it is read off the study: every trial of it, including the failed ones, because a configuration you evaluated and rejected is one you evaluated. Taking the count off the null instead answered about the wrong search, and made a winner more convincing the smaller the null ([ADR 0058](Decisions.md)).
+
+Five things are refused rather than guessed: a null that is not a random search, a null over different bars (checked by fingerprint), a search that selected on something other than `sharpe`, a null too small to set a threshold, and a null carrying a `min_trades` floor, since an activity floor keeps the trials that traded most and those scatter less than the space does. A null thinner than the search it judges warns instead of raising. `deflation_threshold(spread, looks)` is the bar itself, if you want to see it.
 
 A tuned parameter set is still in-sample no matter what probability is attached to it, so this complements the [holdout](#in-sample-and-out-of-sample) rather than replacing it.
 
@@ -635,7 +666,7 @@ prints one row per run, leading with the data fingerprint, and returns the rows.
 
 ## Indicators
 
-Fourteen functions, chosen to cover what a bar-level strategy usually reaches for and stopped there. This is not an attempt to be ta-lib: an indicator library is mostly somebody's opinion about warm-up and smoothing, and a hundred of those opinions is a hundred chances to disagree with the chart you have read for years.
+30 functions, chosen to cover what a bar-level strategy usually reaches for and stopped there. This is not an attempt to be ta-lib: an indicator library is mostly somebody's opinion about warm-up and smoothing, and a hundred of those opinions is a hundred chances to disagree with the chart you have read for years.
 
 ```python
 class Cross(emsl.Strategy):
@@ -654,10 +685,31 @@ class Cross(emsl.Strategy):
 
 | Group | Functions |
 | :--- | :--- |
-| Trend | `sma(values, length)`, `ema(values, length)`, `wma(values, length)`, `vwap(high, low, close, volume, length)` |
-| Momentum | `rsi(values, length=14)`, `macd(values, fast=12, slow=26, signal=9)`, `stoch(high, low, close, length=14, smooth=3)`, `roc(values, length)` |
-| Volatility | `atr(high, low, close, length=14)`, `true_range(high, low, close)`, `bbands(values, length=20, deviations=2.0)`, `stdev(values, length)` |
-| Structure | `donchian(high, low, length=20)`, `zscore(values, length)` |
+| Trend | `sma(values, length)`, `ema(values, length)`, `wma(values, length)`, `hma(values, length)`, `vwma(values, volume, length)`, `vwap(high, low, close, volume, length)` |
+| Momentum | `rsi(values, length=14)`, `macd(values, fast=12, slow=26, signal=9)`, `stoch(high, low, close, length=14, smooth=3)`, `willr(high, low, close, length=14)`, `cci(high, low, close, length=20)`, `roc(values, length)` |
+| Volatility | `atr(high, low, close, length=14)`, `natr(high, low, close, length=14)`, `true_range(high, low, close)`, `stdev(values, length)`, `bbands(values, length=20, deviations=2.0)`, `keltner(high, low, close, length=20, atr_length=10, multiplier=2.0)` |
+| Regime | `adx(high, low, close, length=14)`, `supertrend(high, low, close, length=10, multiplier=3.0)` |
+| Structure | `donchian(high, low, length=20)`, `highest(values, length)`, `lowest(values, length)`, `zscore(values, length)` |
+| Participation | `obv(close, volume)`, `mfi(high, low, close, volume, length=14)` |
+| Comparison | `shift(values, bars=1)`, `change(values, bars=1)`, `crossover(values, other)`, `crossunder(values, other)` |
+
+**The comparison group is the one that is about safety rather than convenience.** `shift(values, n)` is how you look back: written by hand, `values[i - n]` on an early bar is a negative index, which numpy resolves from the END of the array, so the rule reads a price from the far future and raises nothing. `Strategy.warmup` ([ADR 0050](Decisions.md)) closes that only when the declared warm-up is at least as deep as the lookback, and declaring the indicator's warm-up and then reaching further back inside `next` is the natural way to get it wrong. `shift` pads rather than wrapping, so there is no index left to get wrong.
+
+`crossover` and `crossunder` return **booleans**, and they are the only functions here that do not pad with `NaN`. `bool(nan)` is `True` in Python, so a float warm-up would fire a rule on precisely the bars where nothing is known; they pad with `False` instead ([ADR 0063](Decisions.md)). `other` may be a second series or a plain number, since crossing a level is the commoner case:
+
+```python
+class Cross(emsl.Strategy):
+    def init(self, engine):
+        self.up = emsl.ta.crossover(emsl.ta.ema(engine.closes, 20),
+                                    emsl.ta.ema(engine.closes, 60))
+        self.strong = emsl.ta.adx(engine.highs, engine.lows, engine.closes).adx
+        self.warmup = 80
+
+    def next(self, state, engine):
+        i = state["tick_index"]
+        if self.up[i] and self.strong[i] > 25.0:      # a cross, in a trend
+            engine.market_buy(engine.qty_from_weight(1.0))
+```
 
 **Three rules hold for every one of them**, and they are why this is in the library rather than in your notebook.
 
@@ -667,7 +719,7 @@ class Cross(emsl.Strategy):
 
 *Nothing knows about the engine.* These are functions of arrays: no state, no engine, no pandas needed. Computing once in `init` and handing the same array to the chart is what keeps the line on screen from drifting from the line that made the decision ([ADR 0042](Decisions.md)).
 
-Functions with more than one output return a named object rather than a tuple to unpack: `macd(...)` gives `.line`, `.signal` and `.histogram`; `bbands(...)` and `donchian(...)` give `.upper`, `.middle` and `.lower`; `stoch(...)` gives `.k` and `.d`.
+Functions with more than one output return a named object rather than a tuple to unpack, so a caller cannot one day unpack three anonymous arrays in the wrong order. There are five of them: `Bands` (`.upper`, `.middle`, `.lower`) from `bbands`, `keltner` and `donchian`; `Macd` (`.line`, `.signal`, `.histogram`); `Stochastic` (`.k`, `.d`); `Trend` (`.adx`, `.plus`, `.minus`); and `Channel` from `supertrend`, which adds `.direction` to the three band lines. Read `.direction`, which is `1.0` while long and `-1.0` while short, rather than comparing the close against the line: the line is the edge in force and that comparison is what set it.
 
 Two behaviours worth knowing. `vwap` is rolling over `length` bars rather than anchored to a session, because the engine has bars and no notion of a trading day. And `donchian`'s edges include the current bar, so a breakout of `upper` cannot happen on the bar that set it; compare against the previous bar's edge if that is what you mean.
 

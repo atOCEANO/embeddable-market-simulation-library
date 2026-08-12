@@ -147,13 +147,24 @@ def api_page():
 def test_every_export_the_table_names_actually_exists():
     # a table row for something that is not there is the worst kind of
     # documentation: it is authoritative, it is the first thing anybody reads,
-    # and it is wrong
+    # and it is wrong. This carried an exemption for sb3, which is exactly the
+    # name it was wrong about: emsl.sb3 raised AttributeError for four releases
     listed = re.findall(r"^\| `emsl\.(\w+)`", api_page(), re.M)
     assert listed, "the export table was not found"
     for name in listed:
-        assert hasattr(emsl, name) or name == "sb3", (
-            f"the export table names emsl.{name}, which the package does not have"
-        )
+        try:
+            getattr(emsl, name)
+        except AttributeError as exc:
+            raise AssertionError(
+                f"the export table names emsl.{name}, which the package does not "
+                f"have: {exc}"
+            )
+        except ImportError as exc:
+            # a name behind an optional extra: the package has it, and says which
+            # extra to install rather than denying the name exists at all
+            assert "pip install" in str(exc), (
+                f"emsl.{name} failed without naming its extra: {exc}"
+            )
 
 
 def test_nothing_is_exported_without_being_documented():
@@ -165,13 +176,34 @@ def test_nothing_is_exported_without_being_documented():
     assert not missing, f"exported but undocumented: {missing}"
 
 
+def test_nothing_a_module_exports_is_undocumented_either():
+    # this test used to walk emsl.__all__ alone, where metrics and ta appear as
+    # MODULES, so nothing ever reached their members. Four public metrics
+    # (skew, kurtosis, value_at_risk, conditional_value_at_risk) were named in no
+    # markdown file in the repository while report() emitted all four
+    text = "\n".join(page.read_text(encoding="utf-8") for page in pages())
+    missing = []
+    for name in ("metrics", "ta", "plot"):
+        for export in getattr(emsl, name).__all__:
+            # named in prose as `export`, called in an example as export(, or
+            # reached through its module either way
+            if not any(mark in text for mark in
+                       (f"`{export}", f"{name}.{export}", f"{export}(")):
+                missing.append(f"{name}.{export}")
+    assert not missing, f"exported by a module and documented nowhere: {missing}"
+
+
 def test_the_indicator_count_the_docs_claim_is_the_count_there_is():
-    # "fourteen" is written in three places and would quietly rot the first time
-    # one was added
+    # a written-out number rots the first time one is added, and it has now been
+    # added to twice. The tables are the count, and this checks the prose against
+    # them rather than against a literal
     functions = [n for n in ta.__all__ if not isinstance(getattr(ta, n), type)]
-    assert len(functions) == 14, (
-        f"ta has {len(functions)} functions but three pages say fourteen; either "
-        f"the count or the prose is now wrong"
-    )
-    said = [p.name for p in pages() if "fourteen" in p.read_text(encoding="utf-8")]
-    assert "Python_API.md" in said and "README.md" in said
+    page = api_page()
+    listed = set(re.findall(r"`(\w+)\(", page.split("## Indicators")[1]))
+    uncovered = sorted(set(functions) - listed)
+    assert not uncovered, f"indicators missing from the API table: {uncovered}"
+    for name in ("Python_API.md", "README.md"):
+        text = [p for p in pages() if p.name == name][0].read_text(encoding="utf-8")
+        assert f"{len(functions)} functions" in text or f"{len(functions)} indicators" in text, (
+            f"{name} does not state the indicator count of {len(functions)}"
+        )

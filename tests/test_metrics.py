@@ -356,10 +356,44 @@ def test_every_trade_lived_through_at_least_what_it_finished_with():
     result = Backtester(data, periods_per_year=365.0).run(Alternate())
     rows = metrics.excursions(result, data)
     assert len(rows) == len(result.trades)
-    for row in rows:
-        # the best it ever showed is never below the worst it ever showed
+    for row, trade in zip(rows, result.trades):
+        # the best it ever showed is never below the worst it ever showed. The
+        # second assertion here used to be `worst <= 0 or best >= 0`, which the
+        # line above it already implies and which therefore tested nothing
         assert row["best_pct"] >= row["worst_pct"]
-        assert row["worst_pct"] <= 0.0 or row["best_pct"] >= 0.0
+        # and the excursion brackets what the trade actually finished at, which
+        # is the property that catches best and worst being swapped on one side
+        finished = (trade["exit_price"] / trade["entry_price"] - 1.0) * 100.0
+        if trade["side"] == "sell":
+            finished = -finished
+        assert row["worst_pct"] - 1e-9 <= finished <= row["best_pct"] + 1e-9
+
+
+def test_a_shorts_excursions_are_not_a_longs_read_backwards():
+    # a short is hurt by the high and helped by the low, and swapping the two
+    # puts a stop on exactly the wrong side of the entry
+    data = np.array([
+        [100.0, 100.0, 100.0, 100.0, 1e6],
+        [100.0, 100.0, 100.0, 100.0, 1e6],
+        [100.0, 130.0, 70.0, 100.0, 1e6],
+        [100.0, 100.0, 100.0, 100.0, 1e6],
+        [100.0, 100.0, 100.0, 100.0, 1e6],
+    ])
+
+    class ShortOnce(Strategy):
+        def next(self, state, engine):
+            i = state["tick_index"]
+            if i == 0:
+                engine.market_sell(1.0)
+            elif i == 3:
+                engine.close()
+
+    result = Backtester(data, market="perp", periods_per_year=365.0).run(ShortOnce())
+    row = metrics.excursions(result, data)[0]
+    assert row["side"] == "sell"
+    # entered at 100, the bar ran to 130 (against) and 70 (for)
+    assert row["worst_pct"] == pytest.approx(-30.0)
+    assert row["best_pct"] == pytest.approx(30.0)
 
 
 def test_excursions_needs_the_highs_and_lows():
@@ -383,8 +417,33 @@ def test_trades_bucket_by_the_hour_they_closed_on():
         sum(t["net_pnl"] for t in result.trades),
         abs_tol=1e-9,
     )
-    weekdays = metrics.session_buckets(result, data, by="weekday")
-    assert set(weekdays) <= set(range(7))
+    # every bucket key is the hour pandas reads off the same stamp. `set(buckets)
+    # <= set(range(24))` used to stand alone here, which is true of anything
+    # modulo 24 and pinned no convention at all
+    expected = {}
+    for tick in (t["exit_tick"] for t in result.trades):
+        hour = int(data.index[tick].hour)
+        expected[hour] = expected.get(hour, 0) + 1
+    assert {k: v["trades"] for k, v in buckets.items()} == expected
+
+
+def test_weekdays_are_numbered_from_monday_like_every_other_clock():
+    # epoch day zero is a Thursday, and the offset was one out, so this numbered
+    # from Sunday while datetime.weekday and pandas.dayofweek number from Monday.
+    # buckets[0] read as Monday and was Sunday, and nothing said so (ADR 0059)
+    pd = pytest.importorskip("pandas")
+    raw = series(n=400)
+    data = pd.DataFrame(raw, columns=["open", "high", "low", "close", "volume"])
+    data.index = pd.date_range("2025-01-01", periods=len(raw), freq="1h", tz="UTC")
+    result = Backtester(data).run(Alternate())
+    buckets = metrics.session_buckets(result, data, by="weekday")
+    expected = {}
+    for tick in (t["exit_tick"] for t in result.trades):
+        day = int(data.index[tick].dayofweek)
+        expected[day] = expected.get(day, 0) + 1
+    assert {k: v["trades"] for k, v in buckets.items()} == expected
+    # and 2025-01-06 is a Monday, so a trade closing that day lands in bucket 0
+    assert int(pd.Timestamp("2025-01-06", tz="UTC").dayofweek) == 0
 
 
 def test_bucketing_without_a_clock_says_so_rather_than_counting_bars():
@@ -399,6 +458,137 @@ def test_an_unknown_bucket_is_refused():
     with pytest.raises(ValueError) as excinfo:
         metrics.session_buckets(result, series(), by="minute")
     assert "'hour' or 'weekday'" in str(excinfo.value)
+
+
+# ------------------------------------------------------- the frame has to match
+
+
+def test_a_metric_that_takes_a_frame_refuses_one_the_run_never_saw():
+    # excursions silently returned 35 rows of 1,516 given a slice of its own
+    # frame, and buy_and_hold trimmed the two series from opposite ends, comparing
+    # the run's last returns against the frame's first bars (ADR 0059)
+    data = series(n=200)
+    result = Backtester(data, periods_per_year=365.0).run(Alternate())
+    short = data[:80]
+    for call in (metrics.excursions, metrics.buy_and_hold):
+        with pytest.raises(ValueError) as excinfo:
+            call(result, short)
+        assert "200" in str(excinfo.value) and "80" in str(excinfo.value)
+
+
+def test_a_different_asset_of_the_same_length_is_caught_where_it_matters():
+    # a length check cannot see this one, and the trade ticks would be read
+    # against another asset's prices
+    data = series(n=200)
+    result = Backtester(data, periods_per_year=365.0).run(Alternate())
+    elsewhere = data.copy()
+    elsewhere[:, :4] *= 3.0
+    with pytest.raises(ValueError) as excinfo:
+        metrics.excursions(result, elsewhere)
+    assert "different series" in str(excinfo.value)
+
+
+def test_but_a_benchmark_against_another_asset_is_the_whole_point():
+    # beta and the information ratio are only interesting against something other
+    # than what you traded, so buy_and_hold checks the length and not the identity
+    data = series(n=200)
+    result = Backtester(data, periods_per_year=365.0).run(Alternate())
+    other = series(n=200, seed=99)
+    hold = metrics.buy_and_hold(result, other)
+    expected = (other[-1, 3] / other[0, 3] - 1.0) * 100.0
+    assert hold["hold_return_pct"] == pytest.approx(expected)
+
+
+def test_beta_is_measured_against_the_benchmark_and_not_against_itself():
+    # computed against the run's own returns it is exactly 1.0 for every input,
+    # which no test noticed
+    data = series(n=200)
+    result = Backtester(data, periods_per_year=365.0).run(Alternate())
+    hold = metrics.buy_and_hold(result, data)
+    assert hold["beta"] != pytest.approx(1.0)
+    mine = metrics.returns(result)
+    held = data[1:, 3] / data[:-1, 3] - 1.0
+    expected = np.cov(mine, held, ddof=1)[0, 1] / np.var(held, ddof=1)
+    assert hold["beta"] == pytest.approx(expected)
+
+
+def test_the_benchmark_sharpe_is_net_of_the_same_rate_the_run_is():
+    data = series(n=200)
+    free = Backtester(data, periods_per_year=365.0).run(Alternate())
+    charged = Backtester(data, periods_per_year=365.0, risk_free=0.5).run(Alternate())
+    assert (metrics.buy_and_hold(charged, data)["hold_sharpe"]
+            < metrics.buy_and_hold(free, data)["hold_sharpe"])
+
+
+# ------------------------------------------------------------ over a stretch
+
+
+def test_a_segment_of_the_whole_run_is_the_run():
+    # segment is a second path to arithmetic the engine owns, which is the drift
+    # this codebase keeps paying for, so it is pinned key by key (ADR 0060)
+    result = run()
+    whole = metrics.segment(result)
+    for key, value in whole.items():
+        assert value == pytest.approx(result.stats[key], rel=1e-9, abs=1e-9), key
+    assert "exposure_pct" not in whole and "num_fills" not in whole
+
+
+def test_consecutive_segments_compound_to_the_run():
+    # each is seeded from the balance carried into it, so no return falls between
+    # two of them and none is counted twice
+    result = run()
+    bars = len(result.equity_curve) + 1
+    edges = [0, 40, 90, bars]
+    product = 1.0
+    for first, last in zip(edges, edges[1:]):
+        product *= 1.0 + metrics.segment(result, first, last)["total_return_pct"] / 100.0
+    assert (product - 1.0) * 100.0 == pytest.approx(
+        result.stats["total_return_pct"], abs=1e-9
+    )
+
+
+def test_every_trade_belongs_to_exactly_one_segment():
+    result = run()
+    bars = len(result.equity_curve) + 1
+    edges = [0, 40, 90, bars]
+    counted = sum(metrics.segment(result, a, b)["num_trades"]
+                  for a, b in zip(edges, edges[1:]))
+    assert counted == result.stats["num_trades"]
+
+
+def test_a_segment_outside_the_run_is_refused():
+    result = run()
+    bars = len(result.equity_curve) + 1
+    for start, stop in ((0, bars + 1), (-1, 10), (50, 50), (60, 20)):
+        with pytest.raises(ValueError):
+            metrics.segment(result, start, stop)
+
+
+def test_period_returns_split_the_run_by_the_calendar():
+    pd = pytest.importorskip("pandas")
+    raw = series(n=2_000)
+    data = pd.DataFrame(raw, columns=["open", "high", "low", "close", "volume"])
+    data.index = pd.date_range("2025-01-01", periods=len(raw), freq="1h", tz="UTC")
+    result = Backtester(data).run(Alternate())
+    months = metrics.period_returns(result, data, by="month")
+    assert len(months) >= 2
+    assert [m["period"] for m in months] == sorted(m["period"] for m in months)
+    assert sum(m["bars"] for m in months) == len(raw)
+    assert sum(m["num_trades"] for m in months) == result.stats["num_trades"]
+    quarters = metrics.period_returns(result, data, by="quarter")
+    assert len(quarters) < len(months)
+
+
+def test_a_rolling_sharpe_is_aligned_like_an_indicator():
+    result = run()
+    bars = len(result.equity_curve) + 1
+    line = metrics.rolling_sharpe(result, window=30)
+    assert line.shape == (bars,)
+    assert not np.isfinite(line[:30]).any()
+    assert np.isfinite(line[30])
+    # the last window is the sharpe of a run over exactly those bars
+    tail = metrics.segment(result, bars - 30, bars)["sharpe"]
+    assert line[-1] == pytest.approx(tail, rel=1e-6)
 
 
 # ------------------------------------------------------------ identity
@@ -461,3 +651,258 @@ def test_compare_takes_a_plain_list_too():
 
 def test_comparing_nothing_is_not_an_error():
     assert metrics.compare([]) == []
+
+
+def test_comparing_on_a_key_nothing_reports_is_refused():
+    # it printed the word None in every row, which reads as a run that scored
+    # nothing rather than as a column that does not exist
+    with pytest.raises(KeyError) as excinfo:
+        metrics.compare([run()], keys=["sharpe", "alpha"])
+    assert "alpha" in str(excinfo.value)
+
+
+# ------------------------------------------------- the estimators, checked hard
+
+
+def test_the_probability_uses_plain_kurtosis_and_not_the_excess_kind():
+    # the trap `kurtosis`'s own docstring exists to prevent, asserted against a
+    # hand-computed value rather than against the implementation
+    result = run()
+    values = metrics.returns(result)
+    ppy = result.periods_per_year
+    observed = metrics.sharpe(result) / math.sqrt(ppy)
+    plain = metrics.kurtosis(result)
+    assert plain == pytest.approx(metrics.kurtosis(result, excess=True) + 3.0)
+    variance = 1.0 - metrics.skew(result) * observed + (plain - 1.0) / 4.0 * observed ** 2
+    size = metrics.effective_sample(result)
+    z = observed * math.sqrt(size - 1) / math.sqrt(variance)
+    expected = 0.5 * (1.0 + math.erf(z / math.sqrt(2.0)))
+    assert metrics.probabilistic_sharpe(result) == pytest.approx(expected, rel=1e-12)
+    assert values.size >= 4
+
+
+def test_confidence_is_counted_in_bets_rather_than_bars():
+    # the module reported autocorrelation, said in prose that every confidence
+    # figure computed from the bar count was overstated, and then computed them
+    # from the bar count (ADR 0061)
+    result = run()
+    assert metrics.effective_sample(result) <= len(metrics.returns(result))
+    adjusted = metrics.probabilistic_sharpe(result)
+    raw = metrics.probabilistic_sharpe(result, independent=True)
+    if metrics.autocorrelation(result) > 0.0:
+        assert metrics.effective_sample(result) < len(metrics.returns(result))
+        # fewer independent observations can only make a positive sharpe less
+        # certain, never more
+        assert (adjusted < raw) == (metrics.sharpe(result) > 0.0)
+    else:
+        assert adjusted == pytest.approx(raw)
+
+
+def persistent():
+    # a run whose returns cluster, which is what holding a position across bars
+    # produces and what makes a bar count an overstatement of the bets taken
+    rng = np.random.default_rng(17)
+    steps = rng.normal(0.0004, 0.004, 400)
+    smoothed = np.convolve(steps, np.full(20, 1.0 / 20.0), mode="same")
+    return BacktestResult(stats={}, equity_curve=100.0 * np.cumprod(1.0 + smoothed),
+                          trades=[], initial=100.0, periods_per_year=8760.0)
+
+
+def test_autocorrelation_is_the_ordinary_estimator():
+    # pinned against the arithmetic rather than against itself: the denominator is
+    # the CENTRED sum of squares, and using the raw one is close enough to look
+    # right on returns whose mean is near zero
+    result = run()
+    values = metrics.returns(result)
+    centred = values - values.mean()
+    for lag in (1, 2, 5):
+        expected = float(centred[:-lag].dot(centred[lag:]) / centred.dot(centred))
+        assert metrics.autocorrelation(result, lag) == pytest.approx(expected, rel=1e-12)
+    assert centred.dot(centred) != pytest.approx(float(values.dot(values)), rel=1e-12)
+
+
+def test_the_probability_really_counts_the_effective_sample():
+    # the correction is only worth having if it is applied, and on a run with no
+    # persistence the adjusted and unadjusted answers agree, which hides it
+    sticky = persistent()
+    bars = len(metrics.returns(sticky))
+    assert metrics.autocorrelation(sticky) > 0.5
+    assert metrics.effective_sample(sticky) < 0.5 * bars
+    adjusted = metrics.probabilistic_sharpe(sticky)
+    naive = metrics.probabilistic_sharpe(sticky, independent=True)
+    assert adjusted != pytest.approx(naive)
+    assert adjusted < naive                        # fewer bets, less certainty
+    band = metrics.sharpe_interval(sticky)
+    tight = metrics.sharpe_interval(sticky, independent=True)
+    assert band["high"] - band["low"] > tight["high"] - tight["low"]
+    assert band["effective_bars"] < bars
+
+
+def test_a_persistent_series_is_worth_fewer_bets_than_it_has_bars():
+    curve = np.cumprod(1.0 + np.concatenate([
+        np.full(60, 0.01), np.full(60, -0.005), np.full(60, 0.01)
+    ])) * 100.0
+    sticky = BacktestResult(stats={}, equity_curve=curve, trades=[], initial=100.0,
+                            periods_per_year=365.0)
+    assert metrics.autocorrelation(sticky) > 0.5
+    assert metrics.effective_sample(sticky) < 0.5 * len(curve)
+    # and negative autocorrelation is floored away rather than credited
+    zigzag = np.cumprod(1.0 + np.tile([0.02, -0.019], 90)) * 100.0
+    choppy = BacktestResult(stats={}, equity_curve=zigzag, trades=[], initial=100.0,
+                            periods_per_year=365.0)
+    assert metrics.autocorrelation(choppy) < 0.0
+    assert metrics.effective_sample(choppy) == float(len(zigzag))
+
+
+def test_autocorrelation_at_lag_zero_is_one_and_a_negative_lag_is_refused():
+    result = run()
+    assert metrics.autocorrelation(result, lag=0) == 1.0
+    with pytest.raises(ValueError):
+        metrics.autocorrelation(result, lag=-1)
+
+
+def test_the_track_record_length_keeps_its_leading_term():
+    # it needs a sharpe above the benchmark to answer at all, so a rising series
+    result = Backtester(trending(), periods_per_year=365.0).run(Alternate())
+    need = metrics.min_track_record_length(result, independent=True)
+    observed = metrics.sharpe(result) / math.sqrt(result.periods_per_year)
+    variance = 1.0 - metrics.skew(result) * observed + (
+        metrics.kurtosis(result) - 1.0) / 4.0 * observed ** 2
+    expected = 1.0 + variance * (metrics._normal_ppf(0.95) / observed) ** 2
+    assert need["bars"] == pytest.approx(expected, rel=1e-12)
+    # and counting bets rather than bars can only ask for more of them
+    assert metrics.min_track_record_length(result)["bars"] >= need["bars"] - 1e-9
+
+
+def test_a_sharpe_interval_brackets_the_sharpe():
+    result = run()
+    band = metrics.sharpe_interval(result)
+    assert band["low"] < band["sharpe"] < band["high"]
+    assert band["sharpe"] == pytest.approx(result.stats["sharpe"])
+    tighter = metrics.sharpe_interval(result, confidence=0.68)
+    assert tighter["high"] - tighter["low"] < band["high"] - band["low"]
+
+
+def test_the_risk_measures_read_the_tail_they_name():
+    values = np.array([-0.05, -0.04, -0.03, 0.01, 0.02, 0.02, 0.03, 0.03, 0.04, 0.05])
+    curve = 100.0 * np.cumprod(1.0 + values)
+    result = BacktestResult(stats={}, equity_curve=curve, trades=[], initial=100.0,
+                            periods_per_year=365.0)
+    # a loss is reported positive, so dropping the sign would report a gain
+    assert metrics.value_at_risk(result, alpha=0.9) > 0.0
+    # and the conditional figure averages the tail, not the whole series
+    assert (metrics.conditional_value_at_risk(result, alpha=0.9)
+            > metrics.value_at_risk(result, alpha=0.9))
+    assert metrics.conditional_value_at_risk(result, alpha=0.9) == pytest.approx(
+        -np.mean(values[values <= np.quantile(values, 0.1)]) * 100.0
+    )
+
+
+def test_a_tail_probability_passed_as_a_confidence_is_refused():
+    result = run()
+    for call in (metrics.value_at_risk, metrics.conditional_value_at_risk,
+                 metrics.tail_ratio):
+        with pytest.raises(ValueError) as excinfo:
+            call(result, alpha=0.05)
+        assert "0.95, not 0.05" in str(excinfo.value)
+
+
+def test_the_drawdown_cannot_report_worse_than_a_total_loss():
+    # bad debt takes equity below zero, and an uncapped fall gave a deeper bust a
+    # larger number than a wipeout (ADR 0029)
+    dead = BacktestResult(stats={}, equity_curve=np.array([100.0, 50.0, -80.0]),
+                          trades=[], initial=100.0, periods_per_year=365.0)
+    falls = metrics.drawdown(dead)
+    assert falls.min() == pytest.approx(-100.0)
+    assert metrics.ulcer_index(dead) <= 100.0
+
+
+def test_a_drawdown_episode_counts_the_bars_it_actually_covers():
+    curve = np.array([100.0, 90.0, 80.0, 95.0, 105.0, 110.0])
+    result = BacktestResult(stats={}, equity_curve=curve, trades=[], initial=100.0,
+                            periods_per_year=365.0)
+    episode = metrics.drawdown_table(result)[0]
+    falls = metrics.drawdown(result)
+    assert episode["depth_pct"] == pytest.approx(falls.min())
+    assert falls[episode["trough_bar"]] == pytest.approx(falls.min())
+    assert episode["bars_under"] == episode["recovered_bar"] - episode["start_bar"]
+    assert all(falls[b] < 0.0 for b in range(episode["start_bar"],
+                                             episode["recovered_bar"]))
+
+
+def test_the_side_split_counts_a_win_after_its_fee_like_everything_else():
+    # on gross PnL a scalper whose edge is smaller than its costs reported a
+    # perfect win rate beside a negative return, per side (ADR 0029)
+    data = series()
+    dear = Backtester(data, fee_taker=0.02, periods_per_year=365.0).run(Alternate())
+    sides = metrics.long_short_split(dear)
+    for block, side in ((sides["long"], "buy"), (sides["short"], "sell")):
+        rows = [t for t in dear.trades if t["side"] == side]
+        net_wins = [t for t in rows if t["net_pnl"] > 0.0]
+        gross_wins = [t for t in rows if t["pnl"] > 0.0]
+        if rows:
+            assert block["win_rate"] == pytest.approx(len(net_wins) / len(rows))
+        if len(gross_wins) != len(net_wins):
+            assert block["win_rate"] < len(gross_wins) / len(rows)
+
+
+# ------------------------------------------------------------ the trade shape
+
+
+def test_the_trade_distribution_says_what_a_win_rate_cannot():
+    result = run()
+    shape = metrics.trade_stats(result)
+    nets = [t["net_pnl"] for t in result.trades]
+    assert shape["trades"] == len(nets)
+    assert shape["wins"] + shape["losses"] <= shape["trades"]
+    assert shape["expectancy"] == pytest.approx(float(np.mean(nets)))
+    assert shape["largest_win"] == pytest.approx(max(nets))
+    assert shape["largest_loss"] == pytest.approx(min(nets))
+    if shape["losses"]:
+        assert shape["payoff"] == pytest.approx(shape["avg_win"] / shape["avg_loss"])
+
+
+def test_a_high_win_rate_at_a_terrible_payoff_is_visible():
+    # the pair is the answer and either one alone describes two opposite rules
+    made = [BacktestResult(stats={}, equity_curve=np.array([100.0]), trades=[],
+                           initial=100.0, periods_per_year=365.0)]
+    made[0].trades = [{"net_pnl": 1.0, "pnl": 1.0, "fees": 0.0, "side": "buy",
+                       "bars_held": 1, "size": 1.0, "entry_price": 100.0,
+                       "exit_price": 101.0, "entry_tick": 0, "exit_tick": 1}] * 9
+    made[0].trades = made[0].trades + [dict(made[0].trades[0], net_pnl=-20.0)]
+    shape = metrics.trade_stats(made[0])
+    assert shape["wins"] / shape["trades"] == pytest.approx(0.9)
+    assert shape["payoff"] == pytest.approx(1.0 / 20.0)
+    assert shape["expectancy"] < 0.0                       # nine wins, still losing
+    assert shape["max_consecutive_losses"] == 1
+
+
+def test_the_costs_are_reported_as_a_share_of_the_edge():
+    data = series()
+    dear = Backtester(data, fee_taker=0.01, periods_per_year=365.0).run(Alternate())
+    money = metrics.decompose(dear)
+    assert money["fee_share"] == pytest.approx(
+        money["fees"] / abs(money["gross_pnl"])
+    )
+    assert money["turnover"] > 0.0
+    cheap = Backtester(data, fee_taker=0.0, periods_per_year=365.0).run(Alternate())
+    assert metrics.decompose(cheap)["fee_share"] == 0.0
+
+
+def test_omega_and_the_tail_ratio_read_the_whole_distribution():
+    result = run()
+    assert metrics.omega(result) >= 0.0
+    assert metrics.tail_ratio(result) >= 0.0
+    # omega above one and a positive total return say the same thing
+    assert (metrics.omega(result) > 1.0) == (result.stats["total_return_pct"] > 0.0)
+
+
+def test_the_report_does_not_stutter_its_own_prefix():
+    data = series()
+    result = Backtester(data, periods_per_year=365.0).run(Alternate())
+    row = metrics.report(result, data)
+    assert "hold_return_pct" in row and "hold_sharpe" in row
+    assert not any(key.startswith("hold_hold") for key in row)
+    for key in ("trade_payoff", "trade_expectancy", "effective_bars", "omega",
+                "tail_ratio", "ulcer_index", "return_per_exposure", "sharpe_low"):
+        assert key in row

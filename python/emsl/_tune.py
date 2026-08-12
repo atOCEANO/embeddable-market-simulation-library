@@ -426,7 +426,7 @@ class TuneResult:
     """
 
     def __init__(self, study, strategy, best_result=None, oos_result=None,
-                 objective=None, sampler=None):
+                 objective=None, sampler=None, min_trades=0):
         self._study = study
         self._strategy = strategy
         best = study.best_trial
@@ -437,9 +437,13 @@ class TuneResult:
         self.oos_result = oos_result
         self.oos_stats = dict(oos_result.stats) if oos_result is not None else None
         # what was optimised and how it was searched, because a number computed
-        # about a search has to know which search it is talking about
+        # about a search has to know which search it is talking about. The
+        # activity floor is here for the same reason: it selects which trials
+        # survive, so a null carrying one has a narrower spread than the space
+        # it is meant to describe (ADR 0058)
         self.objective = objective
         self.sampler = sampler
+        self.min_trades = int(min_trades)
         self.data_hash = best_result.data_hash if best_result is not None else None
         self.trials = [
             {
@@ -592,6 +596,7 @@ def tune(
             objective, "__name__", "a callable"
         ),
         sampler=sampler,
+        min_trades=min_trades,
     )
 
 

@@ -21,30 +21,41 @@ contributing zero rather than a meaningless ratio. ``metrics.sharpe`` reproduces
 from __future__ import annotations
 
 import math
+import warnings
 
 import numpy as np
 
 __all__ = [
     "returns",
+    "segment",
     "cost_curve",
     "breakeven_bps",
     "excursions",
     "session_buckets",
+    "period_returns",
     "sharpe",
+    "rolling_sharpe",
+    "sharpe_interval",
     "skew",
     "kurtosis",
+    "omega",
+    "tail_ratio",
     "drawdown",
     "drawdown_table",
     "time_under_water",
+    "ulcer_index",
     "decompose",
+    "trade_stats",
     "long_short_split",
     "buy_and_hold",
     "value_at_risk",
     "conditional_value_at_risk",
     "probabilistic_sharpe",
     "deflated_sharpe",
+    "deflation_threshold",
     "min_track_record_length",
     "autocorrelation",
+    "effective_sample",
     "compare",
     "report",
     "summary",
@@ -147,13 +158,19 @@ def kurtosis(result, excess=False):
 def autocorrelation(result, lag=1):
     """Autocorrelation of the returns at ``lag``.
 
-    Reported beside the probabilistic Sharpe because that statistic assumes the
-    returns are independent, and a strategy holding a position for two days on
-    hourly bars has nothing of the kind. A high value here means the effective
-    number of independent bets is far below the number of bars, and every
-    confidence figure computed from the bar count is overstated.
+    A strategy holding a position for two days on hourly bars has nothing like
+    independent returns, and a high value here means the number of independent
+    bets is far below the number of bars. ``effective_sample`` turns this into
+    that count, and the two statistics that depend on a sample size use it.
     """
+    lag = int(lag)
+    if lag < 0:
+        raise ValueError(f"lag must be zero or a positive number of bars, got {lag}")
     values = returns(result)
+    if lag == 0:
+        # a series correlates perfectly with itself, and the general branch below
+        # divides the whole sum of squares by itself through an empty slice
+        return 1.0 if values.size else 0.0
     if values.size <= lag + 1:
         return 0.0
     a = values[:-lag] - values.mean()
@@ -162,6 +179,33 @@ def autocorrelation(result, lag=1):
     if bottom == 0.0:
         return 0.0
     return float(a.dot(b)) / bottom
+
+
+def effective_sample(result):
+    """How many independent bets the return series is worth, which is fewer than
+    the number of bars whenever a position is held across them.
+
+    A confidence figure computed from the bar count answers "how sure am I, given
+    this many independent observations", and a strategy holding for two days on
+    hourly candles does not have a few thousand of those, it has a few hundred.
+    This is the standard effective sample size for a persistent series,
+    ``n (1 - r) / (1 + r)`` at the first autocorrelation ``r``, and it is what
+    ``probabilistic_sharpe`` and ``min_track_record_length`` count in (ADR 0061).
+
+    Negative autocorrelation is floored away rather than credited. It would make
+    this larger than the bar count, which reads as free confidence bought by
+    mean reversion, and the correction exists to remove overstatement rather than
+    to hand any back.
+    """
+    values = returns(result)
+    size = values.size
+    if size < 4:
+        return float(size)
+    rho = autocorrelation(result, lag=1)
+    if not math.isfinite(rho) or rho <= 0.0:
+        return float(size)
+    rho = min(rho, 0.99)
+    return max(2.0, float(size) * (1.0 - rho) / (1.0 + rho))
 
 
 def drawdown(result):
@@ -261,6 +305,11 @@ def decompose(result):
     funding = float((result.stats or {}).get("funding_paid", 0.0))
     series = _curve(result)
     net = float(series[-1] - series[0])
+    # the notional both sides of every round trip moved, over the opening balance.
+    # Read with `fee_share`: a strategy paying half its gross edge away in costs
+    # has a cost problem rather than an idea problem, and neither number alone
+    # says which one you have
+    traded = float(sum(t["size"] * (t["entry_price"] + t["exit_price"]) for t in trades))
     return {
         "gross_pnl": gross,
         "fees": fees,
@@ -268,7 +317,164 @@ def decompose(result):
         "unrealized": net - (gross - fees - funding),
         "net": net,
         "net_pct": net / series[0] * 100.0 if series[0] else 0.0,
+        "fee_share": _ratio(fees, abs(gross), 1.0),
+        "turnover": traded / series[0] if series[0] else 0.0,
     }
+
+
+def trade_stats(result):
+    """The shape of the trade distribution, which a win rate hides.
+
+    ``win_rate`` and ``profit_factor`` are the same pair for a rule that grinds
+    out small wins and for one that is short gamma waiting for the bar that ends
+    it. A 70% win rate at a payoff of 0.3 is a losing rule, and until now the
+    numbers to see that were sitting unread in ``result.trades``.
+
+    ``expectancy`` is the average net PnL of a trade, in quote, and
+    ``expectancy_pct`` the same as a percent of the opening balance.
+    ``payoff`` is the average win over the average loss, both positive, and
+    infinite when nothing lost. ``max_consecutive_losses`` is the run of them a
+    live account would have had to sit through, which is what actually decides
+    whether a rule gets switched off.
+    """
+    trades = result.trades or []
+    nets = [float(t["net_pnl"]) for t in trades]
+    wins = [v for v in nets if v > 0.0]
+    losses = [-v for v in nets if v < 0.0]
+    streak = worst = 0
+    for value in nets:
+        streak = streak + 1 if value < 0.0 else 0
+        worst = max(worst, streak)
+    average_win = float(np.mean(wins)) if wins else 0.0
+    average_loss = float(np.mean(losses)) if losses else 0.0
+    opening = getattr(result, "initial", None)
+    expectancy = float(np.mean(nets)) if nets else 0.0
+    return {
+        "trades": len(nets),
+        "wins": len(wins),
+        "losses": len(losses),
+        "avg_win": average_win,
+        "avg_loss": average_loss,
+        "payoff": (average_win / average_loss if average_loss > 0.0
+                   else (math.inf if average_win > 0.0 else 0.0)),
+        "expectancy": expectancy,
+        "expectancy_pct": (expectancy / float(opening) * 100.0
+                           if opening else 0.0),
+        "largest_win": max(nets) if nets else 0.0,
+        "largest_loss": min(nets) if nets else 0.0,
+        "max_consecutive_losses": worst,
+        "avg_bars_held": (float(np.mean([t["bars_held"] for t in trades]))
+                          if trades else 0.0),
+    }
+
+
+def omega(result, threshold=0.0):
+    """Total gain above ``threshold`` over total loss below it, per period.
+
+    The whole return distribution in one number rather than its first two
+    moments, so a fat left tail cannot hide behind a tidy standard deviation the
+    way it does under Sharpe. ``threshold`` is an annualized return, de-annualized
+    here like every other rate in this module. One means break even.
+    """
+    values = returns(result)
+    if values.size == 0:
+        return 0.0
+    bar = float(threshold) / _annualization(result)
+    above = float(np.maximum(values - bar, 0.0).sum())
+    below = float(np.maximum(bar - values, 0.0).sum())
+    return _ratio(above, below, 1.0)
+
+
+def tail_ratio(result, alpha=0.95):
+    """The size of the right tail over the size of the left, at ``1 - alpha``.
+
+    Above one the good bars are bigger than the bad ones. Below one the run makes
+    its money in small pieces and gives it back in large ones, which is the
+    profile that survives a backtest and not a year.
+    """
+    values = returns(result)
+    if values.size < 2:
+        return 0.0
+    alpha = _confidence(alpha, "tail_ratio")
+    right = float(np.quantile(values, alpha))
+    left = float(-np.quantile(values, 1.0 - alpha))
+    return _ratio(right, left, 1.0)
+
+
+def ulcer_index(result):
+    """The root mean square of the drawdown, in percent.
+
+    A maximum says how deep the worst fall was and nothing about how long the
+    account sat in one. This charges for depth and duration together, so a run
+    that spends a year down 15% scores worse than one that touches 30% for a
+    week, which is the right way round for anybody who has to hold it.
+    """
+    falls = drawdown(result)
+    if falls.size == 0:
+        return 0.0
+    return float(np.sqrt((falls ** 2).mean()))
+
+
+def rolling_sharpe(result, window=252):
+    """Annualized Sharpe over a rolling ``window`` of bars, as a length-``T`` array
+    aligned to the run's bars, warm-up as ``NaN``.
+
+    Decay is a shape, not a scalar, and a single Sharpe over three years cannot
+    show that the whole edge was in the first six months. Aligned and padded on
+    the same rule ``emsl.ta`` uses, so it goes straight into ``emsl.chart``
+    beside the equity curve with no padding decision in between.
+    """
+    values = returns(result)
+    window = int(window)
+    if window < 2:
+        raise ValueError(f"rolling_sharpe needs a window of at least 2, got {window}")
+    bars = values.size + 1
+    out = np.full(bars, np.nan, dtype=np.float64)
+    if window > values.size:
+        return out
+    ppy = _annualization(result)
+    per = _risk_free(result, None) / ppy
+    frames = np.lib.stride_tricks.sliding_window_view(values, window)
+    means = frames.mean(axis=-1) - per
+    spreads = frames.std(axis=-1, ddof=1)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        scored = np.where(spreads > 0.0, means / spreads * math.sqrt(ppy),
+                          np.where(means > 0.0, np.inf, 0.0))
+    # a window ending on return j ends on bar j + 1, and the returns start at bar 1
+    out[window:] = scored
+    return out
+
+
+def period_returns(result, frame, by="month"):
+    """The run broken down by calendar period: month, quarter or year.
+
+    "Is the whole edge in one quarter" is the first stability question anybody
+    asks of a crypto backtest, and a single number cannot answer it. Each period
+    carries the statistics of that stretch alone, computed on the equity the
+    account actually carried into it (``segment``), so the periods compound to the
+    run rather than each starting from a fresh balance.
+    """
+    units = {"month": "M", "quarter": "M", "year": "Y"}
+    if by not in units:
+        raise ValueError(f"by must be 'month', 'quarter' or 'year', got {by!r}")
+    stamps = _stamps(frame)
+    _same_bars(result, frame, stamps.size, "period_returns")
+    keys = stamps.astype(f"datetime64[{units[by]}]")
+    if by == "quarter":
+        months = keys.astype("int64")
+        keys = (months - months % 3).astype("datetime64[M]")
+    out = []
+    edges = np.flatnonzero(np.concatenate(([True], keys[1:] != keys[:-1])))
+    for position, first in enumerate(edges):
+        last = int(edges[position + 1]) if position + 1 < edges.size else keys.size
+        if last - int(first) < 2:
+            continue
+        block = segment(result, int(first), last)
+        block["period"] = str(keys[int(first)])
+        block["start_bar"] = int(first)
+        block["bars"] = last - int(first)
+        out.append(block)
+    return out
 
 
 def long_short_split(result):
@@ -298,22 +504,39 @@ def buy_and_hold(result, frame):
 
     The first question anyone asks of a crypto strategy is whether it beat holding
     the coin, and until now nothing here could answer it.
+
+    ``frame`` needs one price per bar of the run, and that is the only thing
+    checked. A **different asset** over the same bars is not a mistake here, it is
+    the point: ``beta`` and ``information_ratio`` are benchmark statistics and are
+    only interesting against something other than what you traded, so benchmarking
+    an ETH strategy against holding BTC is a supported question. A different
+    NUMBER of bars is a mistake, and used to be absorbed by trimming the two
+    series to a common length, from opposite ends: the run's last returns against
+    the frame's first (ADR 0059).
     """
     close = _closes(frame)
     if close.size < 2:
         raise ValueError(f"buy_and_hold needs at least 2 bars, got {close.size}")
-    held = close[1:] / close[:-1] - 1.0
     mine = returns(result)
-    if held.size != mine.size:
-        held = held[-mine.size:] if held.size > mine.size else held
-        mine = mine[-held.size:]
+    if close.size != mine.size + 1:
+        raise ValueError(
+            f"buy_and_hold needs one price per bar of the run, but the run covered "
+            f"{mine.size + 1} bars and this frame carries {close.size}; a different "
+            f"asset over the same bars is fine and is what beta is for, a different "
+            f"number of bars is not"
+        )
+    held = close[1:] / close[:-1] - 1.0
     ppy = _annualization(result)
+    rate = _risk_free(result, None)
     spread = mine - held
     tracking = float(spread.std(ddof=1)) if spread.size > 1 else 0.0
     variance = float(held.var(ddof=1)) if held.size > 1 else 0.0
     return {
         "hold_return_pct": float(close[-1] / close[0] - 1.0) * 100.0,
-        "hold_sharpe": _ratio(float(held.mean()), float(held.std(ddof=1)), ppy),
+        # net of the same risk-free rate the run's own sharpe is net of, or the
+        # two ratios printed side by side are different quantities
+        "hold_sharpe": _ratio(float(held.mean()) - rate / ppy,
+                              float(held.std(ddof=1)), ppy),
         "excess_return_pct": (result.stats or {}).get("total_return_pct", 0.0)
         - float(close[-1] / close[0] - 1.0) * 100.0,
         "beta": float(np.cov(mine, held, ddof=1)[0, 1] / variance) if variance else 0.0,
@@ -338,13 +561,119 @@ def _ratio(mean, spread, ppy):
     return math.inf if mean > 0.0 else 0.0
 
 
+def segment(result, start=0, stop=None):
+    """The run's statistics over bars ``[start, stop)`` alone.
+
+    The same keys the engine reports, on the equity the account actually carried
+    into that stretch rather than a fresh balance, so a bad first quarter shrinks
+    the size available in the second exactly as it did in the run. ``start`` is
+    inclusive and ``stop`` exclusive, both in bar indices, and a trade belongs to
+    the stretch its EXIT falls in, which is the same rule ``session_buckets`` uses.
+
+    Two keys the engine reports are absent, because a finished result does not
+    carry what they are computed from: ``exposure_pct`` needs the per-bar record
+    of whether a position was held, and ``num_fills`` counts fills rather than
+    trades.
+
+    This is a second path to numbers the engine already produces, which is the
+    drift this codebase pays for elsewhere, so a test pins ``segment`` over the
+    whole run against ``result.stats`` key by key (ADR 0060).
+    """
+    curve = np.asarray(result.equity_curve, dtype=np.float64)
+    bars = curve.size + 1
+    start = int(start)
+    stop = bars if stop is None else int(stop)
+    if not 0 <= start < stop <= bars:
+        raise ValueError(
+            f"segment needs 0 <= start < stop <= {bars}, got start={start} and "
+            f"stop={stop}"
+        )
+    # the balance carried INTO bar `start`, so consecutive segments partition the
+    # returns exactly: [a, b) owns the returns landing on bars a to b - 1, and the
+    # one landing on bar b opens the next. Seeding from the balance AT bar `start`
+    # instead loses one return per boundary, which compounds two halves of a run
+    # to slightly less than the run
+    opening = _curve(result)[max(0, start - 1)]
+    trades = [t for t in (result.trades or []) if start <= t["exit_tick"] < stop]
+    series = np.concatenate(([opening], curve[max(0, start - 1):stop - 1]))
+    return _stats(series, trades, _annualization(result), _risk_free(result, None))
+
+
+def _stats(series, trades, ppy, rate):
+    # the engine's own arithmetic, from bar-engine/src/stats.rs, over an equity
+    # path that already includes the balance it started from. Every convention is
+    # ADR 0007's: sample deviation under sharpe, population under sortino's
+    # downside, drawdown capped at a total loss, trade metrics net of the fee
+    opening, final = float(series[0]), float(series[-1])
+    n_returns = series.size - 1
+    if opening > 0.0 and n_returns > 0:
+        total = final / opening - 1.0
+        cagr = (final / opening) ** (ppy / n_returns) - 1.0 if final > 0.0 else -1.0
+    else:
+        total, cagr = 0.0, 0.0
+    previous = series[:-1]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        rets = np.where(previous > 0.0, series[1:] / previous - 1.0, 0.0)
+    per = rate / ppy
+    if rets.size >= 2:
+        excess = float(rets.mean()) - per
+        spread = float(rets.std(ddof=1))
+        downside = float(np.sqrt((np.minimum(rets - per, 0.0) ** 2).mean()))
+        sharpe_, sortino = _ratio(excess, spread, ppy), _ratio(excess, downside, ppy)
+        volatility = spread * math.sqrt(ppy)
+    else:
+        sharpe_, sortino, volatility = 0.0, 0.0, 0.0
+    peak = np.maximum.accumulate(series)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        falls = np.where(peak > 0.0, np.minimum((peak - series) / peak, 1.0), 0.0)
+    max_dd = float(falls.max()) if falls.size else 0.0
+    nets = [float(t["net_pnl"]) for t in trades]
+    wins = [v for v in nets if v > 0.0]
+    losses = [-v for v in nets if v < 0.0]
+    return {
+        "total_return_pct": total * 100.0,
+        "net_profit_pct": total * 100.0,
+        "cagr_pct": cagr * 100.0,
+        "sharpe": sharpe_,
+        "sortino": sortino,
+        "calmar": _ratio(cagr, max_dd, 1.0),
+        "max_drawdown_pct": max_dd * 100.0,
+        "volatility_pct": volatility * 100.0,
+        "win_rate": len(wins) / len(nets) if nets else 0.0,
+        "profit_factor": _ratio(sum(wins), sum(losses), 1.0),
+        "num_trades": len(nets),
+        "avg_trade_pct": (sum(nets) / len(nets) / opening * 100.0
+                          if nets and opening > 0.0 else 0.0),
+    }
+
+
+def _confidence(alpha, where):
+    # alpha is the CONFIDENCE, so 0.95 is the loss exceeded one bar in twenty.
+    # Half the industry writes the tail probability instead, and 0.05 read as a
+    # confidence asks for the ninety-fifth percentile of the GAINS, which comes
+    # back as a negative loss and looks like a number rather than a mistake
+    alpha = float(alpha)
+    if not 0.5 <= alpha < 1.0:
+        raise ValueError(
+            f"{where} takes a confidence, so alpha is at least 0.5 and below 1, "
+            f"got {alpha}; for the worst one bar in twenty pass 0.95, not 0.05"
+        )
+    return alpha
+
+
 def value_at_risk(result, alpha=0.95):
     """The per-period loss that only ``1 - alpha`` of bars are worse than, as a
     positive percent. Historical, not a normal assumption.
+
+    ``alpha`` is the confidence, so the default asks about the worst bar in
+    twenty. It comes back NEGATIVE when even that bar made money, which is the
+    honest answer for a run whose whole return distribution sits above zero,
+    rather than a floor at zero pretending there was a loss.
     """
     values = returns(result)
     if values.size == 0:
         return 0.0
+    alpha = _confidence(alpha, "value_at_risk")
     return float(-np.quantile(values, 1.0 - alpha) * 100.0)
 
 
@@ -357,12 +686,13 @@ def conditional_value_at_risk(result, alpha=0.95):
     values = returns(result)
     if values.size == 0:
         return 0.0
+    alpha = _confidence(alpha, "conditional_value_at_risk")
     cutoff = np.quantile(values, 1.0 - alpha)
     tail = values[values <= cutoff]
     return float(-tail.mean() * 100.0) if tail.size else 0.0
 
 
-def probabilistic_sharpe(result, benchmark=0.0):
+def probabilistic_sharpe(result, benchmark=0.0, independent=False):
     """The probability the true Sharpe is above ``benchmark``, given the sample
     length and how far the returns are from normal (Bailey and Lopez de Prado).
 
@@ -371,11 +701,14 @@ def probabilistic_sharpe(result, benchmark=0.0):
     the annualized figure by hand is the standard way to get a confidently wrong
     answer, so it is not possible to: this takes the result, not a number.
 
-    Assumes the returns are independent. They are usually not, so read
-    ``autocorrelation`` beside it: a strategy holding a position for two days on
-    hourly candles has a few hundred independent bets, not a few thousand, and
-    this figure will happily read 0.999 on noise. Raises rather than returning
-    NaN when the sample cannot support the estimate (ADR 0007).
+    The published estimator counts bars and assumes they are independent bets.
+    They are usually not, and this library is pointed at hourly crypto where a
+    position is routinely held for days, so the sample size counted here is
+    ``effective_sample`` rather than the bar count (ADR 0061). Pass
+    ``independent=True`` for the published formula unadjusted, which is the right
+    thing when the returns really are independent and the wrong thing by a wide
+    margin when they are not. Raises rather than returning NaN when the sample
+    cannot support the estimate (ADR 0007).
     """
     values = returns(result)
     if values.size < 4:
@@ -393,15 +726,61 @@ def probabilistic_sharpe(result, benchmark=0.0):
     ppy = _annualization(result)
     observed = sharpe(result) / math.sqrt(ppy)
     target = float(benchmark) / math.sqrt(ppy)
-    variance = 1.0 - skew(result) * observed + (kurtosis(result) - 1.0) / 4.0 * observed ** 2
+    variance = _psr_variance(result, observed)
+    size = values.size if independent else effective_sample(result)
+    z = (observed - target) * math.sqrt(size - 1) / math.sqrt(variance)
+    return _normal_cdf(z)
+
+
+def sharpe_interval(result, confidence=0.95, independent=False):
+    """The annualized Sharpe with a confidence interval around it.
+
+    "Sharpe 1.4, 95% interval 0.2 to 2.6" is the sentence a reader wants and the
+    one nothing here could produce: ``probabilistic_sharpe`` answers a yes-or-no
+    question about a benchmark, which is a different question. Same estimator,
+    same non-normality correction, same effective sample size (ADR 0061), read as
+    an interval instead of a tail.
+
+    ``low`` at or below zero says the run does not distinguish itself from nothing
+    at this confidence, however good the point estimate looks.
+    """
+    values = returns(result)
+    if values.size < 4:
+        raise ValueError(
+            f"sharpe_interval needs at least 4 returns, got {values.size}"
+        )
+    ppy = _annualization(result)
+    observed = sharpe(result) / math.sqrt(ppy)
+    variance = _psr_variance(result, observed)
+    size = values.size if independent else effective_sample(result)
+    half = _normal_ppf(1.0 - (1.0 - float(confidence)) / 2.0) * math.sqrt(
+        variance / (size - 1)
+    )
+    return {
+        "sharpe": observed * math.sqrt(ppy),
+        "low": (observed - half) * math.sqrt(ppy),
+        "high": (observed + half) * math.sqrt(ppy),
+        "confidence": float(confidence),
+        "effective_bars": float(size),
+        "bars": int(values.size),
+    }
+
+
+def _psr_variance(result, observed):
+    # the variance of the sharpe estimator under non-normal returns: the term
+    # Bailey and Lopez de Prado put under the root. Kurtosis is the plain kind,
+    # not excess, which is why `kurtosis` defaults to that and says so
+    variance = (
+        1.0 - skew(result) * observed
+        + (kurtosis(result) - 1.0) / 4.0 * observed ** 2
+    )
     if variance <= 0.0:
         raise ValueError(
             f"the sharpe estimator's variance came out at {variance:.4g}, which is "
             f"not positive, so this sample cannot support a probability; it means "
             f"the returns are far enough from normal that the approximation breaks"
         )
-    z = (observed - target) * math.sqrt(values.size - 1) / math.sqrt(variance)
-    return _normal_cdf(z)
+    return variance
 
 
 _EULER = 0.5772156649015329
@@ -420,8 +799,13 @@ def deflated_sharpe(study, null):
     space and the same bars::
 
         study = venue.tune(SmaCross, space, candles, n_trials=200, oos=0.3)
-        null = venue.tune(SmaCross, space, candles, n_trials=200, sampler="random")
+        null = venue.tune(SmaCross, space, candles, n_trials=200, oos=0.3,
+                          sampler="random")
         metrics.deflated_sharpe(study, null)
+
+    Both take the same ``oos``, because the fingerprint is checked and a holdout
+    changes which bars a search actually ran on. A null fitted on the whole
+    series is not a null for a search fitted on 70% of it.
 
     It is required, and that is the whole design. The threshold depends on how
     many independent looks were taken and how much the scores vary across them,
@@ -431,6 +815,11 @@ def deflated_sharpe(study, null):
     trials, this number would grow more permissive the harder you overfit, which
     is exactly backwards. A random search over the same space is an honest "best
     of N looks at this space" and cannot do that (ADR 0054).
+
+    The two arguments answer different halves of the threshold, and the null
+    answers only one of them: how far a sharpe scatters over this space. How many
+    times you looked is a property of **your** search and is read off it (ADR
+    0058).
     """
     _trials, looks, spread = _null_shape(study, null)
     return probabilistic_sharpe(
@@ -479,7 +868,19 @@ def _null_shape(study, null):
         raise ValueError(
             f"the null ran on different bars ({null.data_hash} against "
             f"{study.data_hash}), so it is not a null for this search; run it "
-            f"over the same data and the same space"
+            f"over the same data and the same space, with the same oos"
+        )
+    # an activity floor fails the thin cells, and the thin cells are where the
+    # extreme sharpes live, so the trials that survive one scatter LESS than the
+    # space does. Reading the spread off them made the threshold fall the
+    # stricter the floor, which is the same inversion this decision exists to
+    # prevent, arriving through the other term (ADR 0058)
+    if getattr(null, "min_trades", 0):
+        raise ValueError(
+            f"the null was searched with min_trades={null.min_trades}, and an "
+            f"activity floor keeps the trials that traded most, whose sharpes "
+            f"scatter less than the whole space does; run the null at "
+            f"min_trades=0. The search being deflated may still use one"
         )
     scored = [t["stats"]["sharpe"] for t in null.trials if t["stats"]]
     scored = [s for s in scored if math.isfinite(s)]
@@ -488,23 +889,40 @@ def _null_shape(study, null):
             f"the null produced {len(scored)} usable trials, and the spread "
             f"across them is what sets the threshold; it needs at least 2"
         )
-    # every trial is a look, including one that failed: a configuration you
-    # evaluated and rejected was still a configuration you evaluated. Counting
-    # only the survivors would make a stricter min_trades floor look MORE
-    # convincing, by lowering the bar it has to clear
-    looks = len(null.trials)
+    # every trial of the SEARCH is a look, including one that failed: a
+    # configuration you evaluated and rejected was still one you evaluated.
+    # Counting the null's trials instead answered about the wrong search
+    # entirely, so a 5-trial null made a 120-trial winner 46% more convincing
+    # than a 400-trial null did, and nothing said which number it described
+    looks = len(study.trials)
     if looks < 2:
-        raise ValueError("a null of fewer than 2 trials sets no threshold at all")
+        raise ValueError(
+            f"this search ran {looks} trial(s), and a deflation is a correction "
+            f"for having looked more than once; it needs at least 2"
+        )
+    if len(null.trials) < looks:
+        warnings.warn(
+            f"the null drew {len(null.trials)} trials to estimate the spread that "
+            f"deflates a search of {looks}, so the threshold rests on fewer draws "
+            f"than the thing it is judging; run the null at the same n_trials",
+            stacklevel=3,
+        )
     return scored, looks, float(np.std(np.asarray(scored, dtype=np.float64), ddof=1))
 
 
-def min_track_record_length(result, benchmark=0.0, confidence=0.95):
+def min_track_record_length(result, benchmark=0.0, confidence=0.95,
+                            independent=False):
     """How many bars it would take before the Sharpe is distinguishable from
     ``benchmark`` at ``confidence``, in bars and in wall time.
 
-    Answers "is this backtest long enough" with a number. Read ``num_trades``
-    beside it: three thousand bars carrying forty round trips is forty bets, and
-    it is the bets that carry the information.
+    Answers "is this backtest long enough" with a number. It counts independent
+    bets rather than bars (``effective_sample``, ADR 0061) and then converts back,
+    so a strategy holding a position for days needs proportionally more hourly
+    candles than the published formula would ask for, which is the truth of it.
+    ``independent=True`` gives the unadjusted version.
+
+    Read ``num_trades`` beside it either way: three thousand bars carrying forty
+    round trips is forty bets, and it is the bets that carry the information.
     """
     values = returns(result)
     ppy = _annualization(result)
@@ -516,13 +934,19 @@ def min_track_record_length(result, benchmark=0.0, confidence=0.95):
             f"makes it distinguishable; observed {observed * math.sqrt(ppy):.4g} "
             f"annualized against a benchmark of {benchmark:.4g}"
         )
-    variance = 1.0 - skew(result) * observed + (kurtosis(result) - 1.0) / 4.0 * observed ** 2
-    bars = 1.0 + variance * (_normal_ppf(confidence) / (observed - target)) ** 2
+    variance = _psr_variance(result, observed)
+    needed = 1.0 + variance * (_normal_ppf(confidence) / (observed - target)) ** 2
+    have = float(values.size)
+    effective = have if independent else effective_sample(result)
+    # the answer comes out in independent bets, and the caller asked in bars, so
+    # scale by however many bars this run spends per bet
+    bars = needed * (have / effective) if effective > 0.0 else needed
     return {
         "bars": bars,
         "years": bars / ppy,
         "have_bars": int(values.size),
-        "enough": values.size >= bars,
+        "effective_bars": effective,
+        "enough": have >= bars,
         "num_trades": int((result.stats or {}).get("num_trades", 0)),
     }
 
@@ -657,10 +1081,14 @@ def excursions(result, frame):
     "where does my stop go".
     """
     high, low = _highs_lows(frame)
+    _same_bars(result, frame, len(high), "excursions")
     out = []
     for trade in result.trades or []:
         first, last = trade["entry_tick"], trade["exit_tick"]
         if not 0 <= first <= last < len(high):
+            # unreachable on the right frame, since a position still open at the
+            # end is never logged as a trade (ADR 0009). The guard above is what
+            # makes that true rather than hoped for
             continue
         entry = trade["entry_price"]
         peak, trough = float(high[first:last + 1].max()), float(low[first:last + 1].min())
@@ -686,12 +1114,21 @@ def session_buckets(result, frame, by="hour"):
     edge inside the few hours a day funding is stamped. A single number cannot show
     that, and a bucket that holds the entire result is a stronger sign of an overfit
     than any statistic.
+
+    Hours are UTC, 0 to 23. Weekdays are **Monday 0 to Sunday 6**, which is what
+    ``datetime.weekday`` and pandas' ``dayofweek`` use, so a key can be read
+    against any other clock you are holding.
     """
     if by not in ("hour", "weekday"):
         raise ValueError(f"by must be 'hour' or 'weekday', got {by!r}")
     stamps = _stamps(frame)
+    _same_bars(result, frame, stamps.size, "session_buckets")
     unit = stamps.astype("datetime64[h]").astype("int64")
-    keys = (unit % 24) if by == "hour" else ((unit // 24 + 4) % 7)
+    # epoch day zero is a Thursday, so +3 puts Monday at 0 and matches
+    # datetime.weekday, pandas dayofweek and day_name. It used to be +4, which is
+    # Sunday-first, stated in no docstring and on no page, so buckets[0] read as
+    # Monday and was Sunday (ADR 0059)
+    keys = (unit % 24) if by == "hour" else ((unit // 24 + 3) % 7)
     buckets = {}
     for trade in result.trades or []:
         exit_tick = trade["exit_tick"]
@@ -706,6 +1143,54 @@ def session_buckets(result, frame, by="hour"):
     for slot in buckets.values():
         slot["win_rate"] = slot["wins"] / slot["trades"] if slot["trades"] else 0.0
     return dict(sorted(buckets.items()))
+
+
+def _ran_on(result):
+    curve = getattr(result, "equity_curve", None)
+    return None if curve is None else len(curve) + 1
+
+
+def _fingerprint_of(frame):
+    # the frame's own fingerprint, on the identical rule the Backtester stamps a
+    # result with, or None when it carries too few columns to compute one
+    from ._data import to_ohlcv
+    from .backtest import _fingerprint
+
+    try:
+        return _fingerprint(to_ohlcv(frame))
+    except (TypeError, ValueError, ImportError):
+        return None
+
+
+def _same_bars(result, frame, bars, where):
+    """Refuse a frame that is not the one the run was produced on.
+
+    These read the run's own ``entry_tick`` and ``exit_tick`` straight into the
+    frame's bars, so a different frame is not a smaller answer, it is an answer
+    about something else. Both halves earned their place. The length check catches
+    the accident: given a 2,000-bar slice of its own 100,000-bar frame,
+    ``excursions`` silently returned 35 rows out of 1,516 and said nothing. The
+    fingerprint catches what length cannot: given another asset of the same
+    length, a losing trade came back with both its excursions positive. The chart
+    refuses the first of these and not the second (ADR 0059).
+    """
+    ran_on = _ran_on(result)
+    if ran_on is not None and bars != ran_on:
+        raise ValueError(
+            f"{where} needs the bars the run was produced on, but the run covered "
+            f"{ran_on} bars and this frame carries {bars}; trade rows hold indices "
+            f"into the original series, so each one would be read against the "
+            f"wrong bar. To look at a slice, re-run the backtest on it"
+        )
+    stamped = getattr(result, "data_hash", None)
+    seen = _fingerprint_of(frame)
+    if stamped and seen and seen != stamped:
+        raise ValueError(
+            f"{where} was given a different series ({seen}) from the one the run "
+            f"saw ({stamped}); they are the same length, so nothing else would "
+            f"have caught it, and every trade's ticks would have been read "
+            f"against another asset's prices"
+        )
 
 
 def _highs_lows(frame):
@@ -750,11 +1235,23 @@ def report(result, frame=None):
     out = dict(result.stats or {})
     out.update({f"decompose_{k}": v for k, v in decompose(result).items()})
     out.update({f"under_water_{k}": v for k, v in time_under_water(result).items()})
+    out.update({f"trade_{k}": v for k, v in trade_stats(result).items()})
     out["skew"] = skew(result)
     out["kurtosis"] = kurtosis(result)
     out["autocorr_1"] = autocorrelation(result)
+    out["effective_bars"] = effective_sample(result)
     out["value_at_risk_pct"] = value_at_risk(result)
     out["conditional_value_at_risk_pct"] = conditional_value_at_risk(result)
+    out["omega"] = omega(result)
+    out["tail_ratio"] = tail_ratio(result)
+    out["ulcer_index"] = ulcer_index(result)
+    # what the return is worth per unit of time actually at risk. Twenty percent
+    # made while in the market a twelfth of the time and twenty percent made fully
+    # invested are the same row without it
+    exposure = float(out.get("exposure_pct") or 0.0)
+    out["return_per_exposure"] = (
+        float(out.get("total_return_pct", 0.0)) / exposure * 100.0 if exposure else 0.0
+    )
     sides = long_short_split(result)
     for name, block in sides.items():
         out.update({f"{name}_{k}": v for k, v in block.items()})
@@ -762,8 +1259,16 @@ def report(result, frame=None):
         out["probabilistic_sharpe"] = probabilistic_sharpe(result)
     except ValueError:
         out["probabilistic_sharpe"] = None
+    try:
+        out.update({f"sharpe_{k}": v for k, v in sharpe_interval(result).items()
+                    if k in ("low", "high")})
+    except ValueError:
+        out["sharpe_low"], out["sharpe_high"] = None, None
     if frame is not None:
-        out.update({f"hold_{k}": v for k, v in buy_and_hold(result, frame).items()})
+        # `hold_return_pct` and `hold_sharpe` already carry the prefix, and
+        # prefixing them again produced `hold_hold_return_pct`
+        for key, value in buy_and_hold(result, frame).items():
+            out[key if key.startswith("hold_") else f"hold_{key}"] = value
     return out
 
 
@@ -786,6 +1291,18 @@ def compare(results, keys=None):
         return []
     shown = list(keys) if keys else ["total_return_pct", "sharpe",
                                      "max_drawdown_pct", "num_trades"]
+    # a key nothing reports printed as the word None in every row, which reads as
+    # a run that scored nothing rather than as a column that does not exist.
+    # `tune` checks its objective against the same set before it searches
+    available = set()
+    for _name, result in named:
+        available.update(result.stats or {})
+    unknown = sorted(set(shown) - available)
+    if unknown:
+        raise KeyError(
+            f"compare was asked for {unknown}, which no result reports; choose "
+            f"from {sorted(available)}"
+        )
     width = max(len(str(name)) for name, _ in named)
     # one wider than the longest label, so a label that exactly fills the column
     # cannot run into its neighbour; "max drawdown %" is precisely 14 characters
@@ -821,9 +1338,17 @@ def summary(result, frame=None):
     money = decompose(result)
     water = time_under_water(result)
     sides = long_short_split(result)
+    shape = trade_stats(result)
+    try:
+        band = sharpe_interval(result)
+    except ValueError:
+        band = None
     rows = [
         ("return", f"{stats.get('total_return_pct', 0.0):>12,.2f} %"),
         ("sharpe", f"{stats.get('sharpe', 0.0):>12,.2f}"),
+        ("  95% interval",
+         "         n/a" if band is None
+         else f"{band['low']:>7,.2f} to {band['high']:<7,.2f}"),
         ("max drawdown", f"{stats.get('max_drawdown_pct', 0.0):>12,.2f} %"),
         ("", ""),
         ("gross pnl", f"{money['gross_pnl']:>12,.2f}"),
@@ -831,9 +1356,16 @@ def summary(result, frame=None):
         ("funding", f"{-money['funding']:>12,.2f}"),
         ("still open", f"{money['unrealized']:>12,.2f}"),
         ("net", f"{money['net']:>12,.2f}"),
+        ("fee share", f"{money['fee_share'] * 100.0:>12,.1f} % of gross"),
         ("", ""),
         ("trades", f"{stats.get('num_trades', 0):>12,}"),
         ("long / short", f"{sides['long']['trades']:>6,} /{sides['short']['trades']:>5,}"),
+        ("win rate", f"{stats.get('win_rate', 0.0) * 100.0:>12,.1f} %"),
+        # beside the win rate, never without it: the pair is the answer and
+        # either one alone describes two opposite strategies equally well
+        ("payoff", f"{shape['payoff']:>12,.2f}"),
+        ("expectancy", f"{shape['expectancy']:>12,.2f} per trade"),
+        ("worst streak", f"{shape['max_consecutive_losses']:>12,} losses"),
         ("under water", f"{water['share_pct']:>12,.1f} % of bars"),
         ("longest", f"{water['longest_bars']:>12,} bars"),
     ]

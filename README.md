@@ -146,15 +146,18 @@ The full stats set (total return, net profit, CAGR, Sharpe, Sortino, Calmar, dra
 
 ### Indicators
 
-`emsl.ta` carries fourteen of them, closed at fourteen on purpose. Every one returns **one value per bar** with the warm-up as a gap and never a shorter array, so the same object drives the rule and draws on the chart with no padding decision in between.
+`emsl.ta` carries 30 functions, a small closed set rather than an attempt at ta-lib. Every one returns **one value per bar** with the warm-up as a gap and never a shorter array, so the same object drives the rule and draws on the chart with no padding decision in between.
 
 ```python
 class Cross(emsl.Strategy):
     def init(self, engine):
-        self.fast = emsl.ta.ema(engine.closes, 20)
-        self.slow = emsl.ta.ema(engine.closes, 60)
-        self.warmup = 60
+        fast, slow = emsl.ta.ema(engine.closes, 20), emsl.ta.ema(engine.closes, 60)
+        self.up = emsl.ta.crossover(fast, slow)          # a cross, not a level
+        self.trend = emsl.ta.adx(engine.highs, engine.lows, engine.closes).adx
+        self.warmup = 80
 ```
+
+`shift`, `crossover` and `crossunder` are there for a reason beyond convenience. Written by hand, `values[i - n]` on an early bar is a negative index, which numpy resolves from the end of the array and reads the future in silence; computed once as an array there is no index left to get wrong. `crossover` returns booleans and pads with `False` rather than `NaN`, because `bool(nan)` is `True` and a warm-up that reads as a signal is the one version of this that would be dangerous.
 
 An indicator library is mostly somebody's opinion about warm-up and smoothing, so each function states its own where implementations differ: `ema` seeds from the first window's average rather than its first value, `rsi` and `atr` use Wilder's smoothing, `stdev` is population because that is what `bbands` needs. The alternative to a stated convention is not no convention, it is yours, unwritten. Full list in the [Python API](.Documentation/Python_API.md#indicators).
 
@@ -335,6 +338,25 @@ These move with hardware and workload, so treat them as shape, not a promise. Ru
 <br>
 <br>
 
+## Compatibility
+
+A backtest is a number somebody acts on, so **the simulator's behaviour is part of the API, not an implementation detail**. A fill model that shifts quietly between patch releases makes every result you recorded last month unattributable.
+
+From 1.0, a **minor** release will not remove an exported name, remove a keyword, change what a keyword means, or change what a function returns. New keywords arrive with defaults that keep the old behaviour. Beyond that, these are rules you may build on, and changing any of them is a **major** release that arrives with an [ADR](.Documentation/Decisions.md) explaining what was wrong:
+
+- An order decided on bar `i` fills against bar `i + 1`, never the same bar, and a `T`-bar series calls `next` `T - 1` times.
+- A bar reaching both a stop and a target books the **worse** exit.
+- A liquidation is priced where the margin runs out, so bad debt is unreachable rather than clamped after the fact.
+- The statistics are never `NaN` and rank monotonically, so a bad run cannot win a search.
+- `emsl.ta` returns one value per bar, warm-up as a gap, never a shorter array.
+- A `T-1` array on a chart maps entry `i` to bar `i + 1`.
+- `tune` holds out the **end** of a series, never a random slice.
+
+Not promised: an indicator's output to the last bit (the recursive ones trade 2e-15 for a 33-fold speedup, and that trade may be made again), anything whose name starts with an underscore, the wording of an error, the chart's JSON spec, and the Rust crates, which are workspace members rather than a published API. The [fidelity limits](#scope-and-fidelity) are limits and not promises: they may become *more* faithful in a minor release, because a simulator getting closer to a real venue is a fix, and your results will move when it does.
+
+<br>
+<br>
+
 ## Install
 
 Every [release](https://github.com/atOCEANO/embeddable-market-simulation-library/releases) carries prebuilt wheels, so installing one needs no compiler. **emsl is not on PyPI**, so a bare `pip install emsl` finds nothing; point pip at a release instead.
@@ -353,7 +375,7 @@ Anything not in that table, Windows on ARM for instance, builds from source in t
 **The version below is the one to change.** It appears twice, here and in the tagged source install below, and a test asserts both match the shipping wheel, because a hardcoded tag in a README goes stale the day after a release; take the current one from the badge at the top of this page or from the releases page.
 
 ```bash
-pip install --find-links https://github.com/atOCEANO/embeddable-market-simulation-library/releases/expanded_assets/v0.6.0 emsl
+pip install --find-links https://github.com/atOCEANO/embeddable-market-simulation-library/releases/expanded_assets/v0.7.0 emsl
 ```
 
 The optional extras use the same `--find-links` URL and stack:
@@ -374,7 +396,7 @@ Building from source needs the Rust toolchain ([rustup](https://rustup.rs)), and
 
 ```bash
 pip install "git+https://github.com/atOCEANO/embeddable-market-simulation-library.git"          # main
-pip install "git+https://github.com/atOCEANO/embeddable-market-simulation-library.git@v0.6.0"   # or a tag
+pip install "git+https://github.com/atOCEANO/embeddable-market-simulation-library.git@v0.7.0"   # or a tag
 ```
 
 From a local checkout, either as a plain install or as a development build:
