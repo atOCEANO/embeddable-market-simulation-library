@@ -34,6 +34,7 @@ Everything the package exports, and where each piece is documented in full:
 | `emsl.Batch` | Many independent envs over one shared series, stepped in parallel with the GIL released. [Below](#batch). |
 | `emsl.backtest` | `Backtester` and `Strategy`: drive a strategy over a series, get stats, equity, and trades. [Below](#backtesting). |
 | `emsl.tune` | Search a strategy's parameters, each trial a full backtest, across worker processes. [Below](#tuning). |
+| `emsl.walk_forward` | Refit repeatedly and trade each stretch with what was fitted before it. [Below](#walking-forward). |
 | `emsl.Market` | The venue and its costs as one object, which hands out every surface configured identically. [Below](#the-market). |
 | `emsl.metrics` | Evaluate a finished run: where the money went, and what the number is worth believing. [Below](#metrics). |
 | `emsl.ta` | Fourteen indicators, one value per bar, with the conventions written down. [Below](#indicators). |
@@ -519,6 +520,38 @@ It also carries `.best_result`, the winner re-run on the bars it was chosen on, 
 `sampler` is `"tpe"` by default, which learns where the good parameters are, or `"random"`, which does not. Random search is worse at finding a winner and is exactly what you want for a null.
 
 With `n_jobs=1` a seeded search is reproducible, since the sampler is told results in a fixed order. With `n_jobs>1` the sampler sees results in completion order, so the exact sequence of trials can vary run to run even with a seed; each trial's score is still deterministic. On Windows, calling `tune` with `n_jobs>1` from a script means putting the call under `if __name__ == "__main__":`, the standard requirement for the spawn start method; a notebook needs no guard.
+
+<br>
+
+## Walking forward
+
+A holdout asks whether one winner survives one tail. This asks the larger question: what the whole **procedure** would have earned. Fit on what you had, trade the next stretch, refit, repeat, which is what running a strategy actually looks like.
+
+```python
+forward = emsl.walk_forward(SmaCross, space, candles, windows=5, train=0.5)
+
+forward.stats["sharpe"]          # out of sample by construction
+forward.decay                    # how much each fit flattered itself
+forward.consistency              # the share of stretches that cleared zero
+emsl.chart(frame=candles, run=forward.result).show()
+```
+
+`train` is the share of the series the first fit gets; the rest is divided into `windows` stretches, each traded with parameters chosen on the bars **before** it and never on itself. `anchored=True` fits on everything before each window instead of on a moving block. Everything else is `tune`'s, and each window is an ordinary search.
+
+**`result` is an ordinary `BacktestResult`**, so every metric and the chart take it directly with no special case. That is not a convenience, it is the construction: rather than stitching per-window curves together, a composite strategy carries the schedule and delegates each bar to the window that owns it, and the whole thing is **one real engine pass**. So the fills are real, funding is real, the account is continuous across the seams, and every warm-up has the history before its own window to use rather than restarting at the boundary ([ADR 0057](Decisions.md)). The curve is flat until the first window, because before that there was nothing fitted to trade.
+
+| Field | Meaning |
+| :--- | :--- |
+| `result` | The run, as any other `BacktestResult`. |
+| `stats` | Its stats, which are out of sample by construction. |
+| `windows` | One record per refit: `fitted_on`, `traded_on`, `params`, `fitted`, `traded`. |
+| `decay` | Mean fitted score less traded score. How much the fit flattered itself, in the objective's own units. |
+| `consistency` | The share of stretches whose traded score cleared zero. |
+| `span` | The first and last bar any window traded. |
+
+`decay` is the interpretable part. A large positive number says the search keeps finding things that do not survive the next stretch, which is the failure a single holdout can see once and this one sees repeatedly.
+
+**Window length and step are hyperparameters too.** Trying five layouts and reporting the best is the same mistake one level up, and nothing here can catch you at it.
 
 <br>
 
