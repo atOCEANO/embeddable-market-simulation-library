@@ -379,7 +379,7 @@ Each entry in `trades()` is one closed portion of a position:
 | `pnl` | Gross realized price PnL, before fees. |
 | `net_pnl` | `pnl - fees`: what the trade actually added to the account. The trade statistics are built from this, so they reproduce from the log ([ADR 0030](Decisions.md)). |
 | `bars_held` | Bars held, from the position's first entry. |
-| `liquidated` | True when a liquidation force-closed the position rather than an order ([ADR 0003](Decisions.md)). The forced close pays no fee, so such a trade carries only its entry fee. |
+| `liquidated` | True when a liquidation force-closed the position rather than an order ([ADRs 0003, 0052](Decisions.md)). Its `exit_price` is where the margin ran out, not the extreme the bar printed, so the loss is bounded by the margin and the account is left with exactly nothing rather than owing. |
 
 When the `Backtester` is given a pandas DataFrame or parquet input with a datetime index, each trade also carries `entry_time` and `exit_time`, the index values at those ticks. A raw numpy input has no index, so its trades stay tick-only.
 

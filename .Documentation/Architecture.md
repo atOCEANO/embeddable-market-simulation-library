@@ -58,7 +58,7 @@ The defining rule is **no same-bar lookahead**: an order decided while looking a
 1. Pending market orders fill at the open.
 2. Resting limit and stop orders fill against the bar's range (a gap through a limit still fills at the limit, never better; a triggered stop fills at the worse of open and trigger).
 3. Funding is charged on a held perp position at each interval boundary (ADR 0017).
-4. Liquidation is checked at the bar's adverse extreme, the low for a long, the high for a short.
+4. Liquidation is checked at the bar's adverse extreme, the low for a long, the high for a short, and the forced close is then priced where the margin ran out rather than at that extreme, so a loss cannot exceed the margin behind it ([ADR 0052](Decisions.md)).
 5. Equity is marked at the close, and the new state is returned.
 
 <br>

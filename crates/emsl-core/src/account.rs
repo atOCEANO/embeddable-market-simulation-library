@@ -4,9 +4,9 @@
 //! implicit in the cash. On a perp only realized PnL moves quote on a close, and
 //! the open position is marked separately.
 
-use crate::enums::{Market, Side};
+use crate::enums::Market;
 use crate::fill::Fill;
-use crate::position::{moves_position, Position};
+use crate::position::{moves_position, Position, POS_EPS};
 use crate::units::{Price, Qty};
 
 /// True when `price` can divide a notional: finite and strictly positive. A bar
@@ -112,29 +112,46 @@ impl Account {
         payment
     }
 
-    /// Check for liquidation at `mark`. On a perp, if the position's equity has
-    /// fallen to zero or below, force-close it at the mark, book the loss, and
-    /// return true. Spot and a flat position are never liquidated here.
-    pub fn liquidate_if_bust(&mut self, mark: Price) -> bool {
-        if self.market != Market::Perp || self.position.is_flat() || !mark.get().is_finite() {
-            return false;
+    /// True when the position is dead at `mark`: a perp whose equity has fallen to
+    /// zero or below. Spot and a flat position are never liquidated (ADR 0003).
+    ///
+    /// The test is the trigger only. The price the position is then closed at is
+    /// `bankruptcy_price`, which is not this mark: `mark` is the worst the bar
+    /// printed and closing there is what used to leave the account owing money.
+    pub fn is_bust_at(&self, mark: Price) -> bool {
+        self.market == Market::Perp
+            && !self.position.is_flat()
+            && mark.get().is_finite()
+            && self.equity(mark) <= 0.0
+    }
+
+    /// The price at which closing the whole position, and paying `fee_rate` on the
+    /// closing notional, leaves the account with exactly nothing.
+    ///
+    /// Solving `quote + qty * (price - entry) - |qty| * price * fee_rate == 0` for
+    /// price. This is what makes a liquidation unable to leave a debt: the loss is
+    /// bounded by the margin because the exit is priced at the point the margin
+    /// runs out, rather than at whatever the bar happened to print afterwards. It
+    /// also answers where a fee comes from when nothing is left to pay it with:
+    /// the close lands far enough before ruin that the fee fits inside what
+    /// remains (ADR 0052). `None` when the position is dust or the arithmetic is
+    /// degenerate.
+    pub fn bankruptcy_price(&self, fee_rate: f64) -> Option<Price> {
+        let qty = self.position.qty.get();
+        let size = qty.abs();
+        if size <= POS_EPS || !fee_rate.is_finite() {
+            return None;
         }
-        if self.equity(mark) > 0.0 {
-            return false;
+        let denominator = qty - size * fee_rate;
+        if denominator.abs() <= f64::EPSILON {
+            return None;
         }
-        let side = if self.position.qty.get() > 0.0 {
-            Side::Sell
+        let price = (qty * self.position.avg_entry.get() - self.quote) / denominator;
+        if price.is_finite() && price > 0.0 {
+            Some(Price(price))
         } else {
-            Side::Buy
-        };
-        let closing = Fill {
-            side,
-            size: Qty(self.position.qty.get().abs()),
-            price: mark,
-            is_taker: true,
-        };
-        self.apply_fill(&closing, 0.0);
-        true
+            None
+        }
     }
 }
 
@@ -250,52 +267,74 @@ mod tests {
     }
 
     #[test]
-    fn perp_long_liquidates_when_equity_hits_zero() {
+    fn perp_long_is_bust_where_its_margin_runs_out() {
         let mut a = Account::new(Market::Perp, 100.0);
         a.apply_fill(&fill(Side::Buy, 10.0, 100.0), 0.0); // 10x notional on 100 margin
                                                           // equity at 90 = 100 + 10*(90-100) = 0
-        assert!(a.liquidate_if_bust(Price(90.0)));
-        assert!(a.position.is_flat());
-        assert!(close(a.quote, 0.0));
+        assert!(a.is_bust_at(Price(90.0)));
+        assert!(!a.is_bust_at(Price(90.01)));
+        assert!(close(a.bankruptcy_price(0.0).unwrap().get(), 90.0));
     }
 
     #[test]
-    fn perp_short_liquidates_when_mark_rises() {
+    fn perp_short_is_bust_when_the_mark_rises_far_enough() {
         let mut a = Account::new(Market::Perp, 100.0);
         a.apply_fill(&fill(Side::Sell, 10.0, 100.0), 0.0);
         // equity at 110 = 100 + (-10)*(110-100) = 0
-        assert!(a.liquidate_if_bust(Price(110.0)));
-        assert!(a.position.is_flat());
-        assert!(close(a.quote, 0.0));
+        assert!(a.is_bust_at(Price(110.0)));
+        assert!(!a.is_bust_at(Price(109.99)));
+        assert!(close(a.bankruptcy_price(0.0).unwrap().get(), 110.0));
     }
 
     #[test]
-    fn liquidation_can_leave_bad_debt_on_a_gap() {
-        // a gap past the liquidation mark loses more than the margin: a long on 100
-        // margin force-closed at 80 books -200, so quote runs negative (ADR 0003)
+    fn closing_at_the_bankruptcy_price_leaves_exactly_nothing() {
+        // whatever the bar printed, the position cannot lose more than the margin
+        // behind it, so the exit is priced where that margin runs out (ADR 0052)
+        for side in [Side::Buy, Side::Sell] {
+            let mut a = Account::new(Market::Perp, 100.0);
+            a.apply_fill(&fill(side, 10.0, 100.0), 0.0);
+            let price = a.bankruptcy_price(0.0).unwrap();
+            let closing = if side == Side::Buy {
+                Side::Sell
+            } else {
+                Side::Buy
+            };
+            a.apply_fill(&fill(closing, 10.0, price.get()), 0.0);
+            assert!(a.position.is_flat());
+            assert!(close(a.quote, 0.0), "{side:?} left {}", a.quote);
+        }
+    }
+
+    #[test]
+    fn the_liquidation_fee_fits_inside_what_is_left() {
+        // there is nothing to pay a fee from at the moment of ruin, so the exit is
+        // priced far enough before it that the fee still lands the account at zero
         let mut a = Account::new(Market::Perp, 100.0);
         a.apply_fill(&fill(Side::Buy, 10.0, 100.0), 0.0);
-        assert!(a.liquidate_if_bust(Price(80.0)));
-        assert!(a.position.is_flat());
-        assert!(close(a.quote, -100.0));
+        let price = a.bankruptcy_price(0.0006).unwrap();
+        assert!(price.get() > 90.0, "priced at {}", price.get()); // before ruin, not after
+        let fee = 10.0 * price.get() * 0.0006;
+        a.apply_fill(&fill(Side::Sell, 10.0, price.get()), fee);
+        assert!(close(a.quote, 0.0), "left {}", a.quote);
     }
 
     #[test]
-    fn solvent_position_is_not_liquidated() {
+    fn solvent_position_is_not_bust() {
         let mut a = Account::new(Market::Perp, 1000.0);
         a.apply_fill(&fill(Side::Buy, 1.0, 100.0), 0.0);
-        assert!(!a.liquidate_if_bust(Price(90.0))); // equity 990, fine
+        assert!(!a.is_bust_at(Price(90.0))); // equity 990, fine
         assert_eq!(a.position.qty, Qty(1.0));
     }
 
     #[test]
-    fn spot_and_flat_are_never_liquidated() {
+    fn spot_and_flat_are_never_bust() {
         let mut spot = Account::new(Market::Spot, 1000.0);
         spot.apply_fill(&fill(Side::Buy, 2.0, 100.0), 0.0);
-        assert!(!spot.liquidate_if_bust(Price(1.0)));
+        assert!(!spot.is_bust_at(Price(1.0)));
 
-        let mut flat = Account::new(Market::Perp, 1000.0);
-        assert!(!flat.liquidate_if_bust(Price(50.0)));
+        let flat = Account::new(Market::Perp, 1000.0);
+        assert!(!flat.is_bust_at(Price(50.0)));
+        assert!(flat.bankruptcy_price(0.0).is_none());
     }
 
     #[test]

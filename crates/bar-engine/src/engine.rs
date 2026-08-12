@@ -486,17 +486,9 @@ impl Engine {
             } else {
                 bar.high
             };
-            if !self.account.position.is_flat() {
-                let before = self.before_fill();
-                let closing = self.account.position.qty.get().abs();
-                if self.account.liquidate_if_bust(Price(adverse)) {
-                    // The forced close still pays no fee and no slippage, which is
-                    // what makes the cash left behind exactly the equity that
-                    // triggered it; that model is unchanged here (ADR 0003). What
-                    // changed is that it is booked at all
-                    self.book_fill(closing, adverse, 0.0, before, true);
-                    self.bust = true;
-                }
+            if self.account.is_bust_at(Price(adverse)) {
+                self.liquidate();
+                self.bust = true;
             }
         }
 
@@ -640,6 +632,37 @@ impl Engine {
             fill.size = Qty(0.0);
         }
         fill
+    }
+
+    /// Force-close the whole position at the price that leaves nothing.
+    ///
+    /// Not at the bar's adverse extreme, which is what the trigger was tested
+    /// against. Closing there charged the account for however far the bar happened
+    /// to run past the point its margin was gone, so a long on 100 of margin
+    /// against a bar that wicked to 80 booked a loss of 200 and left the account
+    /// owing 100. A position cannot lose more than the margin behind it, so the
+    /// exit is priced where the margin runs out, and the liquidation fee is inside
+    /// that price rather than charged past it (ADR 0052).
+    fn liquidate(&mut self) {
+        let price = match self.account.bankruptcy_price(self.cost.fee_taker) {
+            Some(price) => price,
+            None => return,
+        };
+        let size = self.account.position.qty.get().abs();
+        let fill = Fill {
+            side: if self.account.position.qty.get() > 0.0 {
+                Side::Sell
+            } else {
+                Side::Buy
+            },
+            size: Qty(size),
+            price,
+            is_taker: true,
+        };
+        let fee = self.cost.fee(&fill);
+        let before = self.before_fill();
+        self.account.apply_fill(&fill, fee);
+        self.book_fill(size, price.get(), fee, before, true);
     }
 
     /// The position fields a fill has to be compared against once it has landed.
@@ -1964,7 +1987,9 @@ mod tests {
         e.market_buy(10.0);
         e.step();
         let busted = e.step();
-        assert!(busted.equity < 0.0);
+        // dead, and holding exactly nothing rather than owing anything: the bar
+        // crashed to 40 but the position was closed where its margin ran out at 90
+        assert!(busted.equity.abs() < CLOSE_EPS, "left {}", busted.equity);
         assert_eq!(busted.position, 0.0);
         e.market_buy(5_000.0);
         let after = e.step();
@@ -2220,11 +2245,47 @@ mod tests {
         let trades = e.reporter().expect("reporting is on").trades();
         assert_eq!(trades.len(), 1);
         assert!(trades[0].liquidated);
-        assert_eq!(trades[0].exit_price, 80.0);
-        // the entry fee, and nothing on the exit: the forced close is still free
-        assert!((trades[0].fees - 1.0).abs() < CLOSE_EPS);
-        assert!((trades[0].net_pnl + 201.0).abs() < CLOSE_EPS);
+        // closed where the margin ran out, not at the 80 the bar printed. The entry
+        // fee left 99 of margin, so (10*100 - 99) / (10 - 10*0.001) = 90.1902
+        assert!(
+            (trades[0].exit_price - 901.0 / 9.99).abs() < 1e-9,
+            "closed at {}",
+            trades[0].exit_price
+        );
+        // and the account is left with exactly nothing, never owing (ADR 0052)
+        assert!(s.equity.abs() < CLOSE_EPS, "left {}", s.equity);
+        assert!(trades[0].fees > 1.0); // the entry fee, plus a real fee on the exit
         assert_eq!(e.open_fee, 0.0); // nothing left over to charge the next position
+    }
+
+    #[test]
+    fn a_liquidation_can_never_leave_the_account_owing() {
+        // whatever the bar prints past the point the margin is gone, the loss is
+        // bounded by the margin: closing at the extreme booked 200 on a 100 account
+        for low in [90.0, 80.0, 40.0, 1.0] {
+            let config = EngineConfig {
+                market: Market::Perp,
+                quote: 100.0,
+                fee_taker: 0.0006,
+                max_leverage: 10.0,
+                ..cfg()
+            };
+            let candles = Candles::new(vec![
+                ohlc(100.0, 101.0, 99.0, 100.0, 1000.0),
+                ohlc(100.0, 101.0, low, low, 1000.0),
+                ohlc(low, low + 1.0, low - 1.0, low, 1000.0),
+            ]);
+            let mut e = Engine::new(candles, config);
+            e.reset();
+            e.market_buy(10.0);
+            let s = e.step();
+            assert!(s.equity >= -CLOSE_EPS, "a low of {low} left {}", s.equity);
+            assert!(
+                s.quote >= -CLOSE_EPS,
+                "a low of {low} left quote {}",
+                s.quote
+            );
+        }
     }
 
     #[test]
