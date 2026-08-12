@@ -37,7 +37,7 @@ Everything the package exports, and where each piece is documented in full:
 | `emsl.walk_forward` | Refit repeatedly and trade each stretch with what was fitted before it. [Below](#walking-forward). |
 | `emsl.Market` | The venue and its costs as one object, which hands out every surface configured identically. [Below](#the-market). |
 | `emsl.metrics` | Evaluate a finished run: where the money went, and what the number is worth believing. [Below](#metrics). |
-| `emsl.ta` | Fourteen indicators, one value per bar, with the conventions written down. [Below](#indicators). |
+| `emsl.ta` | 30 indicators, one value per bar, with the conventions written down. [Below](#indicators). |
 | `emsl.rl` | `VectorEnv`, the Gymnasium vector env. [Below](#reinforcement-learning), in full in the [RL Guide](RL_Guide.md). |
 | `emsl.sb3` | `EmslVecEnv`, the Stable-Baselines3 adapter. [RL Guide](RL_Guide.md#training). |
 | `emsl.chart` | Draw a frame, your own arrays and a run as one self-contained HTML document. [Below](#plotting), in full in the [Plotting](Plotting.md) guide. |
@@ -559,7 +559,7 @@ emsl.chart(frame=candles, run=forward.result).show()
 
 ## Metrics
 
-The fourteen [statistics](#statistics) come back from the engine. `emsl.metrics` is what you read afterwards: where the money actually went, and whether the number is worth believing. It simulates nothing and every function takes the `BacktestResult` itself, so it reads the opening balance and the annualization the run recorded rather than being told them again.
+The fifteen [statistics](#statistics) come back from the engine. `emsl.metrics` is what you read afterwards: where the money actually went, and whether the number is worth believing. It simulates nothing and every function takes the `BacktestResult` itself, so it reads the opening balance and the annualization the run recorded rather than being told them again.
 
 ```python
 from emsl import metrics
@@ -613,9 +613,13 @@ metrics.rolling_sharpe(result, window=720)            # length T, aligned, NaN w
 
 `period_returns` is the first stability question anybody asks of a crypto backtest, which is whether the whole edge sits in one quarter, and a single number cannot answer it. `rolling_sharpe` is the same question as a shape: aligned and padded on the same rule `emsl.ta` uses, so it drops straight into [`emsl.chart`](#plotting) beside the equity curve.
 
+### The three that need the candles
+
 `buy_and_hold(result, frame)` answers the first question anyone asks, with the excess return, the beta against holding, and the information ratio.
 
-`excursions(result, frame)` gives the worst and best each trade went while it was open, in percent of its entry. A trade log says what a rule earned; this says what it lived through, and it is the direct answer to where a stop belongs. `session_buckets(result, frame, by="hour")` groups trade PnL by hour of day or day of week, booked at the exit bar; it needs the DataFrame rather than the array, because only a real clock can be bucketed by hour. Crypto trades around the clock and an hourly strategy routinely has its whole edge inside the few hours a day funding is stamped, which one bucket holding the entire result will show faster than any statistic.
+`excursions(result, frame)` gives the worst and best each trade went while it was open, in percent of its entry. A trade log says what a rule earned; this says what it lived through, and it is the direct answer to where a stop belongs. `session_buckets(result, frame, by="hour")` groups trade PnL by hour of day or day of week, booked at the exit bar; it needs the DataFrame rather than the array, because only a real clock can be bucketed by hour. Crypto trades around the clock and an hourly strategy routinely has its whole edge inside the few hours a day funding is stamped, which one bucket holding the entire result will show faster than any statistic. Hours are UTC, and **weekdays run Monday 0 to Sunday 6**, matching `datetime.weekday` and pandas' `dayofweek` so a key reads against any other clock you are holding.
+
+**Each of the three checks that the frame is the one the run saw, and they do not check the same thing** ([ADR 0059](Decisions.md)). `excursions` and `session_buckets` read the run's own tick indices straight into these bars, so they need the *identical* series and compare its fingerprint against `result.data_hash`; another asset of the same length made a losing trade report both of its excursions as gains. `buy_and_hold` needs only the same *number* of bars, because a different asset there is the whole point: `beta` and `information_ratio` are benchmark statistics and are only interesting against something other than what you traded, so benchmarking an ETH strategy against holding BTC is a supported question. All three used to absorb a mismatch silently, which is how a 2,000-bar slice of a 100,000-bar frame returned 35 excursion rows out of 1,516 and said nothing.
 
 ### What the number is worth
 
@@ -629,7 +633,7 @@ The published estimators count bars and assume each is an independent bet, which
 
 And a sample that cannot support the estimate raises rather than returning `NaN` ([ADR 0007](Decisions.md)).
 
-Neither of them corrects for having searched. `deflated_sharpe(study, null)` does:
+None of them corrects for having searched. `deflated_sharpe(study, null)` does:
 
 ```python
 study = venue.tune(SmaCross, space, candles, n_trials=200, oos=0.3)

@@ -38,6 +38,8 @@ The library is a cargo workspace of three crates plus a thin Python package. The
 | A bar-level behavior (fills, the step machine, the reporter, batched stepping) | `crates/bar-engine` |
 | A Python binding (a pyclass method, an argument type, a numpy bridge) | `crates/emsl-py` |
 | A convenience over the bindings (a new runner, a wrapper) | `python/emsl` |
+| A statistic read off a finished run | `python/emsl/metrics.py` |
+| An indicator, which is a function of arrays and never sees the engine | `python/emsl/ta.py` |
 | Anything a chart draws (a mark, a guard, a panel rule) | `python/emsl/_chart.py` and `plot.py` |
 | How a chart is painted (a primitive, the legend, the controls) | `python/emsl/_static` |
 
@@ -70,6 +72,15 @@ Python-facing work (anything in `emsl-py` or `python/emsl`) is validated on the 
 - **Public items carry doc comments.** A `///` on every public type, method, and field, saying what it is, not restating its name.
 - **Unsafe carries a `SAFETY` comment.** Every `unsafe` block states the invariant that makes it sound. The zero-copy observation is the worked example.
 - **No em dashes in prose or comments.** Commas, semicolons, periods, or parentheses instead.
+
+There is no linter on the Python side and there is not going to be one, so those conventions are held by review and are written down here rather than left to be inferred:
+
+- **No type annotations.** The pure-Python surface is deliberately untyped; only the compiled extension is described, by `_emsl.pyi`. `from __future__ import annotations` still opens every implementation module.
+- **88 characters is the target and 100 the ceiling.** Multi-line calls hang by four and never align to an `=`.
+- **Docstrings are prose, not numpydoc.** No `Parameters` or `Returns` headings anywhere. Parameters are named inside the sentences in double backticks, and what a function raises is the last sentence of the paragraph. Every module, public class and public function has one; a private function gets a `#` comment instead.
+- **A comment says why, never what.** It goes on the first line of the body, before the code, opens lowercase, ends without a period, and cites its decision as `(ADR NNNN)`. The bar for adding one is that the code looks wrong until you have read it.
+- **An error message names the offending argument as the caller typed it**, gives the value it got, and puts the fix after a semicolon. Lowercase, no closing period. `ValueError` is a wrong value, `TypeError` a wrong type, `KeyError` an unknown name in a known set, `ImportError` a missing extra; every re-raise chains with `from`.
+- **Refusing beats lying.** A function handed something it cannot answer about raises and says what would have been wrong, rather than answering about the nearest thing it can. Most of the defects this library has shipped were a plausible number where an exception belonged.
 
 <br>
 

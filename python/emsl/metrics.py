@@ -1,7 +1,7 @@
 """Post-hoc evaluation of a finished run: where the money went, and whether the
 number means anything.
 
-The fourteen statistics on a ``BacktestResult`` are computed in Rust once per
+The fifteen statistics on a ``BacktestResult`` are computed in Rust once per
 trial, so they have to be cheap and they stay there. Everything here runs once,
 on a result you already have, which is why it is Python: it is read far more
 often than it is executed. Nothing here simulates anything.

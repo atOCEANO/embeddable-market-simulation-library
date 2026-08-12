@@ -26,7 +26,7 @@
 
 ## Validation Guide
 
-Validation is split by where the risk lives. Almost all of the real logic is pure Rust, so it is tested locally with `cargo`, with no interpreter in the loop. The Python boundary, and the promise that one wheel works across Python versions, is checked in Docker.
+Validation is split by where the risk lives. Every line of simulation is pure Rust, so it is tested locally with `cargo`, with no interpreter in the loop. The Python side simulates nothing, but it is no longer small: the indicators, the post-hoc statistics and the chart are roughly as much code as the engine, and they carry their own risk, which is a wrong number rather than a wrong fill. The Python boundary, that code, and the promise that one wheel works across Python versions are all checked in Docker.
 
 <br>
 
@@ -63,7 +63,8 @@ The properties that would be easy to break silently are their own tests:
 - **No same-bar lookahead.** An order decided on bar `t` fills on bar `t+1`; a market fill lands at the next open, never the decision bar's price.
 - **Batched equals looped.** `Batch.step_all` over N envs is bit-identical, by exact state equality, to stepping N single engines in a loop. The envs are independent with no cross-env reduction, so parallelism introduces no drift.
 - **View lifetime and read-only.** A zero-copy observation stays valid after the engine is dropped (its base keeps the buffer alive), and writing through it is rejected, so a view onto the shared candle buffer can never corrupt it.
-- **Trade reconciliation.** The logged trades' realized PnL sums to the account's cumulative realized PnL. A forced liquidation books realized PnL without logging a trade (ADR 0009), so the identity is exact for a run without one; the test pins the no-liquidation case.
+- **Trade reconciliation.** The logged trades' realized PnL sums to the account's cumulative realized PnL, and on a run that ends flat the net PnL of the log equals the change in equity ([ADR 0030](Decisions.md)). A forced close is an ordinary row carrying `liquidated: true`, because it is booked through the one path every other fill takes; it used to reach none of that and appear in no trade at all ([ADR 0052](Decisions.md)).
+- **A mutation has to fail the suite.** A pass that breaks one line of the Python tier at a time and reruns the tests found 13 of 27 mutations surviving, including one that held out the *start* of a series where [ADR 0049](Decisions.md) promises the end. A statistic whose defect no test can see is a statistic nobody should quote, so a new one arrives with a test that fails when its arithmetic is wrong rather than one that only checks its shape. Run the pass against `python/emsl` after adding a statistic, and pass `-p no:cacheprovider`, or a stale `.pytest_cache` will hide a mutation.
 
 <br>
 

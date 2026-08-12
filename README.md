@@ -263,13 +263,16 @@ from emsl import metrics
 metrics.summary(result, candles)          # the headline, printed
 metrics.decompose(result)                 # gross, fees, funding, still open, net
 metrics.breakeven_bps(SmaCross, candles)  # the round-trip cost that kills it
-metrics.long_short_split(result)          # the same trade stats, by side
+metrics.trade_stats(result)               # payoff, expectancy, worst losing streak
+metrics.period_returns(result, candles)   # by month, quarter or year
 metrics.compare({"cheap": a, "dear": b})  # several runs, side by side
 ```
 
 The four pieces of `decompose` add up to the change in equity by construction, so the identity is the check. `breakeven_bps` matters because the shipped defaults are a frictionless venue: no slippage, no impact, one order allowed to eat a whole bar. "This dies at 8 basis points round trip and you pay 6" is worth more in the first week than any probability.
 
-For the probabilities there are `probabilistic_sharpe`, `min_track_record_length`, and `deflated_sharpe(study, null)`, which asks whether a search's winner beats what the best of that many looks would have reached by luck. It requires a random-search null and refuses to guess one, for reasons in the [Python API](.Documentation/Python_API.md#metrics).
+Read `trade_stats` before any of the ratios. A win rate and a profit factor are the same pair for a rule that grinds out small wins and for one that is short gamma waiting for the bar that ends it, and a 70% win rate at a payoff of 0.3 is a losing rule; `summary` prints the two on adjacent lines and never one without the other. Then `period_returns`, because "the whole edge is one quarter" is the answer a single number cannot give.
+
+For the probabilities there are `probabilistic_sharpe`, `sharpe_interval`, `min_track_record_length`, and `deflated_sharpe(study, null)`, which asks whether a search's winner beats what the best of that many looks would have reached by luck. It requires a random-search null and refuses to guess one. All of them count **independent bets rather than bars**, since a strategy holding a position for two days on hourly candles does not have a few thousand of anything; the reasoning is in the [Python API](.Documentation/Python_API.md#metrics).
 
 ### Looking at the result
 

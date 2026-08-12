@@ -147,7 +147,9 @@ def test_misspelled_space_name_raises_before_the_search():
         tuned(SmaCross, {"fst": (3, 20), "slow": (21, 60)}, series(), n_trials=5)
 
 
-def test_bad_market_raises():
+def test_a_bad_market_is_refused_before_any_trial_runs():
+    # the name used to be shared with the engine-level check in test_smoke, so a
+    # failure report named a test that existed twice and said which of the two
     with pytest.raises(ValueError):
         tuned(SmaCross, SPACE, series(), market="options", n_trials=5)
 

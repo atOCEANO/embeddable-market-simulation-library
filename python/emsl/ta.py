@@ -171,7 +171,7 @@ def _series(values, where):
     if out.size == 0:
         raise ValueError(f"{where} needs a non-empty series")
     # an infinity is not a price, so it is a gap for the same reason a NaN is.
-    # Handled once here rather than in fourteen places: left alone it survived
+    # Handled once here rather than in thirty places: left alone it survived
     # into arithmetic that produced NaN anyway, but by way of `inf - inf` and
     # `inf / inf`, which numpy reports as a warning from the middle of whichever
     # function happened to hit it first
