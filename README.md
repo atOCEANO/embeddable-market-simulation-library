@@ -98,6 +98,19 @@ print(state["equity"], state["position"])      # account value and position at t
 
 ## Ways to Drive It
 
+Every surface below takes the same eleven engine knobs. `emsl.Market` holds them once so they cannot drift apart, and hands out the surfaces itself:
+
+```python
+binance = emsl.Market(kind="perp", fee_taker=0.0004, slippage_bps=2.0,
+                      leverage=5.0, funding_rate=0.0001, funding_interval=8)
+
+result = binance.backtest(candles).run(MyStrategy())
+study = binance.tune(MyStrategy, space, candles, n_trials=200, oos=0.3)
+env = binance.env(candles, num_envs=4096, window=60)
+```
+
+Each method takes only what is not the venue, so a cost cannot be passed twice. Writing the knobs out per call still works and is the right thing for a one-off.
+
 ### Raw engine
 
 The candles are readable as named zero-copy views, `engine.opens`, `engine.highs`, `engine.lows`, `engine.closes` and `engine.volumes`, so nothing has to remember that the close is column 3. `engine.data` is still the whole `(T, 5)` array.
@@ -129,7 +142,21 @@ print(result.stats["sharpe"], result.stats["max_drawdown_pct"])
 print(len(result.trades), "trades")
 ```
 
-The full stats set (total return, net profit, CAGR, Sharpe, Sortino, Calmar, drawdown, volatility, exposure, win rate, profit factor, average trade, and the trade log) is in the [Python API](.Documentation/Python_API.md#backtesting).
+The full stats set (total return, net profit, CAGR, Sharpe, Sortino, Calmar, drawdown, volatility, exposure, win rate, profit factor, average trade, funding paid, and the trade log) is in the [Python API](.Documentation/Python_API.md#backtesting).
+
+### Indicators
+
+`emsl.ta` carries fourteen of them, closed at fourteen on purpose. Every one returns **one value per bar** with the warm-up as a gap and never a shorter array, so the same object drives the rule and draws on the chart with no padding decision in between.
+
+```python
+class Cross(emsl.Strategy):
+    def init(self, engine):
+        self.fast = emsl.ta.ema(engine.closes, 20)
+        self.slow = emsl.ta.ema(engine.closes, 60)
+        self.warmup = 60
+```
+
+An indicator library is mostly somebody's opinion about warm-up and smoothing, so each function states its own where implementations differ: `ema` seeds from the first window's average rather than its first value, `rsi` and `atr` use Wilder's smoothing, `stdev` is population because that is what `bbands` needs. The alternative to a stated convention is not no convention, it is yours, unwritten. Full list in the [Python API](.Documentation/Python_API.md#indicators).
 
 ### Reinforcement learning
 
@@ -223,9 +250,27 @@ Higher wins by default; pass `direction="minimize"` when your metric is a cost. 
 
 `tune` needs optuna and cloudpickle (`pip install 'emsl[tune]'`); the [Python API](.Documentation/Python_API.md#tuning) covers the search space, objective, and result in full.
 
+### Judging the result
+
+`emsl.metrics` is what you read once a run finishes. The first thing to look at is where the money actually went, because a large share of what looks like alpha in crypto is a funding carry wearing a costume, and a larger share of dead strategies died on the fee line rather than on the idea.
+
+```python
+from emsl import metrics
+
+metrics.summary(result, candles)          # the headline, printed
+metrics.decompose(result)                 # gross, fees, funding, still open, net
+metrics.breakeven_bps(SmaCross, candles)  # the round-trip cost that kills it
+metrics.long_short_split(result)          # the same trade stats, by side
+metrics.compare({"cheap": a, "dear": b})  # several runs, side by side
+```
+
+The four pieces of `decompose` add up to the change in equity by construction, so the identity is the check. `breakeven_bps` matters because the shipped defaults are a frictionless venue: no slippage, no impact, one order allowed to eat a whole bar. "This dies at 8 basis points round trip and you pay 6" is worth more in the first week than any probability.
+
+For the probabilities there are `probabilistic_sharpe`, `min_track_record_length`, and `deflated_sharpe(study, null)`, which asks whether a search's winner beats what the best of that many looks would have reached by luck. It requires a random-search null and refuses to guess one, for reasons in the [Python API](.Documentation/Python_API.md#metrics).
+
 ### Looking at the result
 
-The four paths above produce numbers. `emsl.chart` is how you look at them: candles, the fills on the bars they happened on, an equity curve, a drawdown panel, a trade log, and any array of your own beside them.
+The five paths above produce numbers. `emsl.chart` is how you look at them: candles, the fills on the bars they happened on, an equity curve, a drawdown panel, a trade log, and any array of your own beside them.
 
 ```python
 import emsl
