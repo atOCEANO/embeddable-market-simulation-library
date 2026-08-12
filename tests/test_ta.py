@@ -329,6 +329,27 @@ def test_a_recursive_indicator_waits_out_a_gap_rather_than_raising():
     assert np.isfinite(ta.atr(holed + 1.0, holed - 1.0, holed, 5)[-1])
 
 
+def test_a_gap_after_the_seed_costs_warm_up_rather_than_the_rest_of_the_series():
+    # a recurrence cannot carry across a missing bar, and the strict reading is
+    # that everything after one is undefined. That reading makes a year of candles
+    # with a single hole produce nothing from the hole onward, which is useless
+    # rather than rigorous: the next clean window seeds a fresh run instead
+    long = np.arange(1.0, 61.0)
+    holed = long.copy()
+    holed[30] = np.nan
+    out = ta.ema(holed, 5)
+    assert np.isfinite(out[29])         # fine before the hole
+    assert np.isnan(out[30])            # the hole itself
+    assert np.isnan(out[31:35]).all()   # and while it looks for a clean window
+    # bars 31 to 35 are the first five clean ones after it, so the seed lands there
+    assert out[35] == pytest.approx(long[31:36].mean())
+    assert np.isfinite(out[-1]), "one missing bar killed the rest of the series"
+    for call in (lambda v: ta.rsi(v, 5),
+                 lambda v: ta.atr(v + 1.0, v - 1.0, v, 5),
+                 lambda v: ta.macd(v, 3, 6, 3).signal):
+        assert np.isfinite(call(holed)[-1])
+
+
 def test_a_length_longer_than_the_series_says_both_numbers():
     with pytest.raises(ValueError) as excinfo:
         ta.sma(RAMP, 50)

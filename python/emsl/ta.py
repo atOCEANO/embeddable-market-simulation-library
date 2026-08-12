@@ -162,32 +162,30 @@ def _smooth(values, alpha, length, where):
     # single opening print steer the curve for hundreds of bars, and the simple
     # average is what TradingView and Wilder both use.
     #
-    # The seed is the first CLEAN window, not the first window. Insisting on the
-    # one at the first finite value meant a single missing bar anywhere in the
-    # warm-up raised, and raised from `ema` about a bar index the caller had never
-    # heard of when they had called `macd`. Waiting instead makes the whole module
-    # behave one way: a gap costs warm-up, never an exception
+    # The seed is the first CLEAN window, and a gap restarts the search for one.
+    # A recurrence cannot carry across a missing bar, so the strict reading is
+    # that everything after one is undefined; that reading makes a year of
+    # candles with a single hole in it produce nothing at all from the hole
+    # onward, which is useless rather than rigorous. A gap ends the run and the
+    # next clean window seeds a fresh one, so a hole costs the same warm-up here
+    # as it does to a rolling window and the module behaves one way throughout.
     size = values.size
     out = _blank(size)
-    start = _seed_at(values, length)
-    if start is None:
-        return out
-    running = float(values[start - length + 1:start + 1].mean())
-    out[start] = running
-    for i in range(start + 1, size):
-        running = alpha * values[i] + (1.0 - alpha) * running
+    running = None
+    run = 0
+    for i in range(size):
+        if not np.isfinite(values[i]):
+            running, run = None, 0
+            continue
+        run += 1
+        if running is None:
+            if run < length:
+                continue
+            running = float(values[i - length + 1:i + 1].mean())
+        else:
+            running = alpha * values[i] + (1.0 - alpha) * running
         out[i] = running
     return out
-
-
-def _seed_at(values, length):
-    # the index of the last bar of the earliest run of `length` finite values
-    run = 0
-    for i in range(values.size):
-        run = run + 1 if np.isfinite(values[i]) else 0
-        if run == length:
-            return i
-    return None
 
 
 def sma(values, length):
