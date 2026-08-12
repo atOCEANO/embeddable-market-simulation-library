@@ -36,6 +36,7 @@ Everything the package exports, and where each piece is documented in full:
 | `emsl.tune` | Search a strategy's parameters, each trial a full backtest, across worker processes. [Below](#tuning). |
 | `emsl.Market` | The venue and its costs as one object, which hands out every surface configured identically. [Below](#the-market). |
 | `emsl.metrics` | Evaluate a finished run: where the money went, and what the number is worth believing. [Below](#metrics). |
+| `emsl.ta` | Fourteen indicators, one value per bar, with the conventions written down. [Below](#indicators). |
 | `emsl.rl` | `VectorEnv`, the Gymnasium vector env. [Below](#reinforcement-learning), in full in the [RL Guide](RL_Guide.md). |
 | `emsl.sb3` | `EmslVecEnv`, the Stable-Baselines3 adapter. [RL Guide](RL_Guide.md#training). |
 | `emsl.chart` | Draw a frame, your own arrays and a run as one self-contained HTML document. [Below](#plotting), in full in the [Plotting](Plotting.md) guide. |
@@ -594,6 +595,46 @@ metrics.compare({"cheap": cheap_run, "dear": expensive_run})
 ```
 
 prints one row per run, leading with the data fingerprint, and returns the rows. A notebook accumulates a great many backtests and nothing on a bare result says which bars or which fees produced it, so "was Tuesday's 2.1 sharpe on the same costs as today's 1.9" had no answer at all ([ADR 0051](Decisions.md)). Defining `__repr__` on a tunable strategy is worth it here: two rows both reading `SmaCross` tell you nothing.
+
+<br>
+
+## Indicators
+
+Fourteen functions, chosen to cover what a bar-level strategy usually reaches for and stopped there. This is not an attempt to be ta-lib: an indicator library is mostly somebody's opinion about warm-up and smoothing, and a hundred of those opinions is a hundred chances to disagree with the chart you have read for years.
+
+```python
+class Cross(emsl.Strategy):
+    def init(self, engine):
+        self.fast = emsl.ta.ema(engine.closes, 20)
+        self.slow = emsl.ta.ema(engine.closes, 60)
+        self.warmup = 60
+
+    def next(self, state, engine):
+        i = state["tick_index"]
+        if state["position"] == 0 and self.fast[i] > self.slow[i]:
+            engine.market_buy(1.0)
+        elif state["position"] > 0 and self.fast[i] < self.slow[i]:
+            engine.close()
+```
+
+| Group | Functions |
+| :--- | :--- |
+| Trend | `sma(values, length)`, `ema(values, length)`, `wma(values, length)`, `vwap(high, low, close, volume, length)` |
+| Momentum | `rsi(values, length=14)`, `macd(values, fast=12, slow=26, signal=9)`, `stoch(high, low, close, length=14, smooth=3)`, `roc(values, length)` |
+| Volatility | `atr(high, low, close, length=14)`, `true_range(high, low, close)`, `bbands(values, length=20, deviations=2.0)`, `stdev(values, length)` |
+| Structure | `donchian(high, low, length=20)`, `zscore(values, length)` |
+
+**Three rules hold for every one of them**, and they are why this is in the library rather than in your notebook.
+
+*One length, one alignment.* Every function returns a float64 array of length `T` aligned so entry `i` is bar `i`, with the warm-up as `NaN`, never a shorter array. So the same object goes into your rule and into [`emsl.chart`](#plotting) with no padding decision in between, and a gap in the input stays a gap in the output rather than being bridged.
+
+*The convention is written down.* `ema` is smoothed at `2 / (length + 1)` and seeded from the simple average of the first `length` values, not from the first value, which is TradingView's convention and stops one opening print steering the curve for hundreds of bars. `rsi` and `atr` use Wilder's `1 / length`, which is what those indicators were defined with. `stdev` is population, dividing by `length`, because that is what `bbands` is defined against. Each function repeats its own choice in its docstring.
+
+*Nothing knows about the engine.* These are functions of arrays: no state, no engine, no pandas needed. Computing once in `init` and handing the same array to the chart is what keeps the line on screen from drifting from the line that made the decision ([ADR 0042](Decisions.md)).
+
+Functions with more than one output return a named object rather than a tuple to unpack: `macd(...)` gives `.line`, `.signal` and `.histogram`; `bbands(...)` and `donchian(...)` give `.upper`, `.middle` and `.lower`; `stoch(...)` gives `.k` and `.d`.
+
+Two behaviours worth knowing. `vwap` is rolling over `length` bars rather than anchored to a session, because the engine has bars and no notion of a trading day. And `donchian`'s edges include the current bar, so a breakout of `upper` cannot happen on the bar that set it; compare against the previous bar's edge if that is what you mean.
 
 <br>
 
