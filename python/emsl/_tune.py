@@ -425,15 +425,22 @@ class TuneResult:
     quote. It is ``None`` when nothing was held out (ADR 0049).
     """
 
-    def __init__(self, study, strategy, oos_result=None):
+    def __init__(self, study, strategy, best_result=None, oos_result=None,
+                 objective=None, sampler=None):
         self._study = study
         self._strategy = strategy
         best = study.best_trial
         self.best_params = dict(best.params)
         self.best_value = float(best.value)
         self.best_stats = dict(best.user_attrs.get("stats", {}))
+        self.best_result = best_result
         self.oos_result = oos_result
         self.oos_stats = dict(oos_result.stats) if oos_result is not None else None
+        # what was optimised and how it was searched, because a number computed
+        # about a search has to know which search it is talking about
+        self.objective = objective
+        self.sampler = sampler
+        self.data_hash = best_result.data_hash if best_result is not None else None
         self.trials = [
             {
                 "number": t.number,
@@ -471,6 +478,7 @@ def tune(
     seed=None,
     verbose=False,
     oos=None,
+    sampler="tpe",
     min_trades=0,
     market="spot",
     quote=10_000.0,
@@ -538,8 +546,14 @@ def tune(
     objective_fn = _resolve_objective(objective)
 
     optuna.logging.set_verbosity(optuna.logging.INFO if verbose else optuna.logging.WARNING)
-    sampler = optuna.samplers.TPESampler(seed=seed)
-    study = optuna.create_study(direction=direction, sampler=sampler)
+    if sampler not in ("tpe", "random"):
+        raise ValueError(f"sampler must be 'tpe' or 'random', got {sampler!r}")
+    drawn = (
+        optuna.samplers.RandomSampler(seed=seed)
+        if sampler == "random"
+        else optuna.samplers.TPESampler(seed=seed)
+    )
+    study = optuna.create_study(direction=direction, sampler=drawn)
 
     if n_jobs == 1:
         backtester = Backtester(
@@ -562,13 +576,23 @@ def tune(
             "every trial failed; the last error was: " + repr(last_error)
         ) from last_error
 
+    # the winner re-run on the bars it was chosen on, so the result can be charted
+    # and measured without rebuilding the search's configuration by hand
+    best_result = Backtester(
+        candles, periods_per_year=periods_per_year, risk_free=risk_free, **config
+    ).run(strategy(**study.best_trial.params))
     oos_result = None
     if held_out is not None:
-        winner = strategy(**study.best_trial.params)
         oos_result = Backtester(
             held_out, periods_per_year=periods_per_year, risk_free=risk_free, **config
-        ).run(winner)
-    return TuneResult(study, strategy, oos_result)
+        ).run(strategy(**study.best_trial.params))
+    return TuneResult(
+        study, strategy, best_result, oos_result,
+        objective=objective if isinstance(objective, str) else getattr(
+            objective, "__name__", "a callable"
+        ),
+        sampler=sampler,
+    )
 
 
 def _split(candles, oos):

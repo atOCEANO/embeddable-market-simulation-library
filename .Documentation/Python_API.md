@@ -511,6 +511,10 @@ Leaving `oos` out warns, because the default cannot be silent without being a tr
 
 The `TuneResult` carries `.best_params` (a dict), `.best_value` (the objective at the best trial), `.best_stats` (the winning run's full [stats](#statistics) dict, so its return, drawdown, and trade count are there without a re-run), `.trials` (a list of `{number, params, value, state, stats}`), and `.study` (the underlying optuna study for deeper inspection). `.best_strategy()` builds a fresh strategy from `.best_params`.
 
+It also carries `.best_result`, the winner re-run on the bars it was chosen on, so it can be charted or measured without rebuilding the search's configuration by hand, plus `.objective`, `.sampler` and `.data_hash`, which is what lets [`deflated_sharpe`](#what-the-number-is-worth) check that a null belongs to this search rather than trusting you.
+
+`sampler` is `"tpe"` by default, which learns where the good parameters are, or `"random"`, which does not. Random search is worse at finding a winner and is exactly what you want for a null.
+
 With `n_jobs=1` a seeded search is reproducible, since the sampler is told results in a fixed order. With `n_jobs>1` the sampler sees results in completion order, so the exact sequence of trials can vary run to run even with a seed; each trial's score is still deterministic. On Windows, calling `tune` with `n_jobs>1` from a script means putting the call under `if __name__ == "__main__":`, the standard requirement for the spawn start method; a notebook needs no guard.
 
 <br>
@@ -562,7 +566,22 @@ Both re-run the backtest, so they take the strategy and the data rather than a f
 
 Three things to know before quoting either. The benchmark is stated **annualized**, like everything else here, and de-annualized internally, because handing the estimator an annualized figure is the standard way to get a confidently wrong answer. Both assume the returns are independent, which a strategy holding a position for two days on hourly candles badly violates: read `autocorrelation(result)` beside them, and read `num_trades`, because forty round trips over three thousand bars is forty bets and it is the bets that carry the information. And a sample that cannot support the estimate raises rather than returning `NaN` ([ADR 0007](Decisions.md)).
 
-Neither of them corrects for having searched. A tuned parameter set is in-sample no matter what probability is attached to it afterwards, and the answer to that is the [holdout](#in-sample-and-out-of-sample), not a statistic.
+Neither of them corrects for having searched. `deflated_sharpe(study, null)` does:
+
+```python
+study = venue.tune(SmaCross, space, candles, n_trials=200, oos=0.3)
+null  = venue.tune(SmaCross, space, candles, n_trials=200, sampler="random")
+
+metrics.deflated_sharpe(study, null)      # is the winner real, given 200 looks?
+```
+
+A search returns the best of many noisy scores, so its winner is high partly because it is good and partly because you looked a lot. This computes the Sharpe the best of that many looks would reach **by luck alone** and asks for the probability the winner beats it.
+
+**The null is required, and that is the design rather than an inconvenience.** The threshold depends on how many independent looks were taken and how far the scores scatter, and a TPE search supplies neither honestly: it concentrates its trials in the winning basin, so they are not independent draws and the spread between them *shrinks as it converges*. Computed from the search's own trials this number would grow more permissive the harder you overfit, which is exactly backwards. A random search over the same space is an honest "best of N looks here" and cannot do that ([ADR 0054](Decisions.md)).
+
+Four things are refused rather than guessed: a null that is not a random search, a null over different bars (checked by fingerprint), a search that selected on something other than `sharpe`, and a null too small to set a threshold. `deflation_threshold(spread, looks)` is the bar itself, if you want to see it.
+
+A tuned parameter set is still in-sample no matter what probability is attached to it, so this complements the [holdout](#in-sample-and-out-of-sample) rather than replacing it.
 
 `report(result, frame=None)` returns everything above as one flat dict, for storing or comparing runs; `summary(result, frame=None)` prints the headline and returns the same dict.
 

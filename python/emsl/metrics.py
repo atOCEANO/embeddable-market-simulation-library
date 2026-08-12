@@ -42,6 +42,7 @@ __all__ = [
     "value_at_risk",
     "conditional_value_at_risk",
     "probabilistic_sharpe",
+    "deflated_sharpe",
     "min_track_record_length",
     "autocorrelation",
     "compare",
@@ -401,6 +402,100 @@ def probabilistic_sharpe(result, benchmark=0.0):
         )
     z = (observed - target) * math.sqrt(values.size - 1) / math.sqrt(variance)
     return _normal_cdf(z)
+
+
+_EULER = 0.5772156649015329
+
+
+def deflated_sharpe(study, null):
+    """The probability the winner of ``study`` is real, given how many times you
+    looked (Bailey and Lopez de Prado, 2014).
+
+    A search returns the best of many noisy scores, so its winner is high partly
+    because it is good and partly because you looked a lot. This computes the
+    Sharpe you would expect the best of that many looks to reach **by luck alone**,
+    and asks for the probability the winner beats it.
+
+    ``null`` is a second ``TuneResult`` from a **random** search over the same
+    space and the same bars::
+
+        study = venue.tune(SmaCross, space, candles, n_trials=200, oos=0.3)
+        null = venue.tune(SmaCross, space, candles, n_trials=200, sampler="random")
+        metrics.deflated_sharpe(study, null)
+
+    It is required, and that is the whole design. The threshold depends on how
+    many independent looks were taken and how much the scores vary across them,
+    and a TPE search supplies neither honestly: it concentrates its trials in the
+    winning basin, so the trials are not independent draws and the spread between
+    them **shrinks as the search converges**. Computed from the search's own
+    trials, this number would grow more permissive the harder you overfit, which
+    is exactly backwards. A random search over the same space is an honest "best
+    of N looks at this space" and cannot do that (ADR 0054).
+    """
+    _trials, looks, spread = _null_shape(study, null)
+    return probabilistic_sharpe(
+        study.best_result, benchmark=deflation_threshold(spread, looks)
+    )
+
+
+def deflation_threshold(spread, looks):
+    """The Sharpe the best of ``looks`` independent draws would reach by luck
+    alone, when the draws are spread ``spread`` apart.
+
+    The expected maximum of a sample from a normal, via its Gumbel limit. It rises
+    with both arguments, which is the whole intuition: the more times you look and
+    the more the scores scatter, the higher a winner has to be before it means
+    anything.
+    """
+    if not looks >= 2:
+        raise ValueError(f"looks must be at least 2, got {looks}")
+    if not spread >= 0.0:
+        raise ValueError(f"spread must be at least 0, got {spread}")
+    return spread * (
+        (1.0 - _EULER) * _normal_ppf(1.0 - 1.0 / looks)
+        + _EULER * _normal_ppf(1.0 - 1.0 / (looks * math.e))
+    )
+
+
+def _null_shape(study, null):
+    if getattr(study, "best_result", None) is None:
+        raise TypeError(
+            "deflated_sharpe needs the TuneResult a search returned, since it "
+            "reads the winner's own returns"
+        )
+    if study.objective != "sharpe":
+        raise ValueError(
+            f"this search selected on {study.objective!r}, and the deflation is "
+            f"about the quantity you selected on, so deflating its sharpe would "
+            f"be answering a question nobody asked; tune with objective='sharpe'"
+        )
+    if getattr(null, "sampler", None) != "random":
+        raise ValueError(
+            "null must be a search run with sampler='random'. A TPE search "
+            "concentrates its trials, so the spread between them shrinks as it "
+            "converges and the threshold would fall the harder you overfit"
+        )
+    if null.data_hash != study.data_hash:
+        raise ValueError(
+            f"the null ran on different bars ({null.data_hash} against "
+            f"{study.data_hash}), so it is not a null for this search; run it "
+            f"over the same data and the same space"
+        )
+    scored = [t["stats"]["sharpe"] for t in null.trials if t["stats"]]
+    scored = [s for s in scored if math.isfinite(s)]
+    if len(scored) < 2:
+        raise ValueError(
+            f"the null produced {len(scored)} usable trials, and the spread "
+            f"across them is what sets the threshold; it needs at least 2"
+        )
+    # every trial is a look, including one that failed: a configuration you
+    # evaluated and rejected was still a configuration you evaluated. Counting
+    # only the survivors would make a stricter min_trades floor look MORE
+    # convincing, by lowering the bar it has to clear
+    looks = len(null.trials)
+    if looks < 2:
+        raise ValueError("a null of fewer than 2 trials sets no threshold at all")
+    return scored, looks, float(np.std(np.asarray(scored, dtype=np.float64), ddof=1))
 
 
 def min_track_record_length(result, benchmark=0.0, confidence=0.95):
