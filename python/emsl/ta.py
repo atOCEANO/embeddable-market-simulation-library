@@ -9,9 +9,11 @@ for years.
 Three rules hold for every function here, and they are the reason it lives in the
 library rather than in your notebook:
 
-**One length, one alignment.** Every function returns a float64 array of length
-``T``, aligned so that entry ``i`` is bar ``i``, with the warm-up as ``NaN``.
-Never a shorter array. The chart's length contract is the sharpest idea in this
+**One length, one alignment, and gaps stay gaps.** Every function returns a
+float64 array of length ``T``, aligned so that entry ``i`` is bar ``i``, with the
+warm-up as ``NaN``. Never a shorter array. A missing bar is a gap in the output
+too, never bridged and never absorbed; an infinity in the input counts as missing,
+because it is not a price. Nothing here raises over a gap, it costs warm-up. The chart's length contract is the sharpest idea in this
 library and a second convention beside it would undo that, so the same array goes
 straight into a rule and into ``emsl.chart`` with no padding decision in between.
 
@@ -100,13 +102,33 @@ class Stochastic:
 
 
 def _series(values, where):
-    out = np.asarray(values, dtype=np.float64).ravel()
-    if out.ndim != 1 or out.size == 0:
-        raise ValueError(f"{where} needs a non-empty one-dimensional series")
-    return out
+    # the shape is checked BEFORE any flattening. Ravelling first made the check
+    # unreachable, so a whole OHLCV frame handed in place of one of its columns
+    # was silently interleaved into a single series and every number that came
+    # back was computed from four columns at once, and looked entirely plausible
+    out = np.asarray(values, dtype=np.float64)
+    if out.ndim == 2 and out.shape[1] == 1:
+        out = out.ravel()
+    if out.ndim != 1:
+        raise ValueError(
+            f"{where} needs one series, but was given an array of shape "
+            f"{out.shape}; pass a single column, not the whole frame"
+        )
+    if out.size == 0:
+        raise ValueError(f"{where} needs a non-empty series")
+    # an infinity is not a price, so it is a gap for the same reason a NaN is.
+    # Handled once here rather than in fourteen places: left alone it survived
+    # into arithmetic that produced NaN anyway, but by way of `inf - inf` and
+    # `inf / inf`, which numpy reports as a warning from the middle of whichever
+    # function happened to hit it first
+    return np.where(np.isfinite(out), out, np.nan)
 
 
 def _length(length, size, where):
+    # a fractional length is a mistake, not a request to round one way or the
+    # other, and silently flooring it answered a question nobody asked
+    if length != int(length):
+        raise ValueError(f"{where} needs a whole number of bars, got {length}")
     length = int(length)
     if length < 1:
         raise ValueError(f"{where} needs a length of at least 1, got {length}")
@@ -138,24 +160,34 @@ def _smooth(values, alpha, length, where):
     # one exponential pass, seeded from the simple average of the first full
     # window rather than from the first value. Seeding from the first value lets a
     # single opening print steer the curve for hundreds of bars, and the simple
-    # average is what TradingView and Wilder both use
+    # average is what TradingView and Wilder both use.
+    #
+    # The seed is the first CLEAN window, not the first window. Insisting on the
+    # one at the first finite value meant a single missing bar anywhere in the
+    # warm-up raised, and raised from `ema` about a bar index the caller had never
+    # heard of when they had called `macd`. Waiting instead makes the whole module
+    # behave one way: a gap costs warm-up, never an exception
     size = values.size
     out = _blank(size)
-    start = _first_finite(values)
-    if start is None or start + length > size:
+    start = _seed_at(values, length)
+    if start is None:
         return out
-    window = values[start:start + length]
-    if not np.isfinite(window).all():
-        raise ValueError(
-            f"{where} cannot seed: the {length} values from bar {start} contain a "
-            f"gap, so there is no window to average"
-        )
-    running = float(window.mean())
-    out[start + length - 1] = running
-    for i in range(start + length, size):
+    running = float(values[start - length + 1:start + 1].mean())
+    out[start] = running
+    for i in range(start + 1, size):
         running = alpha * values[i] + (1.0 - alpha) * running
         out[i] = running
     return out
+
+
+def _seed_at(values, length):
+    # the index of the last bar of the earliest run of `length` finite values
+    run = 0
+    for i in range(values.size):
+        run = run + 1 if np.isfinite(values[i]) else 0
+        if run == length:
+            return i
+    return None
 
 
 def sma(values, length):
@@ -222,18 +254,29 @@ def rsi(values, length=14):
     """The relative strength index over ``length`` bars, 0 to 100.
 
     Wilder's smoothing, ``1 / length`` rather than ``2 / (length + 1)``, which is
-    what TradingView's ``ta.rsi`` uses and what the indicator was defined with. A
-    window with no losses at all is 100 rather than undefined.
+    what TradingView's ``ta.rsi`` uses and what the indicator was defined with.
+
+    Rising with no losses at all is 100. Going **nowhere**, with neither gains nor
+    losses, is a gap: there is no ratio of strength to weakness when both are
+    zero, and the alternative conventions each pick a side of a coin that was
+    never tossed. Reporting 100 for a dead flat market, as some do, is a live trap
+    for the rule this exists to be traded on, since ``rsi > 70`` then fires on a
+    market that has not moved at all.
     """
     values = _series(values, "rsi")
+    if int(length) >= values.size:
+        raise ValueError(
+            f"rsi needs more bars than its length, since the first bar makes no "
+            f"change to measure; {length} was asked of {values.size} bars"
+        )
     length = _length(length, values.size, "rsi")
     change = np.diff(values, prepend=np.nan)
     gain = _smooth(np.maximum(change, 0.0), 1.0 / length, length, "rsi")
     loss = _smooth(-np.minimum(change, 0.0), 1.0 / length, length, "rsi")
     with np.errstate(divide="ignore", invalid="ignore"):
-        strength = np.where(loss > 0.0, gain / loss, np.inf)
-        out = 100.0 - 100.0 / (1.0 + strength)
-    return np.where(np.isfinite(gain), out, np.nan)
+        out = np.where(loss > 0.0, 100.0 - 100.0 / (1.0 + gain / loss), 100.0)
+    moved = (gain > 0.0) | (loss > 0.0)
+    return np.where(np.isfinite(gain) & np.isfinite(loss) & moved, out, np.nan)
 
 
 def macd(values, fast=12, slow=26, signal=9):
@@ -258,6 +301,11 @@ def stoch(high, low, close, length=14, smooth=3):
     ``k`` is where the close sits inside the last ``length`` bars' range, and
     ``d`` is its simple average over ``smooth`` bars. A window with no range at
     all has no position inside it, so it is a gap rather than a fifty.
+
+    Both run 0 to 100 for well-formed bars. A close outside its own bar's high
+    and low is not well-formed, and produces a value outside that range rather
+    than being clamped, because a clamp would hide the only evidence that the
+    data is wrong.
     """
     high = _series(high, "stoch")
     low = _series(low, "stoch")
@@ -268,6 +316,7 @@ def stoch(high, low, close, length=14, smooth=3):
             f"{low.size} and {close.size}"
         )
     length = _length(length, close.size, "stoch")
+    _length(smooth, close.size, "stoch")  # named here, not from inside sma
     top = _blank(close.size)
     bottom = _blank(close.size)
     top[length - 1:] = _windows(high, length).max(axis=-1)
@@ -295,6 +344,13 @@ def true_range(high, low, close):
     close if that is wider.
 
     The first bar has no previous close, so it is its own high less its low.
+
+    A missing bar anywhere else is a gap in the output, not a fallback to the
+    bar's own range. Taking the widest span while ignoring the missing ones was
+    the first version, and it is worse than useless: with the previous close gone
+    it quietly returned high less low, which on a gapping bar understated the true
+    range by whatever the gap was, so an ATR-sized stop came out far too tight on
+    exactly the data where the gap mattered.
     """
     high = _series(high, "true_range")
     low = _series(low, "true_range")
@@ -307,7 +363,10 @@ def true_range(high, low, close):
     previous = np.roll(close, 1)
     previous[0] = np.nan
     spans = np.vstack([high - low, np.abs(high - previous), np.abs(low - previous)])
-    out = np.nanmax(spans, axis=0)
+    # propagating, so any missing leg makes the bar a gap
+    out = spans.max(axis=0)
+    # except the first, which has no previous close by construction rather than by
+    # accident, and so is its own range
     out[0] = high[0] - low[0]
     return out
 
@@ -333,7 +392,10 @@ def stdev(values, length):
     values = _series(values, "stdev")
     length = _length(length, values.size, "stdev")
     out = _blank(values.size)
-    out[length - 1:] = _windows(values, length).std(axis=-1)
+    # an infinity in the window makes the deviation undefined, and numpy says so
+    # through a warning on the way. The gap is the answer; the warning is noise
+    with np.errstate(invalid="ignore"):
+        out[length - 1:] = _windows(values, length).std(axis=-1)
     return out
 
 
@@ -346,8 +408,12 @@ def bbands(values, length=20, deviations=2.0):
     values = _series(values, "bbands")
     length = _length(length, values.size, "bbands")
     deviations = float(deviations)
-    if not np.isfinite(deviations):
-        raise ValueError(f"bbands needs a finite width, got {deviations}")
+    if not np.isfinite(deviations) or deviations < 0.0:
+        # a negative width turns the bands inside out, upper below lower, and
+        # every comparison written against them then reads backwards
+        raise ValueError(
+            f"bbands needs a width of at least 0, got {deviations}"
+        )
     middle = sma(values, length)
     spread = stdev(values, length) * deviations
     return Bands(middle + spread, middle, middle - spread)
