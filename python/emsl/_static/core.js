@@ -167,8 +167,38 @@ const addHistogram = function (spec, panel, index) {
   return s;
 };
 
+// the runs of real values in a row list, split at the whitespace. A run is what
+// can be drawn as one continuous line; the holes between them are the gaps
+const runsOf = function (rows) {
+  const runs = [];
+  let open = null;
+  for (let j = 0; j < rows.length; j++) {
+    if (rows[j].value === undefined) {
+      open = null;
+      continue;
+    }
+    if (open === null) {
+      open = [];
+      runs.push(open);
+    }
+    open.push(rows[j]);
+  }
+  return runs;
+};
+
 // per-item colour is data, so it is written into the point rather than into the
-// series options, and it has to be rewritten on a theme change
+// series options, and it has to be rewritten on a theme change.
+//
+// The split is here because the renderer joins a line straight across whitespace.
+// ADR 0038 says a value that does not exist is drawn as whitespace and the line
+// stops, and the document says exactly that: the point carries a time and no
+// value. lightweight-charts draws through it anyway, so a trailing stop that
+// existed on bars 0 to 40 and again on 900 to 940 was drawn as a smooth line
+// across the 860 bars where there was no stop, which is the precise lie the
+// decision was written to prevent, arriving from the renderer instead of from
+// the data. A break between two series is the only break it honours, so a gapped
+// track is drawn as one series per run. The spec is unchanged, because the spec
+// was never wrong; this is how it is painted and nothing else (ADR 0073).
 const paint = function (entry) {
   const spec = entry.spec;
   const rows = track(spec);
@@ -178,7 +208,15 @@ const paint = function (entry) {
       if (c !== null && rows[j].value !== undefined) rows[j].color = c;
     }
   }
-  entry.series.setData(rows);
+  if (!entry.make) {
+    entry.series.setData(rows);
+    return;
+  }
+  const runs = runsOf(rows);
+  if (!entry.siblings) entry.siblings = [];
+  while (entry.siblings.length < runs.length - 1) entry.siblings.push(entry.make());
+  const drawn = [entry.series].concat(entry.siblings);
+  for (let k = 0; k < drawn.length; k++) drawn[k].setData(runs[k] || []);
 };
 
 const paintCandles = function () {
@@ -349,8 +387,11 @@ const mount = function (spec, root) {
     const index = panelIndex(s.panel);
     const panel = spec.panels[index];
     if (s.kind === "line") {
-      const made = addLine(s, panel, index);
-      SERIES.push({ spec: s, series: made });
+      // the factory is what lets a gapped line grow a sibling per run in paint;
+      // a histogram needs none, since its bars are already separate marks
+      const make = function () { return addLine(s, panel, index); };
+      const made = make();
+      SERIES.push({ spec: s, series: made, make: make, siblings: [] });
       if (!carrier[index]) carrier[index] = made;
     } else if (s.kind === "histogram") {
       const made = addHistogram(s, panel, index);
