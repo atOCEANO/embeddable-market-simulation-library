@@ -162,6 +162,30 @@ def test_an_interior_nan_becomes_a_gap_rather_than_a_dropped_row():
     assert len(spec["series"][0]["v"]) == 8
 
 
+def test_a_short_series_that_also_has_a_gap_still_starts_at_bar_one():
+    # the two halves of the contract had never met. Every gap test was full
+    # length, so the start offset was zero and invisible, and both short-series
+    # tests were gapless, so they took the fast path and never reached the line
+    # that adds the two together. A short array drawn one bar early is the
+    # lookahead signature ADR 0037 exists to prevent
+    values = np.arange(7, dtype=float)
+    values[:2] = np.nan
+    spec = emsl.chart(frame(8), Line(values, "f")).spec()
+    # 2 leading gaps on an array that already starts at bar 1
+    assert spec["series"][0]["i0"] == 3
+    assert len(spec["series"][0]["v"]) == 5
+    assert spec["series"][0]["v"][0] == 2.0
+
+
+def test_a_short_series_with_an_interior_gap_keeps_its_offset():
+    values = np.arange(7, dtype=float)
+    values[3] = np.nan
+    spec = emsl.chart(frame(8), Line(values, "f")).spec()
+    assert spec["series"][0]["i0"] == 1
+    assert spec["series"][0]["v"][3] is None
+    assert len(spec["series"][0]["v"]) == 7
+
+
 def test_an_all_nan_series_draws_nothing_rather_than_raising():
     spec = emsl.chart(frame(8), Line(np.full(8, np.nan), "f")).spec()
     assert spec["series"][0]["v"] == []

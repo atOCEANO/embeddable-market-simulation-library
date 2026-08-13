@@ -476,32 +476,40 @@ const mount = function (spec, root) {
     });
   });
 
-  if (spec.equity) {
-    const index = panelIndex("equity");
+  // the engine's own two curves. They carry a `make` like any other line, because
+  // the gap split in `paint` only runs for an entry that has one: both are dense
+  // by construction today, so this is a guard rather than a fix, and the reason to
+  // write it is that the next curve added here will not be (ADRs 0073, 0075)
+  const addCurve = function (name, label, track, options) {
+    const index = panelIndex(name);
+    const panel = spec.panels[index];
+    if (!panel) return;
+    const make = function () {
+      return chart.addSeries(LWC.AreaSeries, Object.assign({
+        priceLineVisible: false, lastValueVisible: false,
+        priceFormat: priceFormat(panel.digits),
+      }, options, pinned(panel)), index);
+    };
     SERIES.push({
       spec: {
-        kind: "line", panel: "equity", name: "equity", color: t.s1,
-        i0: spec.equity.i0, v: spec.equity.v, digits: spec.panels[index].digits,
+        kind: "line", panel: name, name: label, color: options.lineColor,
+        i0: track.i0, v: track.v, digits: panel.digits,
       },
-      series: chart.addSeries(LWC.AreaSeries, Object.assign({
-        lineColor: t.s1, topColor: t.s1 + "44", bottomColor: t.s1 + "00", lineWidth: 2,
-        priceLineVisible: false, lastValueVisible: false,
-        priceFormat: priceFormat(spec.panels[index].digits),
-      }, pinned(spec.panels[index])), index),
+      series: make(),
+      make: make,
+      siblings: [],
+    });
+  };
+
+  if (spec.equity) {
+    addCurve("equity", "equity", spec.equity, {
+      lineColor: t.s1, topColor: t.s1 + "44", bottomColor: t.s1 + "00", lineWidth: 2,
     });
   }
   if (spec.drawdown) {
-    const index = panelIndex("drawdown");
-    SERIES.push({
-      spec: {
-        kind: "line", panel: "drawdown", name: "drawdown %", color: t.loss,
-        i0: spec.drawdown.i0, v: spec.drawdown.v, digits: spec.panels[index].digits,
-      },
-      series: chart.addSeries(LWC.AreaSeries, Object.assign({
-        lineColor: t.loss, topColor: t.loss + "00", bottomColor: t.loss + "44", lineWidth: 1,
-        priceLineVisible: false, lastValueVisible: false, invertFilledArea: true,
-        priceFormat: priceFormat(spec.panels[index].digits),
-      }, pinned(spec.panels[index])), index),
+    addCurve("drawdown", "drawdown %", spec.drawdown, {
+      lineColor: t.loss, topColor: t.loss + "00", bottomColor: t.loss + "44",
+      lineWidth: 1, invertFilledArea: true,
     });
   }
 
