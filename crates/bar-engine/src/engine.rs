@@ -978,10 +978,18 @@ impl Engine {
                             order.filled = Qty(order.filled.get() + applied);
                         }
                     }
+                    // retired at the dust epsilon, not at zero, because that is
+                    // where `clamp_fill` stops booking: an order whose remaining
+                    // lands in between can never fill again and never expires, so
+                    // it holds a book slot for the rest of the run. Ten fills of
+                    // 0.1 against a size of 1.0 leave 1.1e-16, which is all it
+                    // takes. Enough of those and the book is full of orders that
+                    // will never trade, and every later placement is refused in
+                    // silence, which is the harm ADR 0027 names (ADR 0079)
                     let done = self
                         .book
                         .get(id)
-                        .is_some_and(|o| o.remaining().get() <= 0.0);
+                        .is_some_and(|o| o.remaining().get() <= CLOSE_EPS);
                     if done {
                         self.book.cancel(id);
                     }
@@ -2836,6 +2844,36 @@ mod tests {
                 .map(|_| ohlc(100.0, 100.0, 100.0, 100.0, 1e6))
                 .collect::<Vec<_>>(),
         )
+    }
+
+    #[test]
+    fn an_order_filled_down_to_float_dust_gives_its_slot_back() {
+        // the fill gate refuses a size at or below the dust epsilon and the retire
+        // gate asked for zero, so an order left holding the difference could never
+        // trade again and never expired. Ten fills of 0.1 against a size of 1.0
+        // leave 1.1e-16 behind, which is enough to hold a slot for the whole run;
+        // a strategy resting orders on a long series eventually finds every
+        // placement silently refused (ADR 0079)
+        let bars: Vec<Candle> = (0..14)
+            .map(|_| ohlc(100.0, 100.0, 100.0, 100.0, 0.1))
+            .collect();
+        let mut e = Engine::new(Candles::new(bars), cfg());
+        e.reset();
+        e.limit_buy(1.0, 100.0);
+        for _ in 0..12 {
+            e.step();
+        }
+        let state = e.current_state();
+        assert!(
+            (state.position - 1.0).abs() < 1e-9,
+            "the order should have filled out: {}",
+            state.position
+        );
+        assert!(
+            state.open_orders.is_empty(),
+            "a filled order kept its slot with {:?} left",
+            state.open_orders.first().map(|o| o.remaining().get())
+        );
     }
 
     #[test]
