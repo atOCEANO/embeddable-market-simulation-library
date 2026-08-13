@@ -56,6 +56,19 @@ Because the wheel is `abi3-py39`, the same artifact is what ships, so the gate t
 
 <br>
 
+### The two stages outside the gate
+
+Both are opt-in, because each pulls an image far heavier than the correctness gate, and each covers something the gate structurally cannot:
+
+```bash
+docker build --target test-browser .    # the chart's javascript, in chromium
+docker build --target test-sb3 .        # the Stable-Baselines3 adapter, with torch
+```
+
+`test-browser` is the other half of the chart layer. Everything in `tests/test_chart.py` reads `Chart.spec()`, because the gate has no browser and a spec assertion is the sharper test of what Python decided ([ADR 0043](Decisions.md)). What that cannot reach is whether the shipped JavaScript parses, runs and draws, and roughly 1,250 lines of it had never been executed by anything in the project. The first run of it found that the vendored renderer joins a line straight across whitespace, so ADR 0038's central claim was false in the artifact while true in the document ([ADR 0073](Decisions.md)). `tests/test_render.py` skips wherever playwright is absent, so the correctness gate stays green without one.
+
+<br>
+
 ### Cross-cutting invariants
 
 The properties that would be easy to break silently are their own tests:
@@ -64,7 +77,8 @@ The properties that would be easy to break silently are their own tests:
 - **Batched equals looped.** `Batch.step_all` over N envs is bit-identical, by exact state equality, to stepping N single engines in a loop. The envs are independent with no cross-env reduction, so parallelism introduces no drift.
 - **View lifetime and read-only.** A zero-copy observation stays valid after the engine is dropped (its base keeps the buffer alive), and writing through it is rejected, so a view onto the shared candle buffer can never corrupt it.
 - **Trade reconciliation.** The logged trades' realized PnL sums to the account's cumulative realized PnL, and on a run that ends flat the net PnL of the log equals the change in equity ([ADR 0030](Decisions.md)). A forced close is an ordinary row carrying `liquidated: true`, because it is booked through the one path every other fill takes; it used to reach none of that and appear in no trade at all ([ADR 0052](Decisions.md)).
-- **A mutation has to fail the suite.** A pass that breaks one line of the Python tier at a time and reruns the tests found 13 of 27 mutations surviving, including one that held out the *start* of a series where [ADR 0049](Decisions.md) promises the end. A statistic whose defect no test can see is a statistic nobody should quote, so a new one arrives with a test that fails when its arithmetic is wrong rather than one that only checks its shape. Run the pass against `python/emsl` after adding a statistic, and pass `-p no:cacheprovider`, or a stale `.pytest_cache` will hide a mutation.
+- **Bad debt is unreachable, not caught.** A perp cannot end a bar owing money, on any path, because the liquidation is a price on the bar rather than a check at the end of it ([ADRs 0052, 0067](Decisions.md)). The guarantee is worth more than the check because it is what the exit price is derived from; when it was only a check, an ordinary `close()` on a bar that gapped past the liquidation stepped around it and booked the whole gap.
+- **A mutation has to fail the suite.** A pass that breaks one line at a time and reruns the tests found 13 of 27 mutations surviving the Python tier, including one that held out the *start* of a series where [ADR 0049](Decisions.md) promises the end. The same pass over the Rust crates, with `cargo-mutants`, is the other half; a statistic or a fill rule whose defect no test can see is one nobody should quote, so a new one arrives with a test that fails when its arithmetic is wrong rather than one that only checks its shape. Run the Python pass against `python/emsl` after adding a statistic, and pass `-p no:cacheprovider`, or a stale `.pytest_cache` will hide a mutation.
 
 <br>
 
