@@ -580,6 +580,30 @@ def test_period_returns_split_the_run_by_the_calendar():
     assert len(quarters) < len(months)
 
 
+def test_a_run_ending_a_bar_into_a_month_still_accounts_for_that_bar():
+    # periods under two bars were skipped, which read as tidying away a degenerate
+    # statistic and was a hole in the one thing the function promises. A year of
+    # hourly candles ending just into a month is the ordinary shape of real data,
+    # and those bars vanished: the table stopped adding up to the headline above
+    # it, quietly (ADRs 0062, 0081)
+    pd = pytest.importorskip("pandas")
+    hours = 24 * 59 + 1        # two whole months, then a single bar of the third
+    raw = series(n=hours)
+    data = pd.DataFrame(raw, columns=["open", "high", "low", "close", "volume"])
+    data.index = pd.date_range("2025-01-01", periods=hours, freq="1h", tz="UTC")
+    result = Backtester(data).run(Alternate())
+
+    months = metrics.period_returns(result, data, by="month")
+    assert [m["period"] for m in months] == ["2025-01", "2025-02", "2025-03"]
+    assert sum(m["bars"] for m in months) == hours
+    compounded = 1.0
+    for month in months:
+        compounded *= 1.0 + month["total_return_pct"] / 100.0
+    assert compounded == pytest.approx(
+        1.0 + result.stats["total_return_pct"] / 100.0, rel=1e-9
+    )
+
+
 def test_the_calendar_periods_compound_back_to_the_whole_run():
     # each period is computed on the equity the account actually carried into it,
     # so the periods multiply back to the run. A period seeded from a fresh

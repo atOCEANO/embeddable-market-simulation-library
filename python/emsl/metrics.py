@@ -467,7 +467,15 @@ def period_returns(result, frame, by="month"):
     edges = np.flatnonzero(np.concatenate(([True], keys[1:] != keys[:-1])))
     for position, first in enumerate(edges):
         last = int(edges[position + 1]) if position + 1 < edges.size else keys.size
-        if last - int(first) < 2:
+        # a short period is still a period. Dropping the ones under two bars
+        # looked like tidying away a degenerate statistic and was a hole in the
+        # only thing this function promises: the periods compound back to the
+        # whole run (ADR 0062). A year of hourly candles ending a bar or two into
+        # a month, which is the ordinary shape of real data rather than a corner,
+        # lost those bars entirely, and the monthly table then did not add up to
+        # the headline it sits under. A one-bar month reads oddly; a missing one
+        # reads as arithmetic (ADR 0081)
+        if last <= int(first):
             continue
         block = segment(result, int(first), last)
         block["period"] = str(keys[int(first)])
