@@ -92,7 +92,7 @@ Every image on this page is generated from a document these notebooks actually p
 Every argument here is named, and this guide keeps it that way throughout. `chart` also accepts them positionally and matches by type, which is convenient once you know it and invisible until you do:
 
 ```python
-emsl.chart(frame, [Line(s.fast, "SMA 20"), Line(s.slow, "SMA 50")], result).show()
+emsl.chart(frame, [Line(strategy.fast, "SMA 20"), Line(strategy.slow, "SMA 50")], result).show()
 ```
 
 Naming buys more than clarity. `run=` is checked, so an array passed to it by mistake is refused; positionally, the same mistake is silently drawn as a line.
@@ -289,6 +289,11 @@ emsl.chart(
 **A forward return is where this goes wrong.** It is shorter than the frame, so it raises, and the message offers a front pad. Taking that offer is the mistake: `forward[k]` is the return that *starts* at bar `k`, so padding the head puts it at bar `k + 4` and draws the **trailing** return under a label saying forward. Nothing raises and nothing on screen says so. Pad the tail instead.
 
 ```python
+# numpy.asarray first: on a pandas Series the division aligns on the INDEX
+# rather than by position, so it returns a full-length series of NaN in the
+# wrong places and the concatenate lands T + 4 values that the length check
+# cannot tell from a mistake
+close = numpy.asarray(frame.close, dtype=float)
 forward = numpy.concatenate([close[4:] / close[:-4] - 1.0, numpy.full(4, numpy.nan)])
 ```
 
@@ -620,8 +625,12 @@ Background(
 `Markers` is the same glyph on every bar a boolean says so, which is `plotshape`:
 
 ```python
-crossed = numpy.zeros(len(frame), dtype=bool)
-crossed[1:] = (fast[1:] > slow[1:]) & (fast[:-1] <= slow[:-1])
+# emsl.ta.crossover, not a hand-rolled comparison: it pads with False rather
+# than NaN, because bool(nan) is True and a float warm-up fires the rule on
+# precisely the bars where nothing is known (ADR 0063). Hand-rolling it also
+# aligns two pandas slices on their index rather than by position, which is a
+# different array of a different length
+crossed = emsl.ta.crossover(fast, slow)
 
 emsl.chart(frame=frame, marks=[Markers(mask=crossed, shape="arrow_up", offset=-16)]).show()
 ```
@@ -713,7 +722,10 @@ Passing a run gives you four by default: return, sharpe, max drawdown and trade 
 One run is rich and the others are curves, and that asymmetry is on purpose: two sets of trade arrows on one chart is unreadable. So pass the run you are studying, and the rest as equity lines.
 
 ```python
-stack = numpy.stack([run.equity_curve for run in neighbours])
+# neighbours is a dict of {label: BacktestResult}: a run carries what produced
+# it (ADR 0051) but not what you decided to call it, so the name comes from your
+# own bookkeeping rather than off the result
+stack = numpy.stack([run.equity_curve for run in neighbours.values()])
 
 emsl.chart(
     frame=frame,
@@ -728,12 +740,12 @@ emsl.chart(
     ] + [
         Line(
             values=run.equity_curve,
-            name=run.label,
+            name=label,
             panel="equity",
             color="#8b97a5",
             width=1,
         )
-        for run in neighbours
+        for label, run in neighbours.items()
     ],
     run=win,
     panels=[Panel(name="equity", weight=3.0, scale="log")],

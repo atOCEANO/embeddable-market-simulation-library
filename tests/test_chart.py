@@ -234,6 +234,18 @@ def test_a_frame_with_a_non_finite_price_is_refused():
 
 # --------------------------------------------------------- panels and placement
 
+def test_the_overlay_threshold_is_pinned_on_both_sides():
+    # ADR 0039 calls the half-panel threshold the guarantee rather than a tuning
+    # parameter, and the suite only ever exercised ratios of 1.0, 0.08 and 0.002,
+    # so every value from 0.09 to 1.0 would have passed. frame(8) spans 99 to 108,
+    # so a flat series at V merges to a span of V - 99 and the ratio is 9 / that
+    overlays = emsl.chart(frame(8), Line(np.full(8, 116.0), "just inside")).spec()
+    assert [p["name"] for p in overlays["panels"]] == ["price", "volume"]
+
+    apart = emsl.chart(frame(8), Line(np.full(8, 118.0), "just outside")).spec()
+    assert "just outside" in [p["name"] for p in apart["panels"]]
+
+
 def test_price_is_always_the_first_panel():
     spec = emsl.chart(frame(8), Line(np.arange(8, dtype=float), "f")).spec()
     assert spec["panels"][0]["name"] == "price"
