@@ -246,6 +246,33 @@ def test_the_overlay_threshold_is_pinned_on_both_sides():
     assert "just outside" in [p["name"] for p in apart["panels"]]
 
 
+def test_an_accepted_overlay_widens_the_price_extent_for_the_next_one():
+    # the placement rule is order dependent on purpose: an early overlay widens
+    # the price extent, so a later array is judged against the panel as it now
+    # stands and one that would have been pushed out can be let in. The comment
+    # on that line claimed a deliberate, documented behaviour that nothing
+    # demonstrated, and deleting the widening passed the whole suite
+    near, far = Line(np.full(8, 116.0)), Line(np.full(8, 124.0))
+
+    # near overlays and takes price to 99..116, after which far fits too
+    together = emsl.chart(frame(8), [near, far]).spec()
+    assert [p["name"] for p in together["panels"]] == ["price", "volume"]
+
+    # judged first, against 99..108, far does not fit and takes its own panel
+    apart = emsl.chart(frame(8), [Line(np.full(8, 124.0)), Line(np.full(8, 116.0))]).spec()
+    assert len(apart["panels"]) == 3
+
+
+def test_an_unnamed_band_is_placed_by_its_upper_edge():
+    # one edge has to decide it, and the choice is not arbitrary: the upper edge
+    # is what a band shares with the candles it might sit on. Swapping it for the
+    # lower edge passed every test in the file
+    band = Band(np.full(8, 116.0), np.full(8, 60.0), fill="#11223344")
+    spec = emsl.chart(frame(8), band).spec()
+    # by the upper edge this overlays; by the lower it would take its own panel
+    assert [p["name"] for p in spec["panels"]] == ["price", "volume"]
+
+
 def test_price_is_always_the_first_panel():
     spec = emsl.chart(frame(8), Line(np.arange(8, dtype=float), "f")).spec()
     assert spec["panels"][0]["name"] == "price"
