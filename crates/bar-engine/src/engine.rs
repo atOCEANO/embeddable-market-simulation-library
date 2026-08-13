@@ -249,6 +249,14 @@ impl Engine {
         if self.pending.len() >= self.config.max_open_orders {
             return None;
         }
+        // The same guard the resting book has carried since ADR 0027, extended to
+        // the queue on the day ADR 0047 made the queue a bounded resource too. A
+        // size that can never fill used to take a slot anyway, so two of them ahead
+        // of a real order refused it: `qty_from_weight` returns exactly zero on a
+        // flat mark, which is how a strategy places one without meaning to.
+        if !size.is_finite() || size <= 0.0 {
+            return None;
+        }
         let id = self.next_id();
         let mut order = Order::market(id, side, Qty(size), reduce_only);
         order.tif = tif;
@@ -410,24 +418,34 @@ impl Engine {
     ) -> Option<OrderId> {
         let old = self.book.cancel(id)?;
         let size = size.unwrap_or(old.remaining().get());
-        match old.kind {
-            OrderType::Limit => self.place_limit(
-                old.side,
-                size,
-                price.or(old.price.map(|p| p.get()))?,
-                old.reduce_only,
-                old.post_only,
-                old.tif,
-            ),
-            OrderType::Stop => self.place_stop(
-                old.side,
-                size,
-                trigger.or(old.trigger.map(|t| t.get()))?,
-                old.reduce_only,
-            ),
+        let placed = match old.kind {
+            OrderType::Limit => price.or(old.price.map(|p| p.get())).and_then(|price| {
+                self.place_limit(
+                    old.side,
+                    size,
+                    price,
+                    old.reduce_only,
+                    old.post_only,
+                    old.tif,
+                )
+            }),
+            OrderType::Stop => trigger
+                .or(old.trigger.map(|t| t.get()))
+                .and_then(|trigger| self.place_stop(old.side, size, trigger, old.reduce_only)),
             // a market order never rests, so it can never be found to replace
             OrderType::Market => None,
+        };
+        if placed.is_none() {
+            // The cancel came first, so a replacement the book refuses would
+            // otherwise leave nothing behind and still answer `None`, which this
+            // method defines as "nothing happened". A caller trailing a stop reads
+            // that as "it has already filled" and stops arming one, so a refused
+            // size or a non-finite trigger silently disarmed a live stop-loss. The
+            // slot the cancel just freed is the one being reclaimed, so putting the
+            // old order back cannot itself fail, and its id stays valid (ADR 0032).
+            let _ = self.book.place(old);
         }
+        placed
     }
 
     /// Cancel every resting order, returning how many were dropped. Pending market
@@ -460,10 +478,35 @@ impl Engine {
             self.tick += 1;
             let bar = self.candles.get(self.tick).expect("tick in range");
 
+            // 0. the price a position's margin runs out at is a point on this bar's
+            //    own path, and everything past it belongs to a market the account
+            //    had already been closed out of. So the fence is worked out before
+            //    any order is resolved. A bar that OPENED past it killed the account
+            //    before it opened, so it is closed first and nothing on the bar
+            //    fills; on any other bar the orders are resolved against a candle
+            //    clipped at the fence, so an exit that would have filled beyond it
+            //    simply never triggers. Checking only afterwards, as this used to,
+            //    left ADR 0052's guarantee resting on the position still being open
+            //    at the end of the bar: a `close()` on a bar that gapped past the
+            //    liquidation booked the whole gap and left the account owing money,
+            //    and a partial close left a "liquidation" priced outside the bar
+            //    that booked a profit (ADR 0067).
+            let long = self.account.position.qty.get() >= 0.0;
+            let fence = self.liquidation_fence(&bar);
+            let gapped = fence.is_some_and(|f| if long { bar.open <= f } else { bar.open >= f });
+            if gapped {
+                self.liquidate();
+                self.bust = true;
+            }
+            let resolving = match fence {
+                Some(f) if !gapped => Engine::fenced(&bar, f, long),
+                _ => bar,
+            };
+
             // 1. pending market orders fill at the open
             let pending = std::mem::take(&mut self.pending);
             for order in pending {
-                if let Some(fill) = self.fill_model.fill_market(&order, &bar) {
+                if let Some(fill) = self.fill_model.fill_market(&order, &resolving) {
                     // FOK is all or nothing against everything that can shrink the
                     // fill, not just the bar's liquidity: the margin cap and the
                     // spot clamps are applied to a copy first, so an order that
@@ -479,7 +522,7 @@ impl Engine {
             }
 
             // 2. resting limit and stop orders fill against the bar range
-            self.resolve_resting(&bar);
+            self.resolve_resting(&resolving);
 
             // 3. funding at each interval boundary, on the position held at the
             //    funding event (so after this bar's fills, not the position carried
@@ -614,9 +657,16 @@ impl Engine {
     fn clamp_fill(&self, reduce_only: bool, fill: &Fill) -> Fill {
         let mut fill = *fill;
         // size is a positive magnitude; a non-positive or non-finite fill is not a
-        // real trade, so it moves nothing and pays no fee
+        // real trade, so it moves nothing and pays no fee. Neither is a price at or
+        // below zero, and that one is the input both risk clamps have to give up
+        // on: each divides by the mark, so each returns without clamping anything,
+        // and the fill that follows buys an unbounded position for nothing or for a
+        // credit. MAX_SLIP exists so a slipped fill cannot reach zero (ADR 0024);
+        // this is the same rule applied to the bar's own price, which the candle
+        // validator lets through because it checks only for finiteness (ADR 0027)
         let size = fill.size.get();
-        if !size.is_finite() || size <= 0.0 || !fill.price.get().is_finite() {
+        let price = fill.price.get();
+        if !size.is_finite() || size <= 0.0 || !price.is_finite() || price <= 0.0 {
             fill.size = Qty(0.0);
             return fill;
         }
@@ -644,6 +694,48 @@ impl Engine {
             fill.size = Qty(0.0);
         }
         fill
+    }
+
+    /// The price this bar would take the position's margin to zero at, or `None`
+    /// when nothing on the bar can kill the account.
+    ///
+    /// The trigger is the bar's adverse extreme and the answer is the bankruptcy
+    /// price, which are two different numbers on purpose (ADR 0052). Read before
+    /// the bar's orders are resolved, because it is the point past which this
+    /// account was no longer in the market.
+    fn liquidation_fence(&self, bar: &Candle) -> Option<f64> {
+        let adverse = if self.account.position.qty.get() >= 0.0 {
+            bar.low
+        } else {
+            bar.high
+        };
+        if !self.account.is_bust_at(Price(adverse)) {
+            return None;
+        }
+        self.account
+            .bankruptcy_price(self.cost.fee_taker)
+            .map(|price| price.get())
+    }
+
+    /// The bar as far as this account got: a long sees nothing below `fence` and a
+    /// short nothing above it. Clamping is monotone, so the OHLC ordering survives
+    /// it, and a bar lying entirely past the fence collapses to the fence itself,
+    /// which is the honest picture of a market the account was not in.
+    fn fenced(bar: &Candle, fence: f64, long: bool) -> Candle {
+        let clip = |price: f64| {
+            if long {
+                price.max(fence)
+            } else {
+                price.min(fence)
+            }
+        };
+        Candle {
+            open: clip(bar.open),
+            high: clip(bar.high),
+            low: clip(bar.low),
+            close: clip(bar.close),
+            volume: bar.volume,
+        }
     }
 
     /// Force-close the whole position at the price that leaves nothing.
@@ -833,11 +925,27 @@ impl Engine {
         let position = self.account.position.qty.get();
         if fills.len() > 1 && position != 0.0 {
             let entry = self.account.position.avg_entry.get();
-            fills.sort_by(|a, b| {
-                adversity(position, entry, &a.1)
-                    .partial_cmp(&adversity(position, entry, &b.1))
+            // The exits are reordered among the slots the exits already hold, and
+            // everything else stays exactly where it was. Sorting the whole list
+            // instead moved every non-exit behind every exit, which is a different
+            // rule than the one written down and not a harmless one: it let an
+            // entry be funded by the proceeds of a sale that may just as well have
+            // come after it, so the account ended a wide bar richer than slot order
+            // (ADR 0006) would have left it, which is the optimism ADR 0056 exists
+            // to remove rather than relocate.
+            let slots: Vec<usize> = (0..fills.len())
+                .filter(|&i| adversity(position, entry, &fills[i].1).is_finite())
+                .collect();
+            let mut ordered: Vec<usize> = slots.clone();
+            ordered.sort_by(|&a, &b| {
+                adversity(position, entry, &fills[a].1)
+                    .partial_cmp(&adversity(position, entry, &fills[b].1))
                     .unwrap_or(std::cmp::Ordering::Equal)
             });
+            let exits: Vec<_> = ordered.iter().map(|&i| fills[i]).collect();
+            for (slot, exit) in slots.iter().zip(exits) {
+                fills[*slot] = exit;
+            }
         }
 
         for (id, fill, kind, reduce_only, tif, requested) in fills {
@@ -853,12 +961,18 @@ impl Engine {
             }
             let applied = self.apply_fill_clamped(reduce_only, fill);
             match kind {
-                // A triggered stop is a market order; it does not rest afterward.
-                OrderType::Stop => {
-                    self.book.cancel(id);
-                }
-                // A limit accumulates fills and rests until fully filled.
-                OrderType::Limit => {
+                // A stop is consumed by filling and by nothing else, which is what
+                // ADR 0035 says and what it used to say only for a bar with no
+                // volume at all. Triggering and being cancelled regardless meant a
+                // bar carrying a thousandth of a unit filled a token size and threw
+                // the rest of the protection away, while a bar carrying exactly
+                // nothing kept all of it: on one crash that discontinuity was the
+                // difference between exiting a 10-lot and riding 9.999 of it down.
+                // It also deleted a breakout stop outright whenever a cash or margin
+                // clamp took the fill to zero. So it accumulates and rests like a
+                // limit, and the remainder stays armed for the next bar that can
+                // actually trade it (ADR 0068).
+                OrderType::Stop | OrderType::Limit => {
                     if applied > 0.0 {
                         if let Some(order) = self.book.get_mut(id) {
                             order.filled = Qty(order.filled.get() + applied);
@@ -957,7 +1071,8 @@ impl Engine {
 mod tests {
     use super::{Engine, EngineConfig, CLOSE_EPS};
     use crate::candles::Candles;
-    use emsl_core::{Candle, Fill, Market, OrderType, Price, Qty, Side, TimeInForce};
+    use emsl_core::{Candle, Fill, Market, OrderType, Price, Qty, Side, State, TimeInForce};
+    use proptest::prelude::*;
 
     fn ohlc(open: f64, high: f64, low: f64, close: f64, volume: f64) -> Candle {
         Candle {
@@ -2452,5 +2567,465 @@ mod tests {
         assert_eq!(e.apply_fill_clamped(false, dust), 0.0);
         assert_eq!(e.num_fills(), 0);
         assert_eq!(e.state().position, 0.0);
+    }
+
+    // A first bar at 100, then a bar that opens at 50, far past where a 10x long
+    // opened at 100 runs out of margin.
+    fn gap_series() -> Candles {
+        Candles::new(vec![
+            ohlc(100.0, 101.0, 99.0, 100.0, 1_000.0),
+            ohlc(100.0, 101.0, 99.0, 100.0, 1_000.0),
+            ohlc(50.0, 50.0, 20.0, 30.0, 1_000.0),
+            ohlc(30.0, 31.0, 29.0, 30.0, 1_000.0),
+        ])
+    }
+
+    fn levered() -> EngineConfig {
+        EngineConfig {
+            max_leverage: 10.0,
+            report: true,
+            ..perp_cfg()
+        }
+    }
+
+    #[test]
+    fn closing_on_a_bar_that_gapped_past_the_liquidation_leaves_nothing_owed() {
+        // ADR 0052 says bad debt is structurally unreachable rather than clamped,
+        // and that rested on the position still being open when the check ran at
+        // the end of the bar. An exit order flattened it first, so nothing was left
+        // to liquidate and the account booked the whole gap: a 10x long on 100 of
+        // margin ended at -400. The run with the exit must land where the run
+        // without one does, because the account died before either could matter
+        for exit in [false, true] {
+            let mut e = Engine::new(gap_series(), levered());
+            e.reset();
+            e.market_buy(10.0);
+            e.step();
+            if exit {
+                e.close();
+            }
+            let state = e.step();
+            assert_eq!(state.equity, 0.0, "exit={exit} left {}", state.equity);
+            let trades = e.reporter().expect("reporting").trades();
+            assert_eq!(trades.len(), 1);
+            assert_eq!(trades[0].exit_price, 90.0);
+            assert!(trades[0].liquidated, "exit={exit} booked no liquidation");
+        }
+    }
+
+    #[test]
+    fn a_stop_below_the_bankruptcy_price_never_fills_and_one_above_it_does() {
+        // the fence is a price, not a moment: coming down from the open the market
+        // reaches 95 before 90, so a stop at 95 saves the account and one at 60 is
+        // beyond a point it had already been closed at
+        let bars = Candles::new(vec![
+            ohlc(100.0, 101.0, 99.0, 100.0, 1_000.0),
+            ohlc(100.0, 101.0, 99.0, 100.0, 1_000.0),
+            ohlc(100.0, 101.0, 50.0, 60.0, 1_000.0),
+            ohlc(60.0, 61.0, 59.0, 60.0, 1_000.0),
+        ]);
+        for (trigger, want_equity, want_exit) in [(95.0, 50.0, 95.0), (60.0, 0.0, 90.0)] {
+            let mut e = Engine::new(bars.clone(), levered());
+            e.reset();
+            e.market_buy(10.0);
+            e.step();
+            e.stop(Side::Sell, 10.0, trigger, true);
+            let state = e.step();
+            assert_eq!(state.equity, want_equity, "stop at {trigger}");
+            let trades = e.reporter().expect("reporting").trades();
+            assert_eq!(trades[0].exit_price, want_exit, "stop at {trigger}");
+        }
+    }
+
+    #[test]
+    fn a_liquidation_never_books_a_price_outside_the_bar_that_triggered_it() {
+        // a partial close on the gap bar drove quote negative, and the bankruptcy
+        // solve is derived assuming quote is positive, so it landed on the far side
+        // of the entry: the forced close booked a PROFIT at 120 on a bar whose high
+        // was 72, and the log showed a liquidated winner
+        let bars = Candles::new(vec![
+            ohlc(100.0, 101.0, 99.0, 100.0, 1e6),
+            ohlc(100.0, 101.0, 99.0, 100.0, 1e6),
+            ohlc(70.0, 72.0, 60.0, 65.0, 1e6),
+            ohlc(65.0, 66.0, 64.0, 65.0, 1e6),
+        ]);
+        let mut e = Engine::new(bars, levered());
+        e.reset();
+        e.market_buy(10.0);
+        e.step();
+        e.market_sell(6.0);
+        let state = e.step();
+        assert_eq!(state.equity, 0.0);
+        for trade in e.reporter().expect("reporting").trades() {
+            assert!(trade.pnl <= 0.0, "a liquidation booked {}", trade.pnl);
+            assert!(trade.exit_price <= 101.0, "exited at {}", trade.exit_price);
+        }
+    }
+
+    #[test]
+    fn a_fill_priced_at_or_below_zero_is_refused_rather_than_booked() {
+        // both risk clamps divide by the mark, so each returns without clamping when
+        // it is zero or negative, and the fill behind them bought an unbounded
+        // position for nothing. The candle validator lets those prices through
+        // because it checks only finiteness (ADRs 0024, 0027)
+        for price in [0.0, -100.0] {
+            let bars = Candles::new(vec![
+                ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
+                ohlc(price, price, price, price, 1e6),
+                ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
+            ]);
+            let mut e = Engine::new(bars, cfg());
+            e.reset();
+            e.market_buy(1_000.0);
+            e.step();
+            let state = e.step();
+            assert_eq!(state.position, 0.0, "price {price} opened a position");
+            assert_eq!(state.equity, 10_000.0, "price {price} minted equity");
+        }
+    }
+
+    #[test]
+    fn a_refused_replacement_leaves_the_original_order_resting() {
+        // replace cancels before it places, so a replacement the book refuses left
+        // nothing behind and still answered None, which this method defines as
+        // "nothing happened". A trail reads that as "it already filled" and stops
+        // arming one, so the protective stop was silently gone (ADR 0032)
+        let mut e = Engine::new(series(), perp_cfg());
+        e.reset();
+        e.market_buy(1.0);
+        e.step();
+        let id = e.stop(Side::Sell, 1.0, 90.0, true).expect("stop rests");
+        for refused in [
+            e.replace(id, None, None, Some(f64::NAN)),
+            e.replace(id, Some(0.0), None, None),
+        ] {
+            assert!(refused.is_none());
+        }
+        let resting = e.current_state().open_orders;
+        assert_eq!(resting.len(), 1);
+        assert_eq!(resting[0].id, id);
+        assert_eq!(
+            resting[0].trigger.expect("a stop keeps its trigger").get(),
+            90.0
+        );
+    }
+
+    #[test]
+    fn a_stop_is_consumed_by_filling_and_by_nothing_else() {
+        // ADR 0035 binds triggering to filling, and that held only for a bar with no
+        // volume at all. A cash clamp that took the fill to zero deleted the stop
+        // just as thoroughly, and it is the same protection either way
+        let bars = Candles::new(vec![
+            ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
+            ohlc(100.0, 150.0, 100.0, 150.0, 1e6),
+            ohlc(150.0, 150.0, 150.0, 150.0, 1e6),
+        ]);
+        let mut e = Engine::new(
+            bars,
+            EngineConfig {
+                quote: 100.0,
+                ..cfg()
+            },
+        );
+        e.reset();
+        e.market_buy(1.0);
+        e.stop(Side::Buy, 1.0, 110.0, false);
+        let state = e.step();
+        assert_eq!(e.num_fills(), 1, "the market order took all the cash");
+        assert_eq!(state.open_orders.len(), 1, "the breakout stop was deleted");
+    }
+
+    #[test]
+    fn a_partly_filled_stop_keeps_the_rest_of_its_protection() {
+        // consuming a stop on any fill at all made a bar carrying a thousandth of a
+        // unit far more dangerous than a bar carrying none: the token fill threw the
+        // remaining protection away, while zero volume kept all of it
+        for volume in [0.0, 0.001, 1.0] {
+            let bars = Candles::new(vec![
+                ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
+                ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
+                ohlc(100.0, 101.0, 80.0, 85.0, volume),
+                ohlc(85.0, 86.0, 60.0, 60.0, 1e6),
+                ohlc(60.0, 60.0, 60.0, 60.0, 1e6),
+            ]);
+            let mut e = Engine::new(
+                bars,
+                EngineConfig {
+                    quote: 100_000.0,
+                    ..perp_cfg()
+                },
+            );
+            e.reset();
+            e.market_buy(10.0);
+            e.step();
+            e.stop(Side::Sell, 10.0, 95.0, true);
+            e.step();
+            e.step();
+            let state = e.step();
+            assert!(
+                state.position.abs() <= CLOSE_EPS,
+                "volume {volume} left {} riding the crash",
+                state.position
+            );
+        }
+    }
+
+    #[test]
+    fn a_market_size_that_cannot_fill_is_refused_a_queue_slot() {
+        // the queue became a bounded resource with ADR 0047 and did not inherit
+        // ADR 0027's guard, so two sizes that can never fill refused a real order.
+        // qty_from_weight returns exactly zero on a flat mark, which is how a
+        // strategy places one without meaning to
+        let mut e = Engine::new(
+            series(),
+            EngineConfig {
+                max_open_orders: 2,
+                ..cfg()
+            },
+        );
+        e.reset();
+        assert!(e.market_buy(f64::NAN).is_none());
+        assert!(e.market_buy(-1.0).is_none());
+        assert!(e.market_buy(0.0).is_none());
+        assert!(e.market_buy(1.0).is_some());
+        assert_eq!(e.step().position, 1.0);
+    }
+
+    #[test]
+    fn the_worst_first_sort_leaves_everything_that_is_not_an_exit_where_it_was() {
+        // ADR 0056 says the sort applies only to fills that reduce the position, and
+        // ranking a non-exit at infinity moved every one of them behind every exit.
+        // That let an entry be funded by the proceeds of a sale that may well have
+        // come after it, so the account ended the bar richer than slot order leaves it
+        let bars = Candles::new(vec![
+            ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
+            ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
+            ohlc(100.0, 120.0, 80.0, 100.0, 1e6),
+            ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
+        ]);
+        let mut e = Engine::new(
+            bars,
+            EngineConfig {
+                quote: 150.0,
+                ..cfg()
+            },
+        );
+        e.reset();
+        e.market_buy(1.0);
+        e.step();
+        e.limit_buy(1.0, 90.0); // slot 0, an increase
+        e.limit_sell(1.0, 110.0); // slot 1, an exit
+        let state = e.step();
+        // slot order: the buy is clamped to the 50 of cash on hand, then the sell
+        assert!(
+            (state.position - 50.0 / 90.0).abs() < 1e-9,
+            "{}",
+            state.position
+        );
+        assert!(
+            (state.equity - 165.5555555555).abs() < 1e-6,
+            "{}",
+            state.equity
+        );
+    }
+
+    /// A random walk built into consistent OHLC bars, violent enough to liquidate a
+    /// 10x perp in a single step, because that is the path the guarantees have to
+    /// survive rather than the one they are comfortable on.
+    fn walk(len: usize) -> impl Strategy<Value = Vec<Candle>> {
+        prop::collection::vec(
+            (-0.3f64..0.3, 0.0f64..0.25, 0.0f64..0.25, 0.0f64..2_000.0),
+            len,
+        )
+        .prop_map(|steps| {
+            let mut price = 100.0;
+            steps
+                .into_iter()
+                .map(|(ret, up, down, volume)| {
+                    let open = price;
+                    let close = (open * (1.0 + ret)).max(0.01);
+                    let bar = ohlc(
+                        open,
+                        open.max(close) * (1.0 + up),
+                        (open.min(close) * (1.0 - down)).max(0.001),
+                        close,
+                        volume,
+                    );
+                    price = close;
+                    bar
+                })
+                .collect()
+        })
+    }
+
+    fn walk_and_actions(
+        bars: usize,
+        acts: usize,
+    ) -> impl Strategy<Value = (Vec<Candle>, Vec<f64>)> {
+        (walk(bars), prop::collection::vec(-3.0f64..3.0, acts))
+    }
+
+    /// A perp with every cost switched on and reporting, so nothing is left out of
+    /// the paths these properties have to hold across.
+    ///
+    /// `impact` is a realistic coefficient rather than an extreme one, and that is a
+    /// known limit rather than a tidy choice. Market impact is `impact` times the
+    /// fraction of the bar's volume taken (ADR 0013) and the total slip is bounded
+    /// only by ADR 0024's "just under 1", so at `impact = 0.5` against a bar the
+    /// order takes all of, a buy fills 50% above a price the bar never traded near.
+    /// A fill outside the bar's own range is not a fidelity limit, and it defeats
+    /// the bad-debt guarantee because the loss it books is bounded by nothing the
+    /// bar shows: the property below fails at that coefficient. Bounding a fill to
+    /// the bar is a decision about the cost model rather than a repair to this one,
+    /// so it is written up rather than smuggled in here.
+    fn every_cost() -> EngineConfig {
+        EngineConfig {
+            market: Market::Perp,
+            quote: 10_000.0,
+            fee_taker: 0.0006,
+            fee_maker: 0.0002,
+            slippage_bps: 5.0,
+            max_fill_fraction: 1.0,
+            max_open_orders: 8,
+            report: true,
+            max_leverage: 10.0,
+            impact: 0.01,
+            funding_rate: 0.0001,
+            funding_interval: 3,
+        }
+    }
+
+    // one signed action per bar: positive buys, negative sells, and the magnitude is
+    // the fraction of equity to put on
+    fn drive(engine: &mut Engine, actions: &[f64]) -> Vec<State> {
+        let mut seen = Vec::with_capacity(actions.len());
+        for action in actions {
+            let size = engine.qty_from_weight(action.abs());
+            if *action > 0.0 {
+                engine.market_buy(size);
+            } else if *action < 0.0 {
+                engine.market_sell(size);
+            }
+            seen.push(engine.step());
+            if engine.done() {
+                break;
+            }
+        }
+        seen
+    }
+
+    proptest! {
+        #[test]
+        fn a_perp_never_ends_a_bar_owing_money((bars, actions) in walk_and_actions(50, 40)) {
+            // ADRs 0052 and 0067: bad debt is unreachable rather than caught, so no
+            // path through a violent series at full leverage may take equity below
+            // zero on any bar. The point tests pin the three shapes that broke it;
+            // this is the one that says there is no fourth shape
+            let mut e = Engine::new(Candles::new(bars), every_cost());
+            e.reset();
+            for state in drive(&mut e, &actions) {
+                prop_assert!(
+                    state.equity >= -1e-6,
+                    "equity {} at tick {}",
+                    state.equity,
+                    state.tick_index
+                );
+            }
+        }
+
+        #[test]
+        fn a_state_reconciles_its_own_cash_and_position(
+            (bars, actions) in walk_and_actions(40, 30),
+        ) {
+            // the fields the caller reads have to agree with each other: on a perp
+            // equity is cash plus the open position's unrealized PnL, and on spot it
+            // is cash plus the base holding marked at the close
+            for market in [Market::Spot, Market::Perp] {
+                let config = EngineConfig { market, ..every_cost() };
+                let mut e = Engine::new(Candles::new(bars.clone()), config);
+                e.reset();
+                for state in drive(&mut e, &actions) {
+                    let expected = if market == Market::Spot {
+                        state.quote + state.position * state.mark_price
+                    } else {
+                        state.quote + state.unrealized_pnl
+                    };
+                    prop_assert!(
+                        (state.equity - expected).abs() <= 1e-6 * state.equity.abs().max(1.0),
+                        "{:?} equity {} against {}",
+                        market,
+                        state.equity,
+                        expected
+                    );
+                }
+            }
+        }
+
+        #[test]
+        fn no_state_depends_on_a_bar_after_it(
+            (bars, actions) in walk_and_actions(50, 40),
+            cut in 5usize..35,
+        ) {
+            // ADR 0065 promises an order decided on bar i fills against bar i + 1 and
+            // never a later one, so rewriting every bar past the cut has to leave
+            // every state up to it identical. Lookahead has exactly this shape
+            let mut altered = bars.clone();
+            for bar in altered.iter_mut().skip(cut + 1) {
+                *bar = ohlc(7.0, 900.0, 0.5, 3.0, 5.0);
+            }
+            let mut first = Engine::new(Candles::new(bars), every_cost());
+            first.reset();
+            let mut second = Engine::new(Candles::new(altered), every_cost());
+            second.reset();
+            let left = drive(&mut first, &actions);
+            let right = drive(&mut second, &actions);
+            for i in 0..cut.min(left.len()).min(right.len()) {
+                prop_assert_eq!(&left[i], &right[i], "diverged at index {}", i);
+            }
+        }
+
+        #[test]
+        fn every_statistic_stays_finite_or_deliberately_infinite(
+            (bars, actions) in walk_and_actions(50, 40),
+            ppy in prop_oneof![
+                Just(0.0), Just(-1.0), Just(f64::NAN), Just(365.0), Just(525_600.0)
+            ],
+        ) {
+            // ADRs 0007, 0029, 0046 and 0072: nothing is ever NaN, and the only
+            // infinity is the deliberate one a reward earned against no measured risk
+            // goes to. A high annualization is ordinary input, since ADR 0048 reads
+            // it off the candles and minute bars are a normal feed
+            let mut e = Engine::new(Candles::new(bars), every_cost());
+            e.reset();
+            drive(&mut e, &actions);
+            let s = e.stats(ppy, 0.02).expect("reporting is on");
+            for (name, value) in [
+                ("total_return_pct", s.total_return_pct),
+                ("cagr_pct", s.cagr_pct),
+                ("max_drawdown_pct", s.max_drawdown_pct),
+                ("volatility_pct", s.volatility_pct),
+                ("exposure_pct", s.exposure_pct),
+                ("win_rate", s.win_rate),
+                ("avg_trade_pct", s.avg_trade_pct),
+                ("funding_paid", s.funding_paid),
+            ] {
+                prop_assert!(value.is_finite(), "{} was {}", name, value);
+            }
+            for (name, value) in [
+                ("sharpe", s.sharpe),
+                ("sortino", s.sortino),
+                ("calmar", s.calmar),
+                ("profit_factor", s.profit_factor),
+            ] {
+                prop_assert!(!value.is_nan(), "{} was NaN", name);
+                prop_assert!(
+                    value.is_finite() || value == f64::INFINITY,
+                    "{} was {}",
+                    name,
+                    value
+                );
+            }
+            prop_assert!(s.max_drawdown_pct <= 100.0 + 1e-9);
+        }
     }
 }
