@@ -14,6 +14,7 @@ was drawn at all.
 """
 
 import pathlib
+import re
 
 import numpy as np
 import pytest
@@ -178,6 +179,147 @@ def test_clicking_a_trade_row_selects_it_and_says_which(tmp_path):
     # of the two-way selection: the numbering is the table's own, from one
     assert seen["hint"].startswith("trade " + seen["rows"][0][0])
     assert str(result.trades[0]["bars_held"]) + " bars" in seen["hint"]
+
+
+def test_clicking_the_chart_at_a_trade_reveals_its_row(tmp_path):
+    # the other half of the two-way link, and the untested one. You do not click
+    # the arrow: it is painted on canvas and the handler fires for a click anywhere
+    # in that bar's column, so the x comes from the axis rather than from the glyph
+    candles = frame(24)
+    result = run(candles)
+    assert len(result.trades) > 0
+    entry = result.trades[0]["entry_tick"]
+    bars = len(candles)
+
+    path = emsl.chart(candles, result).save(str(tmp_path / "click.html"))
+    with playwright.sync_playwright() as driver:
+        browser = driver.chromium.launch(args=["--no-sandbox"])
+        page = browser.new_page(viewport={"width": 1280, "height": 900})
+        page.goto(pathlib.Path(path).as_uri())
+        page.wait_for_selector("#chart canvas", timeout=20_000)
+        page.wait_for_timeout(500)
+        # the widest canvas is the pane's plot area; the price axis has its own
+        box = page.evaluate(
+            """
+            () => {
+              let best = null;
+              document.querySelectorAll('#chart canvas').forEach(c => {
+                const r = c.getBoundingClientRect();
+                if (!best || r.width > best.width) best = {
+                  left: r.left, top: r.top, width: r.width, height: r.height };
+              });
+              return best;
+            }
+            """
+        )
+        x = box["left"] + (entry + 0.5) * box["width"] / bars
+        y = box["top"] + box["height"] / 2
+        page.mouse.move(x, y)
+        page.mouse.click(x, y)
+        page.wait_for_timeout(300)
+        seen = {
+            "open": page.evaluate("!document.getElementById('tablePanel').hidden"),
+            "selected": page.locator("tr.sel").get_attribute("data-n"),
+            "hint": page.locator("#hint").text_content(),
+        }
+        browser.close()
+
+    # the table opening without anyone touching #tbl is the signature of this path
+    assert seen["open"]
+    assert seen["selected"] == "1"
+    assert seen["hint"].startswith("trade 1")
+
+
+def test_a_legend_too_wide_for_its_panel_counts_what_it_dropped(tmp_path):
+    # the legend is painted on canvas, so there is no text to read: the drawing
+    # calls are recorded instead. A series it cannot fit has to be counted, because
+    # a legend that quietly drops one lies about what is plotted
+    candles = frame()
+    close = candles["close"].to_numpy()
+    marks = [
+        Line(close - 100.0 + i, f"a rather long series name number {i}", panel="crowded")
+        for i in range(8)
+    ]
+    built = emsl.chart(candles, marks, panels=[Panel("crowded", weight=0.35)])
+    path = built.save(str(tmp_path / "legend.html"))
+    with playwright.sync_playwright() as driver:
+        browser = driver.chromium.launch(args=["--no-sandbox"])
+        page = browser.new_page(viewport={"width": 620, "height": 700})
+        page.add_init_script(
+            """
+            window.__text = [];
+            const real = CanvasRenderingContext2D.prototype.fillText;
+            CanvasRenderingContext2D.prototype.fillText = function (s, x, y) {
+              window.__text.push(String(s));
+              return real.apply(this, arguments);
+            };
+            """
+        )
+        page.goto(pathlib.Path(path).as_uri())
+        page.wait_for_selector("#chart canvas", timeout=20_000)
+        page.wait_for_timeout(500)
+        page.evaluate("window.__text = []")
+        page.mouse.move(300, 500)
+        page.mouse.move(310, 505)
+        page.wait_for_timeout(400)
+        drawn = page.evaluate("window.__text")
+        browser.close()
+
+    counters = [s for s in drawn if re.fullmatch(r"\+\d+", s)]
+    assert counters, f"nothing was counted as dropped; drew {drawn[:20]}"
+    named = sum(1 for s in drawn if "long series name" in s)
+    assert named + int(counters[0][1:]) >= 8
+
+
+def test_the_log_button_toggles_its_panel_and_says_so(tmp_path):
+    # the controls are invisible until the pointer is inside their pane's band, so
+    # a plain click fails the actionability check: the hover is part of the feature
+    candles = frame()
+    built = emsl.chart(candles, run(candles))
+    path = built.save(str(tmp_path / "log.html"))
+    with playwright.sync_playwright() as driver:
+        browser = driver.chromium.launch(args=["--no-sandbox"])
+        page = browser.new_page(viewport={"width": 1280, "height": 900})
+        page.goto(pathlib.Path(path).as_uri())
+        page.wait_for_selector("#paneCtls .panectl", timeout=20_000)
+        page.wait_for_timeout(400)
+        group = page.locator("#paneCtls .panectl").first
+        log = group.locator('[data-act="log"]')
+
+        def aim():
+            # re-read every time: the handler calls placePaneCtls, which can move
+            # the group, and hovering is what makes it reachable at all
+            spot = log.bounding_box()
+            x, y = spot["x"] + spot["width"] / 2, spot["y"] + spot["height"] / 2
+            page.mouse.move(x, y)
+            page.wait_for_timeout(250)
+            return x, y
+
+        x, y = aim()
+        # the hover is part of the feature, so it is asserted rather than worked
+        # around: the group is invisible and untouchable until the pointer is
+        # inside its pane's band
+        assert group.get_attribute("data-active") == "true"
+        assert page.evaluate(
+            "([x, y]) => (document.elementFromPoint(x, y) || {}).tagName", [x, y]
+        ) == "BUTTON"
+
+        # real coordinates rather than locator.click, whose actionability check
+        # races the very class that makes the button reachable
+        before = log.get_attribute("aria-pressed")
+        page.mouse.click(x, y)
+        page.wait_for_timeout(250)
+        after = log.get_attribute("aria-pressed")
+        percent = group.locator('[data-act="pct"]').get_attribute("aria-pressed")
+        x, y = aim()
+        page.mouse.click(x, y)
+        page.wait_for_timeout(250)
+        again = log.get_attribute("aria-pressed")
+        browser.close()
+
+    assert before == "false" and after == "true" and again == "false"
+    # log and percent are two modes of one scale, never both
+    assert percent == "false"
 
 
 def test_the_theme_toggle_rewrites_the_palette_in_a_saved_file(tmp_path):

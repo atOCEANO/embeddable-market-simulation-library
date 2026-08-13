@@ -75,7 +75,13 @@ body {
    fades out upward so the price labels above it keep no hard edge. Hidden
    until the pane is hovered, and not clickable while hidden. */
 .panectl {
-  position: absolute; z-index: 4;
+  /* above the renderer's own pane separator, which is a draggable strip at
+     z-index 50 sitting exactly where these buttons sit, at the bottom of a
+     band. Below it, every A / L / % button on a chart with more than two panes
+     was covered and did nothing when clicked: the flagship call, a frame plus a
+     run, has four. The separator is still draggable everywhere except the 96px
+     these occupy at the right edge (ADR 0077) */
+  position: absolute; z-index: 60;
   display: flex; align-items: flex-end; justify-content: center; gap: 1px;
   padding-bottom: calc(4px * var(--ui));
   background: linear-gradient(to top,

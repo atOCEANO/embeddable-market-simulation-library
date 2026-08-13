@@ -548,6 +548,8 @@ emsl.chart(
 ).show()
 ```
 
+One thing to know before reading a percent axis, because it is the one scale whose meaning depends on where you are looking. Percent is per series, not per panel: the renderer baselines each one at its own first **visible** point. So two series that start on different bars are measured from different anchors while the viewport sits left of the later one, and both the baseline and the numbers move as you pan. On a panel carrying one series that is exactly what you want. On a panel carrying a curve and a benchmark that begins two hundred bars in, the two percentages are not comparable until you scroll past the later start. The `%` button puts any panel into that mode, so it is reachable without ever passing `scale="percent"`.
+
 **The drawdown panel is not the equity panel as a percentage**, which is the usual reason people reach to turn it off. Percent rescales the axis and leaves the curve identical, so it tells you nothing new. Drawdown measures the fall from the running peak, so it pins to zero on every new high and only moves when you are below one. On a run that ends up 23%, the two answer different questions at the same bar:
 
 | | at the worst bar |

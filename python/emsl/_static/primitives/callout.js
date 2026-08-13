@@ -65,7 +65,13 @@ const calloutPrimitive = function (anchor, spec) {
                   const y = anchor.priceToCoordinate(price);
                   if (y === null) continue;
 
-                  const cy = y - spec.offset * UI;
+                  // not scaled by UI. Everything else here is, because a glyph and
+                  // its type should grow with the chart, but the offset is the one
+                  // number the caller wrote down: it is documented in pixels, and
+                  // multiplying it put a stated 16 anywhere from 13 to 21 depending
+                  // on the size of the cell, so the same call framed differently in
+                  // a notebook and in a saved file (ADR 0077)
+                  const cy = y - spec.offset;
 
                   // the leader line only earns its place when the glyph has been
                   // pushed far enough away to look detached from its bar

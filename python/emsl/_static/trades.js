@@ -106,11 +106,18 @@ const mountTrades = function () {
     }
   });
 
+  // A bar can belong to two trades, because one can exit on the bar the next
+  // enters, and that is the normal shape of a rule that is always in the market.
+  // Setting each bar to one trade meant the later one overwrote the earlier and
+  // clicking that bar could never reach the trade that ENDED there. Keeping the
+  // first claim is the useful half: an exit is the bar you are looking at when
+  // you ask what just happened (ADR 0077).
   tradeByTime = new Map();
-  SPEC.trades.forEach(function (tr) {
-    tradeByTime.set(SPEC.t[tr.in], tr);
-    tradeByTime.set(SPEC.t[tr.out], tr);
-  });
+  const claim = function (time, tr) {
+    if (!tradeByTime.has(time)) tradeByTime.set(time, tr);
+  };
+  SPEC.trades.forEach(function (tr) { claim(SPEC.t[tr.out], tr); });
+  SPEC.trades.forEach(function (tr) { claim(SPEC.t[tr.in], tr); });
 
   document.getElementById("tbody").innerHTML = SPEC.trades.map(function (tr) {
     return '<tr data-n="' + tr.i + '"><td>' + tr.i + '</td><td>' + tr.side +
