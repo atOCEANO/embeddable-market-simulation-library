@@ -2829,6 +2829,170 @@ mod tests {
         );
     }
 
+    // eight flat bars, so nothing moves but the position
+    fn flat_series() -> Candles {
+        Candles::new(
+            (0..8)
+                .map(|_| ohlc(100.0, 100.0, 100.0, 100.0, 1e6))
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    #[test]
+    fn a_holding_time_is_measured_from_when_the_side_was_opened() {
+        // bars_held rests on one predicate deciding whether a fill opened a new
+        // side, and every branch of it was reachable only through a whole run, so
+        // six single-line mutations of it survived. Adding to a position must not
+        // restart the clock, a partial close must not either, and a flip must
+        let mut e = Engine::new(
+            flat_series(),
+            EngineConfig {
+                report: true,
+                ..perp_cfg()
+            },
+        );
+        e.reset();
+        e.market_buy(1.0);
+        e.step(); // tick 1: long 1 opens here
+        e.market_buy(1.0);
+        e.step(); // tick 2: long 2, still opened at 1
+        e.market_sell(1.0);
+        e.step(); // tick 3: closes 1 of it, held 3 - 1
+        e.market_sell(3.0);
+        e.step(); // tick 4: closes the last 1, held 4 - 1, and opens short 2 here
+        e.market_buy(2.0);
+        e.step(); // tick 5: closes the short, held 5 - 4
+
+        let held: Vec<usize> = e
+            .reporter()
+            .expect("reporting")
+            .trades()
+            .iter()
+            .map(|t| t.bars_held)
+            .collect();
+        assert_eq!(held, vec![2, 3, 1]);
+    }
+
+    #[test]
+    fn a_partial_close_takes_its_share_of_the_entry_fee_and_no_more() {
+        // ADR 0030's whole point: a trade carries its round trip, so the entry fee
+        // is split across the closes by size and consumed exactly once. The
+        // arithmetic that does it had no test of its own
+        let config = EngineConfig {
+            fee_taker: 0.01,
+            report: true,
+            ..perp_cfg()
+        };
+        let mut e = Engine::new(flat_series(), config);
+        e.reset();
+        e.market_buy(2.0);
+        e.step(); // entry fee is 2 * 100 * 1% = 2.0
+        e.market_sell(1.0);
+        e.step(); // exit fee 1.0, plus half the entry fee
+        e.market_sell(1.0);
+        e.step(); // exit fee 1.0, plus the other half
+
+        let fees: Vec<f64> = e
+            .reporter()
+            .expect("reporting")
+            .trades()
+            .iter()
+            .map(|t| t.fees)
+            .collect();
+        assert_eq!(fees, vec![2.0, 2.0]);
+        // and the whole round trip is exactly what the account paid
+        let paid: f64 = fees.iter().sum();
+        assert!((paid - 4.0).abs() < 1e-9, "{paid}");
+    }
+
+    #[test]
+    fn a_flip_must_fit_the_cap_outright_where_a_grow_may_keep_what_it_has() {
+        // ADR 0012's allowance: a position already over the cap because equity
+        // fell is not force-reduced, so a same-side add may keep it, but a flip
+        // closes that side and opens a fresh one which gets no such credit. The
+        // two branches only differ when the position IS over the cap, and nothing
+        // reached that state, so the predicate deciding it was unpinned
+        let bars = Candles::new(vec![
+            ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
+            ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
+            ohlc(90.0, 90.0, 90.0, 90.0, 1e6),
+            ohlc(90.0, 90.0, 90.0, 90.0, 1e6),
+        ]);
+        let config = EngineConfig {
+            quote: 1_000.0,
+            max_leverage: 3.0,
+            ..perp_cfg()
+        };
+        let mut e = Engine::new(bars, config);
+        e.reset();
+        e.market_buy(30.0);
+        let state = e.step(); // long 30 at 100, exactly the cap
+        assert_eq!(state.position, 30.0);
+
+        // the mark falls to 90, so equity is 700 and the cap is now 23.33 while
+        // the position is still 30: over it, and a flip gets no allowance for that
+        e.market_sell(60.0);
+        let state = e.step();
+        assert!(
+            (state.position + 3.0 * 700.0 / 90.0).abs() < 1e-9,
+            "flipped to {} rather than the cap",
+            state.position
+        );
+    }
+
+    #[test]
+    fn a_reduce_only_order_on_the_wrong_side_fills_nothing_either_way() {
+        // the predicate has a branch per side and only one of them was ever taken
+        for (opening, wrong) in [(Side::Buy, Side::Buy), (Side::Sell, Side::Sell)] {
+            let mut e = Engine::new(flat_series(), perp_cfg());
+            e.reset();
+            e.order(
+                opening,
+                1.0,
+                OrderType::Market,
+                None,
+                None,
+                false,
+                false,
+                TimeInForce::Ioc,
+            );
+            let state = e.step();
+            let held = state.position;
+            assert!(held.abs() > 0.0);
+
+            e.order(
+                wrong,
+                5.0,
+                OrderType::Market,
+                None,
+                None,
+                true,
+                false,
+                TimeInForce::Ioc,
+            );
+            let state = e.step();
+            assert_eq!(
+                state.position, held,
+                "a reduce-only {wrong:?} grew the position"
+            );
+
+            // and the right side reduces, clamped to what is actually held
+            let closing = if held > 0.0 { Side::Sell } else { Side::Buy };
+            e.order(
+                closing,
+                5.0,
+                OrderType::Market,
+                None,
+                None,
+                true,
+                false,
+                TimeInForce::Ioc,
+            );
+            let state = e.step();
+            assert_eq!(state.position, 0.0);
+        }
+    }
+
     fn exit_at(side: Side, price: f64) -> Fill {
         Fill {
             side,
