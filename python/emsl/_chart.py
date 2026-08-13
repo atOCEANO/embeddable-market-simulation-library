@@ -943,7 +943,7 @@ def chart(
 
     Everything a run brings can be turned off. ``trades=False`` drops the arrows
     and the table under the chart. The equity and drawdown panels are ordinary
-    panels, so ``Panel(name="drawdown", weight=0)`` removes one, and a hidden
+    panels, so ``Panel(name="drawdown", show=False)`` removes one, and a hidden
     panel ships no data at all rather than merely going unpainted. Equity as a
     percentage is ``Panel(name="equity", scale="percent")``, which is a different
     question from the drawdown panel: percent rescales the same curve, while

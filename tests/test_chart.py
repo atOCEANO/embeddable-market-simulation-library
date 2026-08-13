@@ -88,7 +88,12 @@ def everything():
     return emsl.chart(
         data,
         [
-            Line(fast, "sma 5", color=ramp(close, "#000000", "#ffffff"), fill="#11223344"),
+            # the ramp and the fill are mutually exclusive: an area carries one
+            # line colour and would drop the ramp while the legend went on
+            # reporting it, so the pair is refused (ADR 0076). Both halves still
+            # appear in the golden, on two marks
+            Line(fast, "sma 5", color=ramp(close, "#000000", "#ffffff")),
+            Line(fast - 2.0, "sma 5 band", fill="#11223344"),
             Histogram(close - 100.0, "delta", panel="flow"),
             Band(close + 1.0, close - 1.0, "channel", fill="#11223344"),
             Band(close, 120.0, only="above", panel="flow", fill=("#00000000", "#000000ff")),

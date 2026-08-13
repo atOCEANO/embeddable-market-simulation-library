@@ -138,17 +138,38 @@ const legendPrimitive = function (index) {
                 };
 
                 const rows = legendRows(index);
+                // the counter has to fit too, or the count vanishes exactly when
+                // it is the only thing left saying something is missing
+                const more = function (left) { return "+" + left; };
+                ctx.font = "600 " + fs + "px " + FONT;
+                const moreW = ctx.measureText(more(rows.length)).width + sepW;
+
                 let line = 0, x = pad, lastX = pad;
                 for (let k = 0; k < rows.length; k++) {
                   const w = measure(rows[k]);
-                  if (x > pad && x + w > maxX) {
-                    if (line + 1 >= maxLines) {
+                  const last = line + 1 >= maxLines;
+                  // `x > pad` used to guard this, which let the FIRST entry on a
+                  // line paint however wide it was: canvas clipped it at the pane
+                  // edge and no counter was drawn, so a narrow panel dropped a
+                  // series in silence. That is the exact failure this block is
+                  // here to prevent, produced by the block itself (ADR 0076)
+                  const overflows = x + w > (last ? maxX - moreW : maxX);
+                  if (overflows) {
+                    if (last) {
                       ctx.font = "600 " + fs + "px " + FONT;
                       ctx.fillStyle = t.muted;
-                      ctx.fillText("+" + (rows.length - k), lastX, pad + fs * 0.85 + line * lineH);
+                      ctx.fillText(more(rows.length - k), lastX, pad + fs * 0.85 + line * lineH);
                       break;
                     }
                     line++; x = pad;
+                    // still too wide on a fresh line, and this is now the last
+                    // one: report the remainder rather than clipping it
+                    if (line + 1 >= maxLines && x + w > maxX - moreW) {
+                      ctx.font = "600 " + fs + "px " + FONT;
+                      ctx.fillStyle = t.muted;
+                      ctx.fillText(more(rows.length - k), x, pad + fs * 0.85 + line * lineH);
+                      break;
+                    }
                   }
                   paintRow(rows[k], x, pad + fs * 0.85 + line * lineH);
                   x += w + sepW;

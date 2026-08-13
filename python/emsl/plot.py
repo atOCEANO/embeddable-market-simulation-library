@@ -270,6 +270,19 @@ class Line(_Mark):
                 f"{where} fill takes a colour or a gradient, not one per bar; "
                 f"for a region that changes colour use two conditional Bands"
             )
+        if self.fill is not None and not isinstance(self.color, (str, type(None))):
+            # a filled line is drawn as an area, and an area carries ONE line
+            # colour: the renderer ignores a per-bar colour on it entirely. The
+            # two together were accepted and drew a flat line while the legend
+            # swatch reported a different colour at every bar, which is the one
+            # thing the legend exists not to do. Neither half can be picked
+            # without lying about the other, so the pair is refused (ADR 0076)
+            raise TypeError(
+                f"{where} takes a per-bar colour or a fill, not both: an area "
+                f"carries one line colour and the ramp would be dropped while "
+                f"the legend went on reporting it; drop fill, or pass a plain "
+                f"colour, or draw the fill as a Band underneath"
+            )
         self.width = int(width)
         if self.width < 1:
             raise ValueError(f"{where} width must be at least 1, got {width}")

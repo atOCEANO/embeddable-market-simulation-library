@@ -56,9 +56,11 @@ const stamp = function (i) {
 };
 
 // a Track carries i0 and a value array, so the alignment contract arrives as an
-// integer and this file never learns the rule. A null is whitespace, {time} with
-// no value, never a dropped row: dropping makes the neighbours adjacent and the
-// renderer draws one straight segment across the hole (ADR 0038)
+// integer and this file never learns the rule. A null becomes whitespace, {time}
+// with no value, rather than a dropped row, because dropping would make the
+// neighbours adjacent. That is necessary and it is not sufficient: the renderer
+// joins straight across whitespace too, so the hole is cut in `paint` by splitting
+// the track into one series per run (ADRs 0038, 0073)
 const track = function (tr) {
   if (!tr) return [];
   const out = new Array(tr.v.length);
@@ -142,24 +144,34 @@ const addLine = function (spec, panel, index) {
 
   // a fill under a line is an area, which is a different series type rather than
   // an option on this one. Stops run bottom to top like every other fill, so the
-  // first sits on the panel floor and the last touches the line
+  // first sits on the panel floor and the last touches the line. An area carries
+  // one lineColor and ignores a per-point colour entirely, so a ramp here was
+  // painted flat while the legend went on reporting a colour per bar; that pair is
+  // refused at construction rather than resolved in favour of one half (ADR 0076)
   if (spec.fill) {
     const stops = spec.fill;
     return chart.addSeries(LWC.AreaSeries, Object.assign({
-      lineColor: isRamp(spec.color) ? T().s1 : (spec.color || T().s1),
+      lineColor: spec.color || T().s1,
       bottomColor: stops[0],
       topColor: stops[stops.length - 1],
     }, shared), index);
   }
 
+  // `undefined` is not "no opinion", it is the vendored bundle's opinion: its
+  // merge skips an undefined key, so the library's own default blue survives and
+  // a bar the ramp left uncoloured is painted in it while the legend reports it
+  // grey. That is the colour rule of ADR 0043 leaking out through a hole the
+  // asset grep cannot see, since the literal lives in the vendored bundle rather
+  // than in ours (ADR 0076)
   return chart.addSeries(LWC.LineSeries, Object.assign({
-    color: isRamp(spec.color) ? undefined : (spec.color || T().s1),
+    color: isRamp(spec.color) ? T().muted : (spec.color || T().s1),
   }, shared), index);
 };
 
 const addHistogram = function (spec, panel, index) {
   const s = chart.addSeries(LWC.HistogramSeries, Object.assign({
-    color: isRamp(spec.color) ? undefined : (spec.color || T().s4),
+    // not undefined: see addLine. The bundle's own default would show through
+    color: isRamp(spec.color) ? T().muted : (spec.color || T().s4),
     base: spec.base,
     priceLineVisible: false, lastValueVisible: false,
     priceFormat: priceFormat(spec.digits),
@@ -307,6 +319,53 @@ const frameFor = function (index) {
   return anchors[index];
 };
 
+// Give a panel's anchor the extent of whatever is drawn on it, when nothing else
+// on that panel carries values.
+//
+// A Band, a Marker or a Level alone on its own panel is drawn entirely by
+// primitives, and a primitive converts prices through a series. The anchor is the
+// only series there and it holds whitespace, so the price scale has no first
+// value; the renderer then skips the source before it ever asks for a range, and
+// every conversion off it comes back null. Such a panel mounted cleanly, threw
+// nothing, and painted nothing at all, which is the worst way for a chart to be
+// wrong. It also swallowed `Panel(range=)` on that panel, since the provider is
+// only consulted for a series carrying data. The anchor is fully transparent, so
+// seeding it costs no pixels (ADR 0075).
+const seedAnchors = function () {
+  SPEC.panels.forEach(function (panel, index) {
+    if (panel.candles || panel.volume) return;
+    const carried = SERIES.some(function (entry) { return entry.spec.panel === panel.name; });
+    if (carried) return;
+
+    const seen = [];
+    const take = function (v) { if (typeof v === "number" && isFinite(v)) seen.push(v); };
+    SPEC.series.forEach(function (s) {
+      if (s.panel !== panel.name) return;
+      if (s.kind === "level") take(s.value);
+      if (s.kind === "marker" && s.values) s.values.forEach(take);
+      if (s.kind === "band") {
+        if (s.v) s.v.forEach(take);
+        if (s.v2) s.v2.forEach(take);
+      }
+    });
+    if (!seen.length) return;
+
+    const lo = Math.min.apply(null, seen);
+    const hi = Math.max.apply(null, seen);
+    anchors[index].setData(SPEC.t.map(function (time) {
+      return { time: time, value: lo };
+    }));
+    // a pinned panel already carries its own provider from `pinned`, and it wins
+    if (!panel.range) {
+      anchors[index].applyOptions({
+        autoscaleInfoProvider: function () {
+          return { priceRange: { minValue: lo, maxValue: hi } };
+        },
+      });
+    }
+  });
+};
+
 // band, background and marker are the kinds no native series can draw, so they
 // arrive here rather than in the series dispatch
 const mountPrimitives = function () {
@@ -382,7 +441,6 @@ const mount = function (spec, root) {
   // to a series carrying only whitespace does not render, and the anchor is
   // exactly that: every Level in the library was reaching the renderer
   // correctly and drawing nothing at all
-  const carrier = [];
   spec.series.forEach(function (s) {
     const index = panelIndex(s.panel);
     const panel = spec.panels[index];
@@ -390,13 +448,9 @@ const mount = function (spec, root) {
       // the factory is what lets a gapped line grow a sibling per run in paint;
       // a histogram needs none, since its bars are already separate marks
       const make = function () { return addLine(s, panel, index); };
-      const made = make();
-      SERIES.push({ spec: s, series: made, make: make, siblings: [] });
-      if (!carrier[index]) carrier[index] = made;
+      SERIES.push({ spec: s, series: make(), make: make, siblings: [] });
     } else if (s.kind === "histogram") {
-      const made = addHistogram(s, panel, index);
-      SERIES.push({ spec: s, series: made });
-      if (!carrier[index]) carrier[index] = made;
+      SERIES.push({ spec: s, series: addHistogram(s, panel, index) });
     }
   });
 
@@ -406,7 +460,13 @@ const mount = function (spec, root) {
     // muted, not axis: the axis colour is chosen to sit almost invisibly
     // against the plane, which is right for a gridline and wrong for a
     // reference the reader is meant to see
-    (carrier[index] || anchors[index]).createPriceLine({
+    // frameFor, not a line-or-histogram carrier. The carrier it used to keep was
+    // filled only by the line and histogram branches, so it never considered the
+    // candles: a Level on a price panel with no other series hung on the
+    // whitespace anchor, whose firstValue is null, and the renderer drew nothing
+    // at all. `emsl.chart(frame, Level(110.0))` is about the simplest call on the
+    // page and it drew no level (ADR 0075)
+    frameFor(index).createPriceLine({
       price: s.value,
       color: s.color || T().muted,
       lineWidth: s.width,
@@ -464,6 +524,10 @@ const mount = function (spec, root) {
       ? Math.max(0, Math.min(last, p.logical)) : spec.n - 1;
     if (i !== cursor) { cursor = i; invalidate(); }
   });
+
+  // before the primitives, because each of them converts through a series and
+  // this is what gives a primitive-only panel one that carries values
+  seedAnchors();
 
   if (typeof mountPrimitives === "function") mountPrimitives();
   if (typeof mountTrades === "function") mountTrades();

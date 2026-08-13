@@ -202,6 +202,76 @@ def test_a_title_reaches_the_document_and_survives_angle_brackets(tmp_path):
     assert seen["title"] == "BTC <perp> 10x"
 
 
+def drawn_colours(built, tmp_path, name, want):
+    # how many pixels of one colour the chart actually painted. The counted colour
+    # is unique to the mark under test, so zero means it was not drawn at all
+    path = built.save(str(tmp_path / name))
+    with playwright.sync_playwright() as driver:
+        browser = driver.chromium.launch(args=["--no-sandbox"])
+        page = browser.new_page(viewport={"width": 1200, "height": 800})
+        page.goto(pathlib.Path(path).as_uri())
+        page.wait_for_selector("#chart canvas", timeout=20_000)
+        page.wait_for_timeout(400)
+        hits = page.evaluate(
+            """
+            (want) => {
+              let total = 0;
+              document.querySelectorAll('#chart canvas').forEach(c => {
+                const ctx = c.getContext('2d');
+                if (!ctx || !c.width || !c.height) return;
+                const d = ctx.getImageData(0, 0, c.width, c.height).data;
+                for (let i = 0; i < d.length; i += 4) {
+                  if (Math.abs(d[i] - want[0]) < 40 && Math.abs(d[i+1] - want[1]) < 40
+                      && Math.abs(d[i+2] - want[2]) < 40) total += 1;
+                }
+              });
+              return total;
+            }
+            """,
+            want,
+        )
+        browser.close()
+    return hits
+
+
+def test_a_level_alone_on_the_price_panel_is_actually_drawn(tmp_path):
+    # the price line hung on whichever line or histogram reached the panel first,
+    # and the candles were never a candidate, so the simplest call on the page drew
+    # the level onto a whitespace anchor whose first value is null and the renderer
+    # painted nothing at all (ADR 0075)
+    candles = frame()
+    built = emsl.chart(candles, Level(float(candles["close"].mean()), "mid", color="#ff00ff"))
+    assert drawn_colours(built, tmp_path, "level.html", [255, 0, 255]) > 50
+
+
+def test_a_band_alone_on_its_own_panel_is_actually_drawn(tmp_path):
+    # a primitive converts prices through a series, and a panel drawn only by
+    # primitives has none carrying values, so it mounted cleanly and painted
+    # nothing. The anchor now takes the panel's own extent (ADR 0075)
+    candles = frame()
+    close = candles["close"].to_numpy()
+    built = emsl.chart(
+        candles,
+        Band(close - 100.0 + 2.0, close - 100.0 - 2.0, "channel",
+             panel="spread", fill="#00ff00"),
+        panels=[Panel("spread", weight=1.0)],
+    )
+    assert drawn_colours(built, tmp_path, "band.html", [0, 255, 0]) > 50
+
+
+def test_a_ramped_line_never_shows_the_vendored_default_colour(tmp_path):
+    # a ramp passed `color: undefined` to the renderer, and its merge skips an
+    # undefined key, so lightweight-charts' own #2196f3 survived: a bar the ramp
+    # left uncoloured was painted library blue while the legend reported it grey.
+    # The asset grep for colours cannot see that, because the literal is in the
+    # vendored bundle rather than in ours (ADRs 0043, 0076)
+    candles = frame()
+    close = candles["close"].to_numpy()
+    tint = np.where(np.arange(len(close)) % 2 == 0, "#ff00ff", None).astype(object)
+    built = emsl.chart(candles, Line(close, "tinted", color=tint))
+    assert drawn_colours(built, tmp_path, "ramp.html", [33, 150, 243]) == 0
+
+
 def test_a_gap_is_drawn_as_whitespace_rather_than_bridged(tmp_path):
     # ADR 0038's claim is about pixels, and this is the only place it can be
     # checked as pixels. A flat line with a hole in the middle: the columns either

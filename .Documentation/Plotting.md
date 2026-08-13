@@ -437,9 +437,11 @@ A `Background` mask is guarded for you too: a NaN or a `pandas.NA` shades nothin
 
 ### A NaN is a gap
 
-A value that does not exist stops the line ([ADR 0038](Decisions.md)). It is never dropped, because dropping it makes the two neighbours adjacent and the renderer draws one straight segment across the hole: a trailing stop that existed on bars 0 to 40 and again on bars 900 to 940 would appear as a smooth line through 860 bars where there was no stop at all. Pine users know this as `plot.style_linebr` rather than `plot()`, which joins across `na`.
+A value that does not exist stops the line ([ADR 0038](Decisions.md)). It is never dropped, because dropping it makes the two neighbours adjacent: a trailing stop that existed on bars 0 to 40 and again on bars 900 to 940 would appear as a smooth line through 860 bars where there was no stop at all. Pine users know this as `plot.style_linebr` rather than `plot()`, which joins across `na`.
 
-Infinities are gaps too. A rolling warm-up costs nothing, because a leading run of non-finite values is carried as an offset rather than as data.
+Not dropping the row is necessary and it is not sufficient, which took a browser to find out ([ADR 0073](Decisions.md)). The document carries a null for every missing bar, exactly as it should, and lightweight-charts joins straight across that too, on both the line and the area series. So the hole is cut rather than merely marked: a gapped series is drawn as one renderer series per contiguous run. The cost is one of those per hole, so a mask that alternates every few bars is a real payload rather than a cosmetic one, and a rolling warm-up still costs nothing, because a leading run of non-finite values is carried as an offset rather than as data.
+
+Infinities are gaps too.
 
 <br>
 
