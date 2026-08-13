@@ -56,6 +56,22 @@ Because the wheel is `abi3-py39`, the same artifact is what ships, so the gate t
 
 <br>
 
+### The differential gate
+
+The sharpest check in the project, and the only one that can find a defect nobody thought to look for:
+
+```bash
+docker build --target test-differential .
+```
+
+`dev/differential/reference.py` is a second, deliberately slow implementation of the same simulator, written from [Decisions.md](Decisions.md) and never from the Rust. That constraint is the whole point of it. A test written against the implementation asks whether the code does what the code does; this asks whether two independent readings of the same prose produce the same number, over three thousand randomised paths through leverage, liquidation, funding, partial fills and the order book. It runs six seeds of five hundred cases at a relative tolerance of 1e-6, and any disagreement fails the build.
+
+It has already earned its place. It found the slot leak of [ADR 0079](Decisions.md), which had survived every test ever written against the engine because none of them thought to ask whether an order filled down to float dust still holds its slot. It surfaced as five separate disagreements that all reduced to one line.
+
+Read a disagreement as a question rather than a verdict: the reference is a second reading and can be the wrong one. On the way to that first agreement it was wrong three times and the engine right three times, and each time the decisions page was precise enough to convict the reference by reading it. `dev/differential/trace.py` shrinks a failing case to its smallest form and prints both simulators bar by bar, which is what makes the question answerable.
+
+<br>
+
 ### The two stages outside the gate
 
 Both are opt-in, because each pulls an image far heavier than the correctness gate, and each covers something the gate structurally cannot:

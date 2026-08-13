@@ -90,6 +90,25 @@ RUN pip install --no-cache-dir /wheels/*.whl numpy gymnasium optuna cloudpickle
 COPY benchmarks /benchmarks
 CMD ["python", "/benchmarks/surfaces.py"]
 
+# The differential gate: the engine against a second implementation of the same
+# decisions, over randomised paths. `dev/differential/reference.py` is written from
+# Decisions.md and never from the Rust, which is the whole point of it, so a rule
+# the engine gets wrong is a rule the reference gets right and the two part company
+# on a number. It found the slot leak of ADR 0079, which had survived every test
+# written against the implementation because none of them thought to ask.
+#
+# Six seeds of five hundred cases is about ninety seconds and has to be exact: the
+# tolerance is relative 1e-6 and any disagreement fails the build.
+#   docker build --target test-differential .
+FROM python:3.11-slim AS test-differential
+COPY --from=builder /wheels /wheels
+COPY dev/differential /differential
+RUN pip install --no-cache-dir /wheels/*.whl numpy \
+    && cd /differential \
+    && for seed in 1 7 42 1337 20260813 99991; do \
+         python differential.py 500 $seed || exit 1; \
+       done
+
 # The chart layer's other half. Every assertion in the correctness gate reads the
 # JSON spec, because the gate has no browser and a spec assertion is the sharper
 # test of what Python decided (ADR 0043). What it cannot reach is whether the
