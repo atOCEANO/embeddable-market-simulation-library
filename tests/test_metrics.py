@@ -10,6 +10,7 @@ import pytest
 
 import emsl
 from emsl import metrics
+from emsl._walk import WalkForward
 from emsl.backtest import Backtester, BacktestResult, Strategy
 
 
@@ -579,6 +580,36 @@ def test_period_returns_split_the_run_by_the_calendar():
     assert len(quarters) < len(months)
 
 
+def test_the_calendar_periods_compound_back_to_the_whole_run():
+    # each period is computed on the equity the account actually carried into it,
+    # so the periods multiply back to the run. A period seeded from a fresh
+    # balance passes every other check here: the labels are the same, the bars
+    # still add up, and only the compounding identity says that a bad January
+    # shrank the size February had to trade with (ADR 0062)
+    pd = pytest.importorskip("pandas")
+    raw = series(n=2_000)
+    data = pd.DataFrame(raw, columns=["open", "high", "low", "close", "volume"])
+    data.index = pd.date_range("2025-01-01", periods=len(raw), freq="1h", tz="UTC")
+    result = Backtester(data).run(Alternate())
+    months = metrics.period_returns(result, data, by="month")
+    # 2,000 hourly bars from new year cover January, February and 584 hours of March
+    assert [m["period"] for m in months] == ["2025-01", "2025-02", "2025-03"]
+    assert sum(m["bars"] for m in months) == len(raw)
+    path = np.concatenate(([result.initial], result.equity_curve))
+    product = 1.0
+    for month in months:
+        first, last = month["start_bar"], month["start_bar"] + month["bars"]
+        # the balance carried in, which is the opening balance only for the first
+        opening = path[first - 1] if first else path[0]
+        assert month["total_return_pct"] == pytest.approx(
+            (path[last - 1] / opening - 1.0) * 100.0
+        )
+        product *= 1.0 + month["total_return_pct"] / 100.0
+    assert (product - 1.0) * 100.0 == pytest.approx(
+        result.stats["total_return_pct"], abs=1e-9
+    )
+
+
 def test_a_rolling_sharpe_is_aligned_like_an_indicator():
     result = run()
     bars = len(result.equity_curve) + 1
@@ -783,6 +814,91 @@ def test_a_sharpe_interval_brackets_the_sharpe():
     assert tighter["high"] - tighter["low"] < band["high"] - band["low"]
 
 
+def blocked():
+    # 120 returns taking exactly two values, 1/128 + 1/64 and 1/128 - 1/64, laid
+    # out in blocks of four. Two values put every centred return at plus or minus
+    # 1/64, so the skew is zero and the kurtosis is exactly 1, which leaves the
+    # estimator variance at exactly 1.0 and every figure below hand computable.
+    # The blocks leave 90 same-signed neighbours against 29 sign changes, so the
+    # first autocorrelation is exactly (90 - 29) / 120
+    signs = np.where((np.arange(120) // 4) % 2 == 0, 1.0, -1.0)
+    values = 1.0 / 128.0 + signs / 64.0
+    return BacktestResult(
+        stats={}, equity_curve=100.0 * np.cumprod(1.0 + values), trades=[],
+        initial=100.0, periods_per_year=365.0,
+    )
+
+
+def test_the_effective_sample_counts_n_times_one_minus_r_over_one_plus_r():
+    # pinned until now by inequalities alone, below the bar count and above two,
+    # which n(1 - r), n(1 - r^2) and n / (1 + 2r) all satisfy on a persistent
+    # series. This one has a first autocorrelation of exactly 61/120 by
+    # construction, so the correction has exactly one answer, 120 * 59 / 181 or
+    # 39.116, where those three wrong readings give 59, 88.99 and 59.50 (ADR 0061)
+    result = blocked()
+    assert metrics.autocorrelation(result, lag=1) == pytest.approx(61.0 / 120.0)
+    assert metrics.effective_sample(result) == pytest.approx(7080.0 / 181.0)
+
+
+def test_the_sharpe_interval_is_the_sharpe_plus_and_minus_a_hand_computed_half():
+    # the half width was never checked against a number, so a one-sided quantile,
+    # a missing square root or a variance read off the wrong estimator all passed
+    # "low < sharpe < high". Here the skew is 0 and the kurtosis is 1, so the
+    # estimator variance is exactly 1 and the half width is the normal quantile
+    # over the root of size - 1 with nothing else in it (ADR 0061)
+    result = blocked()
+    assert metrics.skew(result) == pytest.approx(0.0, abs=1e-9)
+    assert metrics.kurtosis(result) == pytest.approx(1.0)
+    spread = 1.0 / 64.0 * math.sqrt(120.0 / 119.0)     # the sample deviation
+    observed = 1.0 / 128.0 / spread                    # the per period sharpe
+    root = math.sqrt(365.0)
+    half = 1.959963984540054 * math.sqrt(1.0 / 119.0)  # two-sided 95%, 120 bars
+    band = metrics.sharpe_interval(result, independent=True)
+    assert band["bars"] == 120 and band["effective_bars"] == 120.0
+    assert band["sharpe"] == pytest.approx(observed * root)
+    assert band["low"] == pytest.approx((observed - half) * root)
+    assert band["high"] == pytest.approx((observed + half) * root)
+    # which is the sentence a reader quotes: sharpe 9.51, 95% interval 6.08 to 12.95
+    assert band["sharpe"] == pytest.approx(9.5126013)
+    assert band["low"] == pytest.approx(6.0800183)
+    assert band["high"] == pytest.approx(12.9451843)
+    # the confidence is two-sided, so 0.90 uses 1.6449 rather than 1.2816
+    ninety = metrics.sharpe_interval(result, confidence=0.90, independent=True)
+    assert ninety["high"] - ninety["low"] == pytest.approx(
+        2.0 * 1.6448536269514722 * math.sqrt(1.0 / 119.0) * root
+    )
+    # and counting bets rather than bars widens it by exactly this much
+    size = 7080.0 / 181.0
+    wide = metrics.sharpe_interval(result)
+    assert wide["effective_bars"] == pytest.approx(size)
+    stretched = 1.959963984540054 * math.sqrt(1.0 / (size - 1.0))
+    assert wide["low"] == pytest.approx((observed - stretched) * root)
+    assert wide["high"] == pytest.approx((observed + stretched) * root)
+
+
+def test_the_track_record_length_converts_bets_back_into_bars_exactly_once():
+    # the conversion was pinned as "at least the independent answer, less 1e-9",
+    # which a SQUARED factor also satisfies: on this series it asks for 112.12
+    # bars where the truth is 36.55, and both clear that floor. The answer comes
+    # out in bets and the caller asked in bars, so it is multiplied by the bars
+    # spent per bet once and only once (ADR 0061)
+    result = blocked()
+    spread = 1.0 / 64.0 * math.sqrt(120.0 / 119.0)
+    observed = 1.0 / 128.0 / spread
+    plain = metrics.min_track_record_length(result, independent=True)
+    # the estimator variance is 1 here, so the leading term is the whole of it
+    assert plain["bars"] == pytest.approx(1.0 + (1.6448536269514722 / observed) ** 2)
+    assert plain["bars"] == pytest.approx(11.9131165)
+    assert plain["effective_bars"] == 120.0
+    adjusted = metrics.min_track_record_length(result)
+    assert adjusted["effective_bars"] == pytest.approx(7080.0 / 181.0)
+    # 120 bars are worth 7080/181 bets, so one bet is 181/59 bars and no more
+    assert adjusted["bars"] == pytest.approx(plain["bars"] * 181.0 / 59.0, rel=1e-9)
+    assert adjusted["bars"] == pytest.approx(36.5470183)
+    assert adjusted["years"] == pytest.approx(adjusted["bars"] / 365.0)
+    assert adjusted["have_bars"] == 120 and adjusted["enough"]
+
+
 def test_the_risk_measures_read_the_tail_they_name():
     values = np.array([-0.05, -0.04, -0.03, 0.01, 0.02, 0.02, 0.03, 0.03, 0.04, 0.05])
     curve = 100.0 * np.cumprod(1.0 + values)
@@ -889,6 +1005,32 @@ def test_the_costs_are_reported_as_a_share_of_the_edge():
     assert metrics.decompose(cheap)["fee_share"] == 0.0
 
 
+def test_turnover_is_both_sides_of_every_trade_over_the_opening_balance():
+    # "> 0.0" is equally true of the entry notional alone, of the exit notional
+    # alone, and of either of them over the closing balance, and a reader quotes
+    # whichever comes back as the same sentence. Two trades, hand priced: 2 at 50
+    # out at 55, and 1 at 20 out at 15, so both sides move 245 against an opening
+    # 100. The entry side alone reads 1.20, the exit side 1.25, and both sides
+    # over the closing balance 2.35 (ADR 0062)
+    trades = [
+        {"net_pnl": 9.5, "pnl": 10.0, "fees": 0.5, "side": "buy", "bars_held": 3,
+         "size": 2.0, "entry_price": 50.0, "exit_price": 55.0, "entry_tick": 0,
+         "exit_tick": 3},
+        {"net_pnl": -5.2, "pnl": -5.0, "fees": 0.2, "side": "buy", "bars_held": 2,
+         "size": 1.0, "entry_price": 20.0, "exit_price": 15.0, "entry_tick": 4,
+         "exit_tick": 6},
+    ]
+    hand = BacktestResult(stats={}, equity_curve=np.array([104.3]), trades=trades,
+                          initial=100.0, periods_per_year=365.0)
+    money = metrics.decompose(hand)
+    assert money["turnover"] == pytest.approx(2.45)
+    # and the fee share is the same reading of the same two trades: 0.70 of a
+    # gross 5.00, which is the sentence about having a cost problem
+    assert money["fee_share"] == pytest.approx(0.14)
+    assert money["net"] == pytest.approx(4.3)
+    assert money["unrealized"] == pytest.approx(0.0, abs=1e-9)
+
+
 def test_omega_and_the_tail_ratio_read_the_whole_distribution():
     result = run()
     assert metrics.omega(result) >= 0.0
@@ -906,3 +1048,51 @@ def test_the_report_does_not_stutter_its_own_prefix():
     for key in ("trade_payoff", "trade_expectancy", "effective_bars", "omega",
                 "tail_ratio", "ulcer_index", "return_per_exposure", "sharpe_low"):
         assert key in row
+
+
+def test_the_return_per_exposure_is_the_return_over_the_time_at_risk():
+    # twenty percent made while in the market a quarter of the time and twenty
+    # percent made while in it four fifths of the time were the same row before
+    # this, and only presence of the key was ever checked. The ratio the other way
+    # up reads 125 and 400, which ranks the two backwards: it would call the run
+    # that sat in the market four times as long the better use of the risk
+    # (ADR 0062)
+    curve = np.array([105.0, 110.0, 115.0, 120.0])
+    lazy = BacktestResult(
+        stats={"total_return_pct": 20.0, "exposure_pct": 25.0}, equity_curve=curve,
+        trades=[], initial=100.0, periods_per_year=365.0,
+    )
+    busy = BacktestResult(
+        stats={"total_return_pct": 20.0, "exposure_pct": 80.0}, equity_curve=curve,
+        trades=[], initial=100.0, periods_per_year=365.0,
+    )
+    assert metrics.report(lazy)["return_per_exposure"] == pytest.approx(80.0)
+    assert metrics.report(busy)["return_per_exposure"] == pytest.approx(25.0)
+
+
+# ------------------------------------------------- what the windows add up to
+
+
+def test_the_decay_is_the_mean_gap_and_a_flat_window_never_counts_as_a_win():
+    # the two numbers a walk-forward is read on are computed from the per-window
+    # scores metrics.segment produces, and both were pinned as "a float" and
+    # "between 0 and 1", which the gap the other way round, the median of the gaps
+    # and a >= 0.0 comparison all satisfy. A window scoring exactly 0.0 is the one
+    # ADR 0060 exists for, a stretch nobody could trade, and it must not be
+    # counted as a window that cleared zero; a window with no score at all, which
+    # is what a callable objective leaves behind, is skipped by both rather than
+    # counted as a failure
+    windows = [
+        {"fitted": 2.0, "traded": 1.5},
+        {"fitted": 1.0, "traded": -0.5},
+        {"fitted": 3.0, "traded": 0.0},
+        {"fitted": 0.5, "traded": 1.0},
+        {"fitted": 9.0, "traded": None},
+    ]
+    forward = WalkForward(run(), windows, (0, 120))
+    # the four gaps are 0.5, 1.5, 3.0 and -0.5: a mean of 1.125, a median of 1.0,
+    # and -1.125 with the subtraction the other way round
+    assert forward.decay == pytest.approx(1.125)
+    # two of the four scored windows are above zero. Counting the flat one as a
+    # win gives 0.75, dropping it from the denominator gives 0.667
+    assert forward.consistency == pytest.approx(0.5)

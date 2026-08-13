@@ -3077,6 +3077,193 @@ mod tests {
         assert!(long_loss < f64::INFINITY);
     }
 
+    #[test]
+    fn a_wick_that_busts_a_long_liquidates_even_when_the_bar_closes_back_above_it() {
+        // ADR 0003 puts the trigger at the bar's ADVERSE EXTREME, the low for a
+        // long, because a bar that traded there is a bar the account was closed out
+        // on whatever it printed afterwards. Every other liquidation fixture ends
+        // at or below its own bust level, so marking the check at bar.close passes
+        // all of them; this bar wicks to 85 and closes back at 100, where a
+        // close-marked check reads an equity of 100 and lets a dead account trade on
+        let bars = Candles::new(vec![
+            ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
+            ohlc(100.0, 101.0, 85.0, 100.0, 1e6),
+            ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
+        ]);
+        let mut e = Engine::new(bars, levered());
+        e.reset();
+        e.market_buy(10.0); // 1000 of notional on 100 of margin, filled at the open of 100
+        let state = e.step();
+        // margin at the low is 100 + 10 * (85 - 100) = -50, so the account died on
+        // the way down and is closed where the margin ran out, at
+        // (10 * 100 - 100) / 10 = 90, leaving exactly nothing (ADR 0052)
+        assert!(e.is_bust());
+        assert_eq!(state.position, 0.0);
+        assert_eq!(state.equity, 0.0);
+        assert_eq!(state.bar_close, 100.0); // the bar recovered, the account did not
+        let trades = e.reporter().expect("reporting").trades();
+        assert_eq!(trades.len(), 1);
+        assert_eq!(trades[0].exit_price, 90.0);
+        assert!(trades[0].liquidated);
+    }
+
+    #[test]
+    fn a_wick_that_busts_a_short_liquidates_even_when_the_bar_closes_back_below_it() {
+        // the mirror of the rule above, and no engine test has ever liquidated a
+        // short at all: a short's adverse extreme is the HIGH, so a wick up that
+        // takes the margin kills it however calmly the bar ends (ADR 0003). A check
+        // reading bar.close, or one that kept the long's low for both sides, reads
+        // 100 here and carries a dead short into the next bar
+        let bars = Candles::new(vec![
+            ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
+            ohlc(100.0, 115.0, 99.0, 100.0, 1e6),
+            ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
+        ]);
+        let mut e = Engine::new(bars, levered());
+        e.reset();
+        e.market_sell(10.0); // short 10 at the open of 100, on 100 of margin
+        let state = e.step();
+        // margin at the high is 100 - 10 * (115 - 100) = -50, and the margin runs
+        // out at (-10 * 100 - 100) / -10 = 110, which is where it is closed
+        assert!(e.is_bust());
+        assert_eq!(state.position, 0.0);
+        assert_eq!(state.equity, 0.0);
+        assert_eq!(state.bar_close, 100.0); // the bar came back, the account did not
+        let trades = e.reporter().expect("reporting").trades();
+        assert_eq!(trades.len(), 1);
+        assert_eq!(trades[0].exit_price, 110.0);
+        assert!(trades[0].liquidated);
+    }
+
+    #[test]
+    fn an_over_cap_position_is_kept_whole_and_a_same_side_add_grows_it_by_nothing() {
+        // ADR 0012's allowance runs one way only: a position pushed over its cap by
+        // a fall in equity is not force-reduced, and it may not be extended either.
+        // Dropping the max(pos.abs()) from the cap turns this refusal into a fill,
+        // and the fill is on the SAME side, so the order that was meant to be
+        // blocked is the one that grows the long from 30 to 36.67
+        let bars = Candles::new(vec![
+            ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
+            ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
+            ohlc(90.0, 90.0, 90.0, 90.0, 1e6),
+            ohlc(90.0, 90.0, 90.0, 90.0, 1e6),
+        ]);
+        let config = EngineConfig {
+            quote: 1_000.0,
+            max_leverage: 3.0,
+            ..perp_cfg()
+        };
+        let mut e = Engine::new(bars, config);
+        e.reset();
+        e.market_buy(30.0);
+        let state = e.step(); // long 30 at 100: 3000 of notional on 1000, exactly the cap
+        assert_eq!(state.position, 30.0);
+        assert_eq!(e.num_fills(), 1);
+
+        // the mark falls to 90, so equity is 1000 + 30 * (90 - 100) = 700 and the
+        // cap is 3 * 700 / 90 = 23.33 against a position of 30: over it, and kept
+        e.market_buy(5.0);
+        let state = e.step();
+        assert_eq!(
+            state.position, 30.0,
+            "the add moved a position it may not move"
+        );
+        assert_eq!(state.equity, 700.0);
+        assert_eq!(state.quote, 1_000.0);
+        assert_eq!(e.num_fills(), 1, "the refused add booked a fill");
+    }
+
+    #[test]
+    fn funding_fires_on_the_absolute_bar_index_not_on_bars_since_the_reset() {
+        // ADRs 0002 and 0017: the funding schedule belongs to the series, so every
+        // env in a vectorized run charges the same bars however its episode was
+        // offset. Only an offset start separates the two counters, and nothing did
+        // that: starting at bar 2 with an interval of 3 funds ticks 3 and 6, while
+        // a per-episode counter funds the third bar of the episode, tick 5, and
+        // nothing else in this window
+        let config = EngineConfig {
+            quote: 10_000.0,
+            funding_rate: 0.0625, // one sixteenth, so each charge is exactly 6.25
+            funding_interval: 3,
+            ..perp_cfg()
+        };
+        let mut e = Engine::new(flat_series(), config); // eight flat bars at 100
+        e.reset_at(2);
+        e.market_buy(1.0); // fills at the open of bar 3, ahead of that bar's funding
+        let mut charged = Vec::new();
+        for _ in 0..5 {
+            let state = e.step();
+            charged.push((state.tick_index, state.funding_paid));
+        }
+        // 1 unit at 100 pays 6.25 a time, on tick 3 and on tick 6 and on no other
+        assert_eq!(
+            charged,
+            vec![(3, 6.25), (4, 6.25), (5, 6.25), (6, 12.5), (7, 12.5)]
+        );
+        assert_eq!(e.current_state().quote, 9_987.5);
+    }
+
+    #[test]
+    fn a_bar_that_gaps_up_past_a_shorts_bankruptcy_price_closes_it_at_the_fence() {
+        // ADR 0067 works the fence out before the bar's orders are resolved, and it
+        // faces the position's OWN direction: a short dies going up, so a bar that
+        // OPENS above its bankruptcy price is a bar the account was already closed
+        // out on. Every fence fixture is a 10x long, so the short side of that
+        // comparison was never taken; with the long's test a close() here books the
+        // raw open of 150 and leaves the account owing 400 (ADR 0052)
+        let bars = Candles::new(vec![
+            ohlc(100.0, 101.0, 99.0, 100.0, 1e6),
+            ohlc(100.0, 101.0, 99.0, 100.0, 1e6),
+            ohlc(150.0, 180.0, 140.0, 160.0, 1e6),
+            ohlc(160.0, 161.0, 159.0, 160.0, 1e6),
+        ]);
+        for exit in [false, true] {
+            let mut e = Engine::new(bars.clone(), levered());
+            e.reset();
+            e.market_sell(10.0); // short 10 at 100, on 100 of margin
+            e.step();
+            if exit {
+                e.close();
+            }
+            let state = e.step();
+            // the margin runs out at (-10 * 100 - 100) / -10 = 110 and the bar
+            // opened past it, so the exit is priced there and leaves nothing
+            assert_eq!(state.position, 0.0, "exit={exit}");
+            assert_eq!(state.equity, 0.0, "exit={exit} left {}", state.equity);
+            let trades = e.reporter().expect("reporting").trades();
+            assert_eq!(trades.len(), 1, "exit={exit}");
+            assert_eq!(trades[0].exit_price, 110.0, "exit={exit}");
+            assert!(trades[0].liquidated, "exit={exit} booked no liquidation");
+        }
+    }
+
+    #[test]
+    fn a_shorts_stop_above_the_bankruptcy_price_never_fills_and_one_below_it_does() {
+        // the mirror of the long fence: a short's bar is clipped at the fence from
+        // ABOVE, so coming up from the open the market reaches 105 before 110 and a
+        // buy stop there saves the account, while one at 140 sits beyond a price
+        // the account had already been closed at. Clipping a short's bar with the
+        // long's max() leaves that 140 reachable and books an exit 30 past the
+        // point the margin was gone (ADR 0067)
+        let bars = Candles::new(vec![
+            ohlc(100.0, 101.0, 99.0, 100.0, 1e6),
+            ohlc(100.0, 101.0, 99.0, 100.0, 1e6),
+            ohlc(100.0, 150.0, 99.0, 140.0, 1e6),
+            ohlc(140.0, 141.0, 139.0, 140.0, 1e6),
+        ]);
+        for (trigger, want_equity, want_exit) in [(105.0, 50.0, 105.0), (140.0, 0.0, 110.0)] {
+            let mut e = Engine::new(bars.clone(), levered());
+            e.reset();
+            e.market_sell(10.0);
+            e.step(); // short 10 at 100
+            e.stop(Side::Buy, 10.0, trigger, true);
+            let state = e.step();
+            assert_eq!(state.equity, want_equity, "stop at {trigger}");
+            let trades = e.reporter().expect("reporting").trades();
+            assert_eq!(trades[0].exit_price, want_exit, "stop at {trigger}");
+        }
+    }
+
     /// A random walk built into consistent OHLC bars, violent enough to liquidate a
     /// 10x perp in a single step, because that is the path the guarantees have to
     /// survive rather than the one they are comfortable on.

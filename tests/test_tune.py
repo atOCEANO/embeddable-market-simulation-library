@@ -318,3 +318,147 @@ def test_an_out_of_range_holdout_is_refused():
         emsl.tune(SmaCross, SPACE, series(), n_trials=2, oos=1.0,
                   periods_per_year=365.0)
     assert "at least 0 and below 1" in str(excinfo.value)
+
+
+def test_every_trial_was_fitted_on_the_first_seventy_percent_and_saw_no_more():
+    # the two holdout tests above read _split's own return and the winner's re-run,
+    # and a tune that split correctly and then handed the WHOLE series to every
+    # trial would satisfy both of them: the tail would still be 90 bars and would
+    # still be scored on its own. The claim is about what the TRIALS were given, so
+    # this strategy records the series each run was handed. A violation reads as a
+    # trial that saw 300 bars, or one whose last close is bar 299 and not bar 209,
+    # which is a fit that already knows how the test period ends (ADR 0049)
+    data = series()
+    seen = []
+
+    class Recorder(Strategy):
+        """Records the length and the two endpoints of the series it is run over,
+        then buys once so the trial is an ordinary scored backtest.
+        """
+
+        def __init__(self, entry):
+            self.entry = int(entry)
+
+        def init(self, engine):
+            closes = engine.closes
+            seen.append((len(closes), float(closes[0]), float(closes[-1])))
+
+        def next(self, state, engine):
+            if state["tick_index"] == self.entry:
+                engine.market_buy(1.0)
+
+    result = emsl.tune(
+        Recorder, {"entry": (1, 5)}, data, objective="total_return_pct",
+        n_trials=5, seed=0, oos=0.3, periods_per_year=365.0,
+        fee_taker=0.0, fee_maker=0.0,
+    )
+    # 300 bars at oos=0.3 fit on bars 0..209 and hold back bars 210..299
+    head = (210, float(data[0, 3]), float(data[209, 3]))
+    tail = (90, float(data[210, 3]), float(data[299, 3]))
+    # the five trials, then the winner re-run on that same head, then the tail
+    assert seen == [head] * 6 + [tail]
+    assert result.oos_stats is not None
+
+
+# a venue no default agrees with on any knob, so a knob dropped from the trial
+# config shows up as a stat that does not match
+VENUE = dict(
+    market="perp",
+    quote=25_000.0,
+    fee_taker=0.001,
+    fee_maker=0.0005,
+    slippage_bps=250.0,
+    max_fill_fraction=0.5,
+    max_open_orders=3,
+    leverage=2.0,
+    impact=2.0,
+    funding_rate=0.001,
+    funding_interval=8,
+)
+
+
+def test_the_whole_venue_reaches_every_trial_and_not_only_the_fees():
+    # a knob missing from the trial config scores every trial at a DEFAULT venue,
+    # and the winner is then optimal for a market nobody trades: 250 bps of
+    # slippage and a perp funding charge would be searched away as free. best_stats
+    # is the TRIAL's own stats, not the winner's re-run, so matching it key by key
+    # against a Backtester built here at the same venue is the reading that pins
+    # the config onto the trials themselves. A violation reads as best_stats
+    # agreeing with the default-venue run below instead (ADR 0021)
+    data = series()
+    result = tuned(SmaCross, SPACE, data, objective="sharpe", n_trials=10, seed=0,
+                   **VENUE)
+    direct = emsl.backtest.Backtester(
+        data, periods_per_year=365.0, risk_free=0.0, **VENUE
+    ).run(SmaCross(**result.best_params))
+    assert direct.data_hash == result.best_result.data_hash  # the same bars
+    assert set(result.best_stats) == set(direct.stats)
+    for key in sorted(direct.stats):
+        assert result.best_stats[key] == direct.stats[key], key
+    # and the venue is distinctive, so the equality above is not two runs that
+    # would agree at any settings at all: at the defaults the same parameters pay
+    # no funding whatsoever and reach a different return
+    default = emsl.backtest.Backtester(data, periods_per_year=365.0).run(
+        SmaCross(**result.best_params)
+    )
+    assert default.stats["funding_paid"] == 0.0
+    assert result.best_stats["funding_paid"] != 0.0
+    assert result.best_stats["total_return_pct"] != default.stats["total_return_pct"]
+    # every knob by value, including the two a market-order crossover cannot feel:
+    # max_fill_fraction and max_open_orders move no number on this series, so
+    # nothing but the config itself can say they were carried to the trials
+    assert result.best_result.config == VENUE
+
+
+def test_a_trade_floor_refuses_the_thin_winner_an_unfloored_search_takes():
+    # min_trades fails a trial outright, and nothing else in the suite runs a
+    # search with a floor: delete the raise in _evaluate and the suite stays green
+    # while every floored search walks to its thinnest cell, where a handful of
+    # samples gives the best-looking number. The objective here is minus the trade
+    # count, so the thinnest configuration wins by construction and the floor is
+    # the only thing that can stop it. A violation reads as the floored search
+    # returning pulses=1 as well, or scoring those trials instead of failing them
+    # (ADR 0034)
+    data = series()
+
+    class Pulses(Strategy):
+        """Opens on bar 10k and closes on bar 10k + 5, so the number of trades a
+        trial closes is exactly its parameter and nothing else.
+        """
+
+        def __init__(self, pulses):
+            self.pulses = int(pulses)
+            self.entries = {10 * k for k in range(self.pulses)}
+            self.exits = {10 * k + 5 for k in range(self.pulses)}
+
+        def next(self, state, engine):
+            i = state["tick_index"]
+            if i in self.entries:
+                engine.market_buy(1.0)
+            elif i in self.exits:
+                engine.close()
+
+    def fewest_trades(result):
+        return -float(result.stats["num_trades"])
+
+    kwargs = dict(objective=fewest_trades, n_trials=20, seed=3, sampler="random",
+                  fee_taker=0.0, fee_maker=0.0)
+    loose = tuned(Pulses, {"pulses": [1, 5]}, data, min_trades=0, **kwargs)
+    floored = tuned(Pulses, {"pulses": [1, 5]}, data, min_trades=5, **kwargs)
+    # both choices were drawn in both searches, so neither winner is an artifact
+    # of a space one of them never explored
+    assert {t["params"]["pulses"] for t in loose.trials} == {1, 5}
+    assert {t["params"]["pulses"] for t in floored.trials} == {1, 5}
+    # unfloored, the single-trade configuration is the maximum of -num_trades
+    assert loose.best_params == {"pulses": 1}
+    assert loose.best_value == -1.0
+    assert loose.best_stats["num_trades"] == 1
+    # with the floor, every trial that drew it is failed rather than scored, so
+    # the winner is the only configuration that clears five closed trades
+    assert floored.best_params == {"pulses": 5}
+    assert floored.best_value == -5.0
+    assert floored.best_stats["num_trades"] == 5
+    assert floored.min_trades == 5
+    thin = [t for t in floored.trials if t["params"]["pulses"] == 1]
+    assert thin and all(t["state"] == "FAIL" for t in thin)
+    assert all(t["value"] is None and t["stats"] is None for t in thin)

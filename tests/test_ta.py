@@ -769,3 +769,151 @@ def test_vwma_leans_on_the_bars_that_traded():
     assert heavy[3] == pytest.approx((10.0 + 20.0 + 30.0 + 40.0 * 97.0) / 100.0)
     assert heavy[3] != pytest.approx(float(values.mean()))
     assert np.isnan(ta.vwma(values, np.zeros(4), 4)[3])
+
+
+# ------------------------------------------- the blocked exponential pass
+
+
+def block_size(alpha):
+    # where the seams fall. Computed the way `_decay` computes it, from alpha, so a
+    # test crosses the block hand-off on purpose rather than by being long enough by
+    # luck. Every test below is worthless the moment its series stops crossing one
+    return max(1, int(150.0 / -math.log10(1.0 - alpha)))
+
+
+def rolled_ema(values, length):
+    # the recurrence written the slow, obvious way, one bar at a time: the mean of
+    # the first clean window seeds it, one multiply-add carries it, and a gap ends
+    # the run so the next clean window seeds a fresh one. Written out here rather
+    # than taken from the module, since a reference computed by the code under test
+    # agrees with it however wrong both are (ADR 0064)
+    alpha = 2.0 / (length + 1.0)
+    keep = 1.0 - alpha
+    plain = values.tolist()
+    out = [float("nan")] * len(plain)
+    running = None
+    clean = 0
+    for i, value in enumerate(plain):
+        if not math.isfinite(value):
+            running, clean = None, 0
+            continue
+        clean += 1
+        if running is None:
+            if clean == length:
+                # the same numpy call the module makes, so the seed is bit for bit
+                running = float(values[i - length + 1:i + 1].mean())
+                out[i] = running
+        else:
+            running = alpha * value + keep * running
+            out[i] = running
+    return np.array(out)
+
+
+def test_the_exponential_pass_matches_the_plain_recurrence_across_many_blocks():
+    # the blocked loop in `_decay` has never gone round twice in this suite. The
+    # block is 851 bars for `ema(5)` and no series tested reached 300, so the
+    # hand-off between blocks, `carried`, has never been taken once: drop it, seed
+    # every block from zero, or from the original seed, and every bar of a real 100k
+    # frame after the first seam is wrong, worst at the seam and fading over the
+    # next hundred bars, and no test in this file would move (ADR 0064)
+    length = 5
+    alpha = 2.0 / (length + 1.0)
+    keep = 1.0 - alpha
+    block = block_size(alpha)
+    assert block == 851, "the seam moved; this series may no longer cross one"
+    size = 4 * block + length + 7
+    step = np.arange(float(size))
+    close = 100.0 + 10.0 * np.sin(step / 17.0) + 0.5 * np.cos(step / 2.0)
+    out = ta.ema(close, length)
+    expected = rolled_ema(close, length)
+
+    # ADR 0064 measured the reassociation at 2.1e-15 relative at worst and ADR 0065
+    # declines to promise the last bit, so the tolerance sits three orders above the
+    # noise and twelve below anything a mishandled carry produces
+    assert np.isfinite(out[length - 1:]).all()
+    assert np.allclose(out[length - 1:], expected[length - 1:],
+                       rtol=1e-12, atol=0.0), "the blocked pass and the loop parted"
+
+    # and the seams one at a time, where a lost carry shows before it decays away.
+    # out[seam - 1] is the module's own, so this asks only that the one step across
+    # the block boundary is the step the recurrence says it is
+    seams = [length + m * block for m in range(1, 5)]
+    assert seams[-1] < size
+    for seam in seams:
+        assert out[seam] == pytest.approx(
+            alpha * close[seam] + keep * out[seam - 1], rel=1e-12
+        ), f"the carry into the block starting at bar {seam} was dropped"
+
+
+def test_a_gap_between_two_multi_block_stretches_reseeds_and_carries_correctly():
+    # the blocking is per clean stretch, so the second stretch counts its blocks
+    # from the bar the gap ended on and its seams land at a different phase from the
+    # first stretch's. No test has ever run a stretch past one block, let alone two
+    # stretches at two phases, so a `_decay` blocking the whole array rather than
+    # each stretch, or carrying the value from before the gap across it, passes
+    # everything else in this file (ADR 0064)
+    length = 5
+    alpha = 2.0 / (length + 1.0)
+    keep = 1.0 - alpha
+    block = block_size(alpha)
+    head = 2 * block + length + 20
+    restart = head + 3
+    size = restart + 2 * block + length + 40
+    step = np.arange(float(size))
+    close = 100.0 + 10.0 * np.sin(step / 23.0) + 0.5 * np.cos(step / 3.0)
+    close[head:restart] = np.nan
+
+    out = ta.ema(close, length)
+    expected = rolled_ema(close, length)
+    assert np.allclose(out, expected, rtol=1e-12, atol=0.0, equal_nan=True)
+
+    # the hole, the warm-up behind it, and the fresh seed from the next clean window
+    assert np.isfinite(out[head - 1])
+    assert np.isnan(out[head:restart + length - 1]).all()
+    assert out[restart + length - 1] == pytest.approx(
+        float(close[restart:restart + length].mean())
+    )
+    assert np.isfinite(out[-1]), "one hole killed the rest of the series"
+
+    # both stretches cross two seams, and the second stretch's sit at a phase the
+    # first's do not, so blocking from bar zero would put them somewhere else
+    first = [length + block, length + 2 * block]
+    second = [restart + length + block, restart + length + 2 * block]
+    assert first[-1] < head and second[-1] < size
+    assert (second[0] - first[0]) % block != 0
+    for seam in first + second:
+        assert out[seam] == pytest.approx(
+            alpha * close[seam] + keep * out[seam - 1], rel=1e-12
+        ), f"the carry into the block starting at bar {seam} was dropped"
+
+
+def test_a_short_length_over_a_hundred_thousand_bars_stays_finite_throughout():
+    # the whole reason `_decay` is not a one-liner. Written as a single cumulative
+    # sum the recurrence needs (1 - alpha)**-k, which passes 1e308 within a few
+    # thousand bars and takes the rest of the output with it: ADR 0064 records
+    # length 20 over 100k bars returning 7,045 finite values out of 99,981, in
+    # silence. That is the size this suite has never run, so the overflow the
+    # blocking exists to prevent has never actually been put to it (ADR 0064)
+    length = 20
+    size = 100000
+    alpha = 2.0 / (length + 1.0)
+    block = block_size(alpha)
+    assert size > 25 * block, "tens of seams is the point; one is not"
+    step = np.arange(float(size))
+    close = 100.0 + 10.0 * np.sin(step / 500.0) + 0.5 * np.cos(step / 7.0)
+    out = ta.ema(close, length)
+
+    assert np.isnan(out[:length - 1]).all()
+    assert np.isfinite(out[length - 1:]).all(), "the weights overflowed"
+    # size less the warm-up, and the number ADR 0064 quotes against the one-liner's
+    assert int(np.isfinite(out).sum()) == 99981
+    # an exponential average of a bounded series is a convex combination of it, its
+    # weights summing to one, so a weight multiplied back wrong leaves the series
+    # rather than landing somewhere plausible inside it
+    assert out[length - 1:].min() >= close.min() - 1e-9
+    assert out[length - 1:].max() <= close.max() + 1e-9
+    # and the numbers themselves, against the recurrence taken one bar at a time
+    expected = rolled_ema(close, length)
+    assert np.allclose(out[length - 1:], expected[length - 1:],
+                       rtol=1e-12, atol=0.0)
+    assert out[-1] == pytest.approx(expected[-1], rel=1e-12)
