@@ -1069,7 +1069,7 @@ impl Engine {
 
 #[cfg(test)]
 mod tests {
-    use super::{Engine, EngineConfig, CLOSE_EPS};
+    use super::{adversity, Engine, EngineConfig, CLOSE_EPS};
     use crate::candles::Candles;
     use emsl_core::{Candle, Fill, Market, OrderType, Price, Qty, Side, State, TimeInForce};
     use proptest::prelude::*;
@@ -2827,6 +2827,52 @@ mod tests {
             "{}",
             state.equity
         );
+    }
+
+    fn exit_at(side: Side, price: f64) -> Fill {
+        Fill {
+            side,
+            size: Qty(1.0),
+            price: Price(price),
+            is_taker: true,
+        }
+    }
+
+    #[test]
+    fn adversity_ranks_an_exit_by_what_it_realizes_and_sorts_everything_else_last() {
+        // the whole of ADR 0056 rests on this eight-line function, and the suite
+        // reached it only through the engine, where one wide bar exercises one
+        // branch. Every comparison and every term is pinned here instead
+        let long_loss = adversity(2.0, 100.0, &exit_at(Side::Sell, 90.0));
+        let long_win = adversity(2.0, 100.0, &exit_at(Side::Sell, 110.0));
+        assert_eq!(long_loss, -10.0);
+        assert_eq!(long_win, 10.0);
+        assert!(long_loss < long_win, "a long's worse exit must sort first");
+
+        // a short is the mirror: the HIGHER price is the worse exit
+        let short_loss = adversity(-2.0, 100.0, &exit_at(Side::Buy, 110.0));
+        let short_win = adversity(-2.0, 100.0, &exit_at(Side::Buy, 90.0));
+        assert_eq!(short_loss, -10.0);
+        assert_eq!(short_win, 10.0);
+        assert!(
+            short_loss < short_win,
+            "a short's worse exit must sort first"
+        );
+
+        // anything that is not an exit sorts last and never reorders (ADR 0071)
+        for (position, side) in [
+            (2.0, Side::Buy),   // adding to a long
+            (-2.0, Side::Sell), // adding to a short
+            (0.0, Side::Buy),   // opening from flat
+            (0.0, Side::Sell),
+        ] {
+            assert_eq!(
+                adversity(position, 100.0, &exit_at(side, 90.0)),
+                f64::INFINITY,
+                "position {position} with a {side:?} is not an exit"
+            );
+        }
+        assert!(long_loss < f64::INFINITY);
     }
 
     /// A random walk built into consistent OHLC bars, violent enough to liquidate a
