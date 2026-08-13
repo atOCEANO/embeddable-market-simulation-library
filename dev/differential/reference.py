@@ -80,26 +80,70 @@ class Reference:
 
     # ---------------------------------------------------------------- placing
 
-    def market_order(self, side, size, reduce_only=False):
+    def market_order(self, side, size, reduce_only=False, fok=False):
         # ADR 0070: a size that can never fill is refused a slot rather than taking one
         if not math.isfinite(size) or size <= 0.0:
             return None
         if len(self.pending) >= self.slots:
             return None
         order = dict(id=self.next_id, side=side, size=size, kind="market",
-                     reduce_only=reduce_only)
+                     reduce_only=reduce_only, fok=fok)
         self.next_id += 1
         self.pending.append(order)
         return order["id"]
 
-    def limit_order(self, side, size, price):
+    def cancel(self, order_id):
+        for i, order in enumerate(self.resting):
+            if order is not None and order["id"] == order_id:
+                self.resting[i] = None
+                return True
+        return False
+
+    def replace(self, order_id, size=None, price=None, trigger=None):
+        """ADR 0032: cancel and re-rest, and place NOTHING when the id is gone.
+
+        ADR 0069 adds the half that took a defect to find: when the replacement is
+        itself refused, the original goes back, because `None` means nothing
+        happened and a caller trailing a stop reads it as "it already filled".
+        """
+        old = None
+        slot = None
+        for i, order in enumerate(self.resting):
+            if order is not None and order["id"] == order_id:
+                old, slot = order, i
+                break
+        if old is None:
+            return None
+        self.resting[slot] = None
+        size = old["size"] - old["filled"] if size is None else size
+        if old["kind"] == "limit":
+            placed = self.limit_order(old["side"], size,
+                                      old["price"] if price is None else price,
+                                      post_only=old["post_only"])
+        else:
+            placed = self.stop_order(old["side"], size,
+                                     old["trigger"] if trigger is None else trigger,
+                                     old["reduce_only"])
+        if placed is None:
+            self.resting[slot] = old
+        return placed
+
+    def limit_order(self, side, size, price, post_only=False, fok=False):
         if not math.isfinite(size) or size <= 0.0 or not math.isfinite(price):
             return None
+        # ADR 0045 by way of order.rs: a post_only limit that would cross the
+        # market as it stands is REFUSED rather than turned taker
+        if post_only:
+            reference = self.bars[self.tick][3]
+            crosses = price >= reference if side == "buy" else price <= reference
+            if crosses:
+                return None
         slot = self.free_slot()
         if slot is None:
             return None
         order = dict(id=self.next_id, side=side, size=size, kind="limit",
-                     price=price, filled=0.0, reduce_only=False)
+                     price=price, filled=0.0, reduce_only=False,
+                     post_only=post_only, fok=fok)
         self.next_id += 1
         self.resting[slot] = order
         return order["id"]
@@ -111,7 +155,8 @@ class Reference:
         if slot is None:
             return None
         order = dict(id=self.next_id, side=side, size=size, kind="stop",
-                     trigger=trigger, filled=0.0, reduce_only=reduce_only)
+                     trigger=trigger, filled=0.0, reduce_only=reduce_only,
+                     post_only=False, fok=False)
         self.next_id += 1
         self.resting[slot] = order
         return order["id"]
@@ -302,6 +347,12 @@ class Reference:
             raw = o * (1.0 + slip) if order["side"] == "buy" else o * (1.0 - slip)
             price = self.within(order["side"], raw, seen)
             size = self.clamp(order["side"], size, price, order["reduce_only"], True)
+            # ADR 0025: all or nothing is decided AFTER the clamps, because the
+            # size that can actually fill is not the one the fill model offered:
+            # the margin cap, the cash and short clamps and reduce_only all shrink
+            # it afterwards, so a FOK that could only fill in part books nothing
+            if order["fok"] and size + DUST < order["size"]:
+                continue
             self.apply(order["side"], size, price, True)
         self.pending = []           # ADR 0016: a market order is IOC
 
@@ -337,6 +388,10 @@ class Reference:
         offers = self.worst_first(offers)
         for order, size, price, taker in offers:
             got = self.clamp(order["side"], size, price, order["reduce_only"], taker)
+            # judged against the account as it stands when this order is reached,
+            # not against a snapshot taken before the bar's earlier fills (ADR 0025)
+            if order["fok"] and got + DUST < order["size"] - order["filled"]:
+                continue
             applied = self.apply(order["side"], got, price, taker)
             # ADR 0068: consumed by what it filled, and it rests until there is none left
             order["filled"] += applied

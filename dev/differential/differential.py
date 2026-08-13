@@ -51,7 +51,11 @@ def config(rng):
     )
 
 
-KINDS = os.environ.get("KINDS", "market,limit,stop").split(",")
+# every order surface the reference models, so the gate exercises all of them.
+# Narrow it with KINDS=limit when a disagreement needs isolating, which is how
+# ADR 0079 was found: whole-surface runs said "limits", and limits alone said
+# which limit
+KINDS = os.environ.get("KINDS", "market,limit,stop,fok,post,cancel").split(",")
 
 
 def plan(rng, bars):
@@ -65,6 +69,12 @@ def plan(rng, bars):
         side = rng.choice(["buy", "sell"])
         if kind == "market":
             out.append(("market", side, rng.uniform(0.1, 40.0)))
+        elif kind == "fok":
+            out.append(("fok", side, rng.uniform(0.1, 40.0)))
+        elif kind == "post":
+            out.append(("post", side, rng.uniform(0.1, 20.0), rng.uniform(50.0, 200.0)))
+        elif kind == "cancel":
+            out.append(("cancel", side, 0.0))
         else:
             out.append((kind, side, rng.uniform(0.1, 20.0), rng.uniform(50.0, 200.0)))
     return out
@@ -81,9 +91,9 @@ def drive_engine(bars, cfg, actions):
         report=True,
     )
     engine.reset()
-    seen = []
+    seen, live = [], []
     for action in actions:
-        place(engine, action)
+        place(engine, action, live)
         state = engine.step()
         seen.append((state["position"], state["equity"]))
         if engine.done():
@@ -91,29 +101,52 @@ def drive_engine(bars, cfg, actions):
     return seen, engine
 
 
-def place(engine, action):
+def place(engine, action, live):
+    """`live` collects the ids both sides believe are resting, so cancel and
+    replace address the same order in each."""
     if action is None:
         return
     kind = action[0]
     if kind == "market":
-        (engine.market_buy if action[1] == "buy" else engine.market_sell)(action[2])
+        got = (engine.market_buy if action[1] == "buy" else engine.market_sell)(action[2])
     elif kind == "limit":
-        (engine.limit_buy if action[1] == "buy" else engine.limit_sell)(action[2], action[3])
+        got = (engine.limit_buy if action[1] == "buy" else engine.limit_sell)(action[2], action[3])
+    elif kind == "fok":
+        got = engine.order(action[1], action[2], "market", None, None, False, False, "fok")
+    elif kind == "post":
+        got = engine.order(action[1], action[2], "limit", action[3], None, False, True, "gtc")
+    elif kind == "cancel":
+        got = None
+        if live:
+            engine.cancel(live[0])
     else:
-        engine.stop(action[1], action[2], action[3], True)
+        got = engine.stop(action[1], action[2], action[3], True)
+    if kind in ("limit", "post", "stop") and got is not None:
+        live.append(got)
+    if kind == "cancel" and live:
+        live.pop(0)
 
 
 def drive_reference(bars, cfg, actions):
     ref = Reference(bars, **cfg)
-    seen = []
+    seen, live = [], []
     for action in actions:
-        if action is not None:
-            if action[0] == "market":
-                ref.market_order(action[1], action[2])
-            elif action[0] == "limit":
-                ref.limit_order(action[1], action[2], action[3])
-            else:
-                ref.stop_order(action[1], action[2], action[3], True)
+        got, kind = None, action[0] if action else None
+        if kind == "market":
+            got = ref.market_order(action[1], action[2])
+        elif kind == "limit":
+            got = ref.limit_order(action[1], action[2], action[3])
+        elif kind == "fok":
+            got = ref.market_order(action[1], action[2], fok=True)
+        elif kind == "post":
+            got = ref.limit_order(action[1], action[2], action[3], post_only=True)
+        elif kind == "cancel":
+            if live:
+                ref.cancel(live.pop(0))
+        elif kind == "stop":
+            got = ref.stop_order(action[1], action[2], action[3], True)
+        if kind in ("limit", "post", "stop") and got is not None:
+            live.append(got)
         ref.step()
         seen.append((ref.position, ref.equity(ref.bars[ref.tick][3])))
         if ref.tick + 1 >= len(bars):
