@@ -2868,16 +2868,11 @@ mod tests {
     /// A perp with every cost switched on and reporting, so nothing is left out of
     /// the paths these properties have to hold across.
     ///
-    /// `impact` is a realistic coefficient rather than an extreme one, and that is a
-    /// known limit rather than a tidy choice. Market impact is `impact` times the
-    /// fraction of the bar's volume taken (ADR 0013) and the total slip is bounded
-    /// only by ADR 0024's "just under 1", so at `impact = 0.5` against a bar the
-    /// order takes all of, a buy fills 50% above a price the bar never traded near.
-    /// A fill outside the bar's own range is not a fidelity limit, and it defeats
-    /// the bad-debt guarantee because the loss it books is bounded by nothing the
-    /// bar shows: the property below fails at that coefficient. Bounding a fill to
-    /// the bar is a decision about the cost model rather than a repair to this one,
-    /// so it is written up rather than smuggled in here.
+    /// `impact` is deliberately extreme. At 0.5 against a bar the order takes all
+    /// of, the raw slip is 50%, which is what found ADR 0074: the price left the
+    /// bar entirely and the loss it booked was bounded by nothing, so the bad-debt
+    /// guarantee fell over from outside the liquidation. Holding a taker price
+    /// inside its bar is what makes the property below hold at this coefficient.
     fn every_cost() -> EngineConfig {
         EngineConfig {
             market: Market::Perp,
@@ -2889,7 +2884,7 @@ mod tests {
             max_open_orders: 8,
             report: true,
             max_leverage: 10.0,
-            impact: 0.01,
+            impact: 0.5,
             funding_rate: 0.0001,
             funding_interval: 3,
         }

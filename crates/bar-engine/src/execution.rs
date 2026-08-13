@@ -65,6 +65,24 @@ impl FillModel {
         slip.min(MAX_SLIP)
     }
 
+    /// A taker price held inside the bar that produced it.
+    ///
+    /// Slippage and impact are adverse by construction, and impact is bounded above
+    /// by nothing the bar shows: it is `impact` times the fraction of the bar's
+    /// volume taken (ADR 0013), and the total is capped only at `MAX_SLIP`, which is
+    /// a rule about not reaching zero rather than about the market. So an order
+    /// taking a whole bar at a coefficient of 0.5 was priced 50% away from anything
+    /// the bar traded near. A venue cannot fill outside what traded, and a loss
+    /// booked against a price the bar does not show is bounded by nothing at all,
+    /// which defeats the liquidation's own guarantee from outside the liquidation
+    /// (ADRs 0052, 0067). The bound is the bar's own range (ADR 0074).
+    fn within(side: Side, price: f64, bar: &Candle) -> f64 {
+        match side {
+            Side::Buy => price.min(bar.high),
+            Side::Sell => price.max(bar.low),
+        }
+    }
+
     /// Fill a market order against `bar` (the bar after the decision). Priced off
     /// the bar open, lifted on a buy and dropped on a sell by the slippage, sized
     /// at the remaining capped to the volume fraction. `None` if the bar gives no
@@ -79,7 +97,11 @@ impl FillModel {
             Side::Buy => bar.open * (1.0 + slip),
             Side::Sell => bar.open * (1.0 - slip),
         };
-        Some(taker(order.side, size, price))
+        Some(taker(
+            order.side,
+            size,
+            Self::within(order.side, price, bar),
+        ))
     }
 
     /// Fill a resting limit against `bar`. A buy fills if the bar trades at or
@@ -139,7 +161,11 @@ impl FillModel {
             Side::Buy => bar.open.max(trigger) * (1.0 + slip),
             Side::Sell => bar.open.min(trigger) * (1.0 - slip),
         };
-        Some(taker(order.side, size, price))
+        Some(taker(
+            order.side,
+            size,
+            Self::within(order.side, price, bar),
+        ))
     }
 
     /// Would a limit at `price` on `side` cross immediately against `reference`,
@@ -484,5 +510,58 @@ mod tests {
         assert!(!m.limit_crosses(Side::Buy, Price(95.0), Price(100.0))); // buy below: maker
         assert!(m.limit_crosses(Side::Sell, Price(95.0), Price(100.0))); // sell below market
         assert!(!m.limit_crosses(Side::Sell, Price(105.0), Price(100.0))); // sell above: maker
+    }
+
+    // a taker price never leaves the bar that produced it (ADR 0074)
+
+    #[test]
+    fn impact_cannot_price_a_market_fill_outside_the_bar() {
+        // impact is a coefficient times the fraction of the bar's volume taken, and
+        // the total slip is bounded only by MAX_SLIP, which is a rule about not
+        // reaching zero. Taking a whole bar at 0.5 priced a buy 50% above anything
+        // that traded, and the loss booked against it was bounded by nothing
+        let m = FillModel {
+            slippage_bps: Bps(0.0),
+            max_fill_fraction: 1.0,
+            impact: 0.5,
+        };
+        let bar = ohlc(100.0, 101.0, 99.0, 100.0, 10.0);
+        let bought = m
+            .fill_market(&market(Side::Buy, 10.0), &bar)
+            .expect("fills");
+        assert_eq!(bought.price.get(), 101.0);
+        let sold = m
+            .fill_market(&market(Side::Sell, 10.0), &bar)
+            .expect("fills");
+        assert_eq!(sold.price.get(), 99.0);
+    }
+
+    #[test]
+    fn a_slipped_stop_stays_inside_its_bar() {
+        let m = FillModel {
+            slippage_bps: Bps(5_000.0), // 50%, far past the bar
+            max_fill_fraction: 1.0,
+            impact: 0.0,
+        };
+        let bar = ohlc(100.0, 101.0, 90.0, 95.0, 1000.0);
+        let fill = m
+            .fill_stop(&stop(Side::Sell, 1.0, 97.0), &bar)
+            .expect("triggered");
+        assert_eq!(fill.price.get(), 90.0);
+    }
+
+    #[test]
+    fn an_ordinary_slip_is_untouched_by_the_bound() {
+        // the bound is a bound, not a behaviour change: a normal slip off the open
+        // lands well inside the bar and comes through exactly as before
+        let bar = ohlc(100.0, 105.0, 95.0, 102.0, 1000.0);
+        let fill = model(10.0, 1.0)
+            .fill_market(&market(Side::Buy, 1.0), &bar)
+            .expect("fills");
+        assert!(
+            (fill.price.get() - 100.1).abs() < 1e-12,
+            "{}",
+            fill.price.get()
+        );
     }
 }
