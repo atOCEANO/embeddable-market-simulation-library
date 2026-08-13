@@ -90,6 +90,21 @@ RUN pip install --no-cache-dir /wheels/*.whl numpy gymnasium optuna cloudpickle
 COPY benchmarks /benchmarks
 CMD ["python", "/benchmarks/surfaces.py"]
 
+# The chart layer's other half. Every assertion in the correctness gate reads the
+# JSON spec, because the gate has no browser and a spec assertion is the sharper
+# test of what Python decided (ADR 0043). What it cannot reach is whether the
+# shipped JavaScript parses, runs and draws. This stage supplies the browser, so
+# it is opt-in and kept out of the correctness gate for the same reason test-sb3
+# is, that the image is heavy:
+#   docker build --target test-browser .
+# The image ships the browsers under /ms-playwright but not the python package,
+# and the two are versioned together, so the pin here has to match the tag above.
+FROM mcr.microsoft.com/playwright/python:v1.47.0-jammy AS test-browser
+COPY --from=builder /wheels /wheels
+COPY tests /tests
+RUN pip install --no-cache-dir /wheels/*.whl numpy pandas pytest playwright==1.47.0 \
+    && pytest -q -p no:cacheprovider /tests/test_render.py
+
 # Stable-Baselines3 integration: install torch and sb3 and run the adapter tests.
 # torch is heavy, so this is opt-in and kept out of the correctness gate:
 #   docker build --target test-sb3 .
