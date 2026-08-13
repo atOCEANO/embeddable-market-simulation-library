@@ -555,6 +555,12 @@ def _closes(frame):
     return data[:, 3]
 
 
+# where an annualized growth rate saturates, mirroring bar-engine/src/stats.rs:
+# on minute candles the exponent leaves the float range and CAGR escapes to
+# infinity, which is a meaning ADR 0046 reserves for something else (ADR 0072)
+_CAGR_CEILING = 1e12
+
+
 def _ratio(mean, spread, ppy):
     if spread > 0.0:
         return mean / spread * math.sqrt(ppy)
@@ -609,11 +615,13 @@ def _stats(series, trades, ppy, rate):
     if opening > 0.0 and n_returns > 0:
         total = final / opening - 1.0
         cagr = (final / opening) ** (ppy / n_returns) - 1.0 if final > 0.0 else -1.0
+        cagr = min(cagr, _CAGR_CEILING)
     else:
         total, cagr = 0.0, 0.0
     previous = series[:-1]
     with np.errstate(divide="ignore", invalid="ignore"):
         rets = np.where(previous > 0.0, series[1:] / previous - 1.0, 0.0)
+    rets = np.where(np.isfinite(rets), rets, 0.0)
     per = rate / ppy
     if rets.size >= 2:
         excess = float(rets.mean()) - per
@@ -636,7 +644,7 @@ def _stats(series, trades, ppy, rate):
         "cagr_pct": cagr * 100.0,
         "sharpe": sharpe_,
         "sortino": sortino,
-        "calmar": _ratio(cagr, max_dd, 1.0),
+        "calmar": cagr * max_dd if cagr < 0.0 else _ratio(cagr, max_dd, 1.0),
         "max_drawdown_pct": max_dd * 100.0,
         "volatility_pct": volatility * 100.0,
         "win_rate": len(wins) / len(nets) if nets else 0.0,

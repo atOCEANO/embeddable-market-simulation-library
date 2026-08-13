@@ -43,6 +43,10 @@ pub struct Stats {
     pub funding_paid: f64,
 }
 
+/// Where an annualized growth rate saturates. Not a meaningful rate, a marker
+/// that the run was too short a slice of a year for one to mean anything.
+const CAGR_CEILING: f64 = 1e12;
+
 /// A reward over a risk that can be zero, ranked so the set stays orderable.
 ///
 /// A positive reward earned against no measured risk is the best outcome there
@@ -102,8 +106,22 @@ impl Stats {
             // A wipeout (final equity at or below zero, e.g. a perp bust past zero)
             // annualizes to -100%; computing it as powf of a non-positive ratio
             // would be NaN and poison a sweep's argmax (ADR 0007).
+            //
+            // At the other end it overflows. Annualizing raises the ratio to
+            // one-over-the-years, and on high-frequency candles that exponent
+            // leaves the float range: 200
+            // minute bars is 0.00038 of a year, so a 50% gain annualizes past
+            // f64::MAX and comes back infinite. A run ending +50% and one ending
+            // +300% then report the same infinity, tie at the top of a sweep, and
+            // borrow the meaning ADR 0046 reserves for a reward earned against no
+            // measured risk. ADR 0048 derives the annualization from the candles,
+            // so minute bars are not an exotic input. The value saturates rather
+            // than escaping; `total_return_pct` is what to rank a sub-year run on,
+            // because an annualized rate off a few hours is an extrapolation and
+            // not a measurement (ADR 0072).
             let cagr = if final_equity > 0.0 {
-                (final_equity / initial).powf(periods_per_year / n_returns as f64) - 1.0
+                let raw = (final_equity / initial).powf(periods_per_year / n_returns as f64) - 1.0;
+                raw.min(CAGR_CEILING)
             } else {
                 -1.0
             };
@@ -114,9 +132,21 @@ impl Stats {
 
         // Guard against a non-positive previous equity: after a bust the ratio would
         // flip sign meaninglessly, so those bars contribute a zero return.
+        // A non-finite return is dropped to zero for the same reason: `variance`
+        // would be `inf - inf`, and `volatility_pct` is the one number here that is
+        // not routed through `ranked`, whose comparisons against NaN are all false
+        // and fall through to zero. So volatility alone came back NaN, which is
+        // exactly what ADR 0007 promises never happens (ADR 0072).
         let returns: Vec<f64> = series
             .windows(2)
-            .map(|w| if w[0] > 0.0 { w[1] / w[0] - 1.0 } else { 0.0 })
+            .map(|w| {
+                let step = if w[0] > 0.0 { w[1] / w[0] - 1.0 } else { 0.0 };
+                if step.is_finite() {
+                    step
+                } else {
+                    0.0
+                }
+            })
             .collect();
 
         let rf_per = risk_free / periods_per_year;
@@ -158,7 +188,20 @@ impl Stats {
             }
         }
 
-        let calmar = ranked(cagr, max_dd, 1.0);
+        // Calmar divides a return by a drawdown, and on a LOSING run that is a loss
+        // over a loss: the deeper the bust the larger the divisor, so a total
+        // wipeout scored -1.00 while a run that lost only 20% scored -3.71, and an
+        // argmax over the set picked the wipeout. That is the same inversion ADR
+        // 0029 was written to close, surviving underneath the 100% cap that closed
+        // it for busts, because the cap only equalizes busts against each other. A
+        // negative return is scaled by its drawdown instead of divided by it, which
+        // is the identical number at a total loss, so the two branches meet, and it
+        // orders the whole losing half the right way round (ADR 0072).
+        let calmar = if cagr < 0.0 {
+            cagr * max_dd
+        } else {
+            ranked(cagr, max_dd, 1.0)
+        };
 
         let exposure_pct = if !curve.is_empty() {
             in_position_steps as f64 / curve.len() as f64 * 100.0
@@ -436,5 +479,66 @@ mod tests {
         assert!(s.sharpe.is_finite());
         assert!(s.sortino.is_finite());
         assert!(approx(s.cagr_pct, -100.0)); // a wipeout annualizes to -100%
+    }
+
+    #[test]
+    fn calmar_orders_the_losing_runs_by_how_much_they_lost() {
+        // calmar divides a return by a drawdown, and on a loser that is a loss over
+        // a loss: the deeper the bust the larger the divisor, so a wipeout scored
+        // -1.00 and a run that lost 20% scored -3.71, and an argmax picked the
+        // wipeout. The 100% cap only equalizes busts against each other, so this
+        // survived underneath it (ADR 0072)
+        let wipeout: Vec<f64> = (0..60).map(|i| 1000.0 * (1.0 - i as f64 / 59.0)).collect();
+        let mild: Vec<f64> = (0..60).map(|i| 1000.0 - 200.0 * i as f64 / 59.0).collect();
+        let bust = compute(1000.0, &wipeout, &[], 365.0, 0.0, 0);
+        let scratch = compute(1000.0, &mild, &[], 365.0, 0.0, 0);
+        assert!(scratch.total_return_pct > bust.total_return_pct);
+        assert!(
+            scratch.calmar > bust.calmar,
+            "the wipeout outranked the mild loser: {} against {}",
+            bust.calmar,
+            scratch.calmar
+        );
+        assert!(bust.calmar.is_finite() && scratch.calmar.is_finite());
+    }
+
+    #[test]
+    fn a_high_annualization_saturates_rather_than_reaching_infinity() {
+        // ADR 0048 derives the annualization from the candles, so minute bars are an
+        // ordinary input, and 200 of them is 0.00038 of a year: the exponent leaves
+        // the float range and CAGR came back infinite. Infinity is reserved for a
+        // reward earned against no measured risk (ADR 0046), and a run that ties
+        // with every other overflowing run at the top of a sweep is not that
+        let mut curve: Vec<f64> = (0..200).map(|i| 1000.0 + i as f64).collect();
+        for (i, point) in curve.iter_mut().enumerate() {
+            if (80..100).contains(&i) {
+                *point -= 120.0;
+            }
+        }
+        let last = curve.len() - 1;
+        curve[last] = 1500.0;
+        let s = compute(1000.0, &curve, &[], 525_600.0, 0.0, 0);
+        assert!(s.cagr_pct.is_finite(), "cagr was {}", s.cagr_pct);
+        assert!(s.calmar.is_finite(), "calmar was {}", s.calmar);
+        assert!(
+            s.max_drawdown_pct > 0.0,
+            "the calmar denominator must be real"
+        );
+    }
+
+    #[test]
+    fn volatility_stays_finite_when_a_return_overflows() {
+        // every other statistic goes through `ranked`, whose comparisons against a
+        // NaN are all false and fall through to zero. Volatility is the one that
+        // does not, so an `inf - inf` variance surfaced there alone, which is the
+        // single thing ADR 0007 promises the set never does (ADR 0072)
+        let s = compute(1.0, &[1e-320, 1e300], &[], 252.0, 0.0, 2);
+        assert!(
+            s.volatility_pct.is_finite(),
+            "volatility was {}",
+            s.volatility_pct
+        );
+        assert!(!s.sharpe.is_nan());
+        assert!(!s.sortino.is_nan());
     }
 }
