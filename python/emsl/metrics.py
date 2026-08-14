@@ -874,6 +874,13 @@ def _null_shape(study, null):
             f"about the quantity you selected on, so deflating its sharpe would "
             f"be answering a question nobody asked; tune with objective='sharpe'"
         )
+    if getattr(study, "direction", None) == "minimize":
+        raise ValueError(
+            "this search minimized its objective, and a deflation asks how high "
+            "the best of many looks would reach on luck alone, so the threshold "
+            "it compares against is the wrong end of the spread; tune with "
+            "direction='maximize' to deflate a winner"
+        )
     if getattr(null, "sampler", None) != "random":
         raise ValueError(
             "null must be a search run with sampler='random'. A TPE search "
@@ -1072,7 +1079,20 @@ def breakeven_bps(strategy, data, ceiling=100.0, tolerance=0.05, **config):
 def _fresh(strategy):
     # a class is rebuilt per run so nothing carries over between them; an instance
     # is taken as given, since the caller may have configured it
-    return strategy() if isinstance(strategy, type) else strategy
+    if not isinstance(strategy, type):
+        return strategy
+    try:
+        return strategy()
+    except TypeError as exc:
+        # the tunables are constructor arguments in every example the docs give,
+        # so the class that gets passed here is usually the one that cannot be
+        # built without them, and Python's own message names neither the sweep
+        # nor the fix (ADR 0092)
+        raise TypeError(
+            f"{strategy.__name__} takes arguments to build, and a sweep rebuilds "
+            f"the strategy for each run, so it needs one it can build with none; "
+            f"pass a configured instance instead, {strategy.__name__}(...)"
+        ) from exc
 
 
 def _own_the_fees(config, where):

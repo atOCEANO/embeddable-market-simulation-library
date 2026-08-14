@@ -1181,3 +1181,29 @@ def test_the_decay_is_the_mean_gap_and_a_flat_window_never_counts_as_a_win():
     # two of the four scored windows are above zero. Counting the flat one as a
     # win gives 0.75, dropping it from the denominator gives 0.667
     assert forward.consistency == pytest.approx(0.5)
+
+
+class Tunable(Strategy):
+    # the shape every documented sweep example uses: the tunables arrive as
+    # constructor arguments, so the class cannot be built with none of them
+    def __init__(self, every):
+        self.every = int(every)
+
+    def next(self, state, engine):
+        if state["tick_index"] % self.every == 0:
+            engine.market_buy(1.0)
+        elif state["position"] > 0.0:
+            engine.close()
+
+
+def test_a_sweep_names_the_strategy_it_cannot_build():
+    # a sweep rebuilds the strategy per run, so it needs one it can build with no
+    # arguments. Python's own message names neither the sweep nor the fix, and it
+    # is the failure every documented example walked into (ADR 0092)
+    with pytest.raises(TypeError) as excinfo:
+        metrics.breakeven_bps(Tunable, series())
+    said = str(excinfo.value)
+    assert "Tunable" in said
+    assert "configured instance" in said
+    # and the instance form the message points at is accepted
+    assert metrics.breakeven_bps(Tunable(4), series(), ceiling=20.0) is not None

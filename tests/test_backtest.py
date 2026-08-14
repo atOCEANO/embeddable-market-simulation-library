@@ -150,3 +150,36 @@ def test_a_warmup_that_is_not_a_count_of_bars_is_refused():
     with pytest.raises(ValueError) as excinfo:
         Backtester(series(), periods_per_year=365.0).run(strategy)
     assert "non-negative whole number of bars" in str(excinfo.value)
+
+
+def test_a_run_that_ended_at_zero_says_so_on_the_result():
+    # a forced close books a row carrying liquidated, but an account drained by
+    # fees or funding books nothing at all, so the trade log cannot always say
+    # it happened and the run-level flag is the only place that can (ADR 0091)
+    bars = np.array([
+        [100.0, 100.0, 100.0, 100.0, 1_000.0],
+        [100.0, 100.0, 100.0, 100.0, 1_100.0],
+        [100.0, 100.0, 80.0, 85.0, 1_200.0],
+        [85.0, 90.0, 85.0, 90.0, 1_300.0],
+        [90.0, 95.0, 90.0, 95.0, 1_400.0],
+    ], dtype=np.float64)
+
+    class BuyAndDie(Strategy):
+        def init(self, engine):
+            self.placed = False
+
+        def next(self, state, engine):
+            if not self.placed:
+                engine.market_buy(9.9)
+                self.placed = True
+
+    dead = Backtester(bars, market="perp", quote=100.0, fee_taker=0.001,
+                      fee_maker=0.001, leverage=10.0).run(BuyAndDie())
+    assert dead.bust is True
+    assert dead.to_dict()["bust"] is True
+    assert any(t["liquidated"] for t in dead.trades)
+
+    alive = Backtester(series(), market="spot", fee_taker=0.0,
+                       fee_maker=0.0).run(BuyThenClose())
+    assert alive.bust is False
+    assert alive.to_dict()["bust"] is False

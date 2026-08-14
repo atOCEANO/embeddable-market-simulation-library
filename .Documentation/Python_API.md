@@ -352,7 +352,7 @@ print(result.stats["sharpe"], result.stats["max_drawdown_pct"])
 print(result.equity_curve[-1], len(result.trades))
 ```
 
-`Backtester(candles, market, quote, fee_taker, fee_maker, slippage_bps, max_fill_fraction, max_open_orders, leverage, impact, funding_rate, funding_interval, periods_per_year, risk_free)` shares the engine knobs and adds the two stats parameters. `run(strategy)` returns a `BacktestResult` with `.stats` (dict), `.equity_curve` (numpy array), `.trades` (list of dicts), `.initial` (the balance the run opened with, which the curve does not contain because it records a point per advance), `.periods_per_year` (the annualization the stats were computed at), and the identity fields `.config`, `.data_hash`, `.strategy` and `.version` that let one run be told from another ([Telling two runs apart](#telling-two-runs-apart)).
+`Backtester(candles, market, quote, fee_taker, fee_maker, slippage_bps, max_fill_fraction, max_open_orders, leverage, impact, funding_rate, funding_interval, periods_per_year, risk_free)` shares the engine knobs and adds the two stats parameters. `run(strategy)` returns a `BacktestResult` with `.stats` (dict), `.equity_curve` (numpy array), `.trades` (list of dicts), `.initial` (the balance the run opened with, which the curve does not contain because it records a point per advance), `.periods_per_year` (the annualization the stats were computed at), `.bust` (the account reached zero, which the trade log cannot always say: a forced close books a row carrying `liquidated`, but an account drained by fees or funding books nothing at all), and the identity fields `.config`, `.data_hash`, `.strategy` and `.version` that let one run be told from another ([Telling two runs apart](#telling-two-runs-apart)).
 
 **`periods_per_year` is read from the candles.** Hand it a DataFrame or a parquet path with a datetime index and it takes the median gap between bars, so hourly candles annualize at 8760 without being told and a run whose feed is missing a day is still hourly. It snaps to a real interval only when already within one percent of one, and says so when the spacing matches none: a series typically five hours apart is a mixed or decimated feed, not four-hour candles. A numpy array carries no timestamps, so it warns and falls back to 365 rather than assuming. Passing a number overrides all of it ([ADR 0048](Decisions.md)). Subclass `Strategy` and override `next(state, engine)`; `init(engine)` is optional. The same `Strategy` is the unit [tuning](#tuning) searches: declare the tunable parameters as constructor arguments, and `tune` builds a fresh strategy per trial.
 
@@ -517,7 +517,7 @@ Leaving `oos` out warns, because the default cannot be silent without being a tr
 
 The `TuneResult` carries `.best_params` (a dict), `.best_value` (the objective at the best trial), `.best_stats` (the winning run's full [stats](#statistics) dict, so its return, drawdown, and trade count are there without a re-run), `.trials` (a list of `{number, params, value, state, stats}`), and `.study` (the underlying optuna study for deeper inspection). `.best_strategy()` builds a fresh strategy from `.best_params`.
 
-It also carries `.best_result`, the winner re-run on the bars it was chosen on, so it can be charted or measured without rebuilding the search's configuration by hand, plus `.oos_result` and `.oos_stats` when a [holdout](#in-sample-and-out-of-sample) was kept. The last four, `.objective`, `.sampler`, `.min_trades` and `.data_hash`, are what a search knows about itself, and they exist so that [`deflated_sharpe`](#what-the-number-is-worth) can check a null belongs to this search rather than trusting you: the right statistic, an honest sampler, no activity floor narrowing its spread, and the same bars.
+It also carries `.best_result`, the winner re-run on the bars it was chosen on, so it can be charted or measured without rebuilding the search's configuration by hand, plus `.oos_result` and `.oos_stats` when a [holdout](#in-sample-and-out-of-sample) was kept. The last five, `.objective`, `.sampler`, `.direction`, `.min_trades` and `.data_hash`, are what a search knows about itself, and they exist so that [`deflated_sharpe`](#what-the-number-is-worth) can check a null belongs to this search rather than trusting you: the right statistic, an honest sampler, the direction it was pointed, no activity floor narrowing its spread, and the same bars. A deflation asks how high the best of many looks would reach on luck alone, so a search that minimized its objective is refused rather than measured against the wrong end of its own spread ([ADR 0090](Decisions.md)).
 
 `sampler` is `"tpe"` by default, which learns where the good parameters are, or `"random"`, which does not. Random search is worse at finding a winner and is exactly what you want for a null.
 
@@ -547,11 +547,12 @@ emsl.chart(frame=candles, run=forward.result).show()
 | `result` | The run, as any other `BacktestResult`. |
 | `stats` | Its stats, which are out of sample by construction. |
 | `windows` | One record per refit: `fitted_on`, `traded_on`, `params`, `fitted`, `traded`, `bars_traded`. |
-| `decay` | Mean fitted score less traded score. How much the fit flattered itself, in the objective's own units. |
-| `consistency` | The share of stretches whose traded score cleared zero. |
+| `decay` | Mean fitted score less traded score. How much the fit flattered itself, in the objective's own units. Positive means degraded under either direction. |
+| `consistency` | The share of stretches whose traded score cleared zero. Not a number when the search minimized, where zero is a floor rather than a break-even. |
+| `direction` | Which way the search was pointed, which is what orients the two above ([ADR 0090](Decisions.md)). |
 | `span` | The first and last bar any window traded. |
 
-`decay` is the interpretable part. A large positive number says the search keeps finding things that do not survive the next stretch, which is the failure a single holdout can see once and this one sees repeatedly.
+`decay` is the interpretable part. A large positive number says the search keeps finding things that do not survive the next stretch, which is the failure a single holdout can see once and this one sees repeatedly. Positive carries that meaning in both directions: under `direction="minimize"` a smaller traded score is the better one, so the gap is turned over before it is averaged rather than reading backwards. `consistency` is not turned over, it is withheld, because it counts stretches that cleared zero and a minimized objective is a magnitude that never goes under zero, so the share would be a constant rather than a reading ([ADR 0090](Decisions.md)).
 
 **`traded` is read off the run that happened**, through [`segment`](#over-time-rather-than-in-total), seeded from the balance the account carried into that stretch. It used to come from a fresh isolated backtest over the window's bars, which is the stitching ADR 0057 refuses one level down: that run restarts every warm-up inside the window, so a winner needing 150 bars of history never had `next` called on a 60-bar stretch and the window reported a tidy `0.0`, indistinguishable from a stretch that genuinely broke even ([ADR 0060](Decisions.md)). `bars_traded` is beside it for the same reason: it counts the bars of the window its own winner could decide on, so a window nobody traded reads as one. `traded` is `None` when the objective is a callable, since a callable takes a whole result and a window is a slice of one.
 
@@ -592,8 +593,8 @@ metrics.probabilistic_sharpe(result)      # the chance the true sharpe beats zer
 The shipped defaults are a frictionless venue: `slippage_bps=0.0`, `impact=0.0`, `max_fill_fraction=1.0`, and on a perp `funding_rate=0.0`. An edge found there is an edge nobody can trade, so the useful question is not whether a strategy makes money but how much cost it lives through.
 
 ```python
-metrics.cost_curve(SmaCross, candles, costs=(0.0, 2.0, 5.0, 10.0, 20.0))
-metrics.breakeven_bps(SmaCross, candles)      # the round-trip cost that kills it
+metrics.cost_curve(SmaCross(20, 60), candles, costs=(0.0, 2.0, 5.0, 10.0, 20.0))
+metrics.breakeven_bps(SmaCross(20, 60), candles)  # the round-trip cost that kills it
 ```
 
 Both re-run the backtest, so they take the strategy and the data rather than a finished result. Costs are **round trip** in basis points, split evenly across the two sides, so `10` is five in and five out. A `Strategy` subclass is rebuilt for each run; an instance is reused as given. Anything else you pass goes to the `Backtester` unchanged, except `fee_taker` and `fee_maker`, which the sweep sets itself and refuses as a contradiction. `breakeven_bps` returns `None` when the strategy already loses for free, and the ceiling when it survives all the way there.
@@ -662,7 +663,7 @@ A tuned parameter set is still in-sample no matter what probability is attached 
 
 ### Telling two runs apart
 
-A `BacktestResult` carries `config` (the engine settings it ran under), `data_hash` (eight characters over the candles it saw), `strategy` (the class name plus its `repr`), `version`, `periods_per_year` and `risk_free`. `to_dict()` returns all of it plus the stats as plain data, without the equity curve or the trade log, since neither distinguishes anything and both are large.
+A `BacktestResult` carries `config` (the engine settings it ran under), `data_hash` (eight characters over the candles it saw), `strategy` (the class name plus its `repr`), `version`, `bust`, `periods_per_year` and `risk_free`. `to_dict()` returns all of it plus the stats as plain data, without the equity curve or the trade log, since neither distinguishes anything and both are large.
 
 ```python
 metrics.compare({"cheap": cheap_run, "dear": expensive_run})

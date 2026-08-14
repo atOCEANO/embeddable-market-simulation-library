@@ -98,7 +98,7 @@ class BacktestResult:
 
     def __init__(self, stats, equity_curve, trades, initial=None,
                  periods_per_year=None, risk_free=0.0, config=None,
-                 data_hash=None, strategy=None):
+                 data_hash=None, strategy=None, bust=False):
         self.stats = stats
         self.equity_curve = equity_curve
         self.trades = trades
@@ -108,6 +108,10 @@ class BacktestResult:
         self.config = dict(config) if config else {}
         self.data_hash = data_hash
         self.strategy = strategy
+        # the account reached zero, which a trade row cannot always say: a forced
+        # close books one carrying liquidated, and an account drained by fees or
+        # funding books nothing at all (ADR 0091)
+        self.bust = bool(bust)
         self.version = _version()
 
     def to_dict(self):
@@ -124,6 +128,7 @@ class BacktestResult:
             "initial": self.initial,
             "periods_per_year": self.periods_per_year,
             "risk_free": self.risk_free,
+            "bust": self.bust,
             "bars": len(self.equity_curve) + 1 if self.equity_curve is not None else 0,
         }
         out.update({f"config_{k}": v for k, v in self.config.items()})
@@ -205,6 +210,7 @@ class Backtester:
             config=self._config,
             data_hash=self._data_hash,
             strategy=_name(strategy),
+            bust=engine.is_bust(),
         )
 
     def _stamp_times(self, trades):

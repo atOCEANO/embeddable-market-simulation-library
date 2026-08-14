@@ -258,3 +258,39 @@ def test_a_market_can_drive_it_and_a_knob_beside_it_is_refused():
 def test_walk_forward_is_exported():
     assert "walk_forward" in emsl.__all__
     assert emsl.walk_forward is not None
+
+
+def test_decay_says_degraded_with_the_same_sign_in_both_directions():
+    # under minimize a smaller traded score is the better one, so the raw
+    # subtraction reports a comfortable positive for the windows that fell apart.
+    # Positive has to mean degraded either way or the number reads backwards
+    up = forward(objective="sharpe", direction="maximize")
+    scored = [w for w in up.windows if w["traded"] is not None]
+    assert scored
+    assert up.decay == pytest.approx(
+        float(np.mean([w["fitted"] - w["traded"] for w in scored]))
+    )
+
+    down = forward(objective="max_drawdown_pct", direction="minimize")
+    scored = [w for w in down.windows if w["traded"] is not None]
+    assert scored
+    assert down.decay == pytest.approx(
+        float(np.mean([w["traded"] - w["fitted"] for w in scored]))
+    )
+    # the property the sign is carrying: a window that traded to a deeper drawdown
+    # than it fitted has degraded, and must contribute a positive gap
+    deeper = [w for w in scored if w["traded"] > w["fitted"]]
+    assert deeper
+    for w in deeper:
+        assert w["traded"] - w["fitted"] > 0.0
+
+
+def test_consistency_refuses_a_minimized_objective_rather_than_answering():
+    # it counts the share of windows that cleared zero, and a minimized objective
+    # is a magnitude that is positive whenever it exists, so the share would be a
+    # constant 1.0 reading as a flawless procedure
+    down = forward(objective="max_drawdown_pct", direction="minimize")
+    assert np.isnan(down.consistency)
+    assert down.direction == "minimize"
+    up = forward(objective="sharpe", direction="maximize")
+    assert 0.0 <= up.consistency <= 1.0

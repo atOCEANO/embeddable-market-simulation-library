@@ -260,12 +260,12 @@ Higher wins by default; pass `direction="minimize"` when your metric is a cost. 
 ```python
 from emsl import metrics
 
-metrics.summary(result, candles)          # the headline, printed
-metrics.decompose(result)                 # gross, fees, funding, still open, net
-metrics.breakeven_bps(SmaCross, candles)  # the round-trip cost that kills it
-metrics.trade_stats(result)               # payoff, expectancy, worst losing streak
-metrics.period_returns(result, candles)   # by month, quarter or year
-metrics.compare({"cheap": a, "dear": b})  # several runs, side by side
+metrics.summary(result, candles)                  # the headline, printed
+metrics.decompose(result)                         # gross, fees, funding, still open, net
+metrics.breakeven_bps(SmaCross(20, 60), candles)  # the round-trip cost that kills it
+metrics.trade_stats(result)                       # payoff, expectancy, worst losing streak
+metrics.period_returns(result, candles)           # by month, quarter or year
+metrics.compare({"cheap": a, "dear": b})          # several runs, side by side
 ```
 
 The four pieces of `decompose` add up to the change in equity by construction, so the identity is the check. `breakeven_bps` matters because the shipped defaults are a frictionless venue: no slippage, no impact, one order allowed to eat a whole bar. "This dies at 8 basis points round trip and you pay 6" is worth more in the first week than any probability.
@@ -392,7 +392,7 @@ Anything not in that table, Windows on ARM for instance, builds from source in t
 **The version below is the one to change.** It appears twice, here and in the tagged source install below, and a test asserts both match the shipping wheel, because a hardcoded tag in a README goes stale the day after a release; take the current one from the badge at the top of this page or from the releases page.
 
 ```bash
-pip install --find-links https://github.com/atOCEANO/embeddable-market-simulation-library/releases/expanded_assets/v1.0.0 emsl
+pip install --find-links https://github.com/atOCEANO/embeddable-market-simulation-library/releases/expanded_assets/v1.1.0 emsl
 ```
 
 The optional extras use the same `--find-links` URL and stack:
@@ -413,7 +413,7 @@ Building from source needs the Rust toolchain ([rustup](https://rustup.rs)), and
 
 ```bash
 pip install "git+https://github.com/atOCEANO/embeddable-market-simulation-library.git"          # main
-pip install "git+https://github.com/atOCEANO/embeddable-market-simulation-library.git@v1.0.0"   # or a tag
+pip install "git+https://github.com/atOCEANO/embeddable-market-simulation-library.git@v1.1.0"   # or a tag
 ```
 
 From a local checkout, either as a plain install or as a development build:

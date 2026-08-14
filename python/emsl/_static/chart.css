@@ -146,3 +146,4 @@ tbody tr.sel { background: color-mix(in srgb, var(--s1) 18%, transparent); }
 tbody tr.sel td { color: var(--ink); }
 tbody tr.sel td:first-child { box-shadow: inset 2px 0 0 var(--s1); }
 .win { color: var(--win); } .loss { color: var(--loss); }
+.liq { color: var(--loss); font-weight: 600; }

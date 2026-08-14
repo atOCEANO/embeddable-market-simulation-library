@@ -239,3 +239,23 @@ def test_a_market_can_drive_the_null_too():
     null = venue.tune(SmaCross, SPACE, data, n_trials=10, seed=1, oos=0,
                       sampler="random", periods_per_year=365.0)
     assert 0.0 <= metrics.deflated_sharpe(study, null) <= 1.0
+
+
+def test_a_deflation_refuses_a_search_that_minimized_its_objective():
+    # the deflation asks how high the best of many looks would reach on luck, so
+    # the threshold it compares against is the top of the spread. A deliberately
+    # minimized winner sits at the other end, and it answered anyway before this,
+    # because it could see the objective and not the direction (ADR 0090)
+    study = emsl.tune(SmaCross, SPACE, series(), n_trials=8, seed=0,
+                      sampler="random", direction="minimize",
+                      periods_per_year=365.0, fee_taker=0.0, fee_maker=0.0)
+    assert study.direction == "minimize"
+    with pytest.raises(ValueError) as excinfo:
+        metrics.deflated_sharpe(study, search(sampler="random", seed=1))
+    assert "minimized" in str(excinfo.value)
+
+
+def test_a_maximized_search_still_carries_its_direction_and_deflates():
+    study = search(sampler="random", seed=0)
+    assert study.direction == "maximize"
+    assert 0.0 <= metrics.deflated_sharpe(study, search(sampler="random", seed=1)) <= 1.0

@@ -120,7 +120,10 @@ const mountTrades = function () {
   SPEC.trades.forEach(function (tr) { claim(SPEC.t[tr.in], tr); });
 
   document.getElementById("tbody").innerHTML = SPEC.trades.map(function (tr) {
-    return '<tr data-n="' + tr.i + '"><td>' + tr.i + '</td><td>' + tr.side +
+    // a forced close reads as an ordinary exit otherwise, so the side says which
+    // it was: the account ended this one, not the strategy
+    const side = tr.liq ? tr.side + ' <span class="liq">liq</span>' : tr.side;
+    return '<tr data-n="' + tr.i + '"><td>' + tr.i + '</td><td>' + side +
       '</td><td>' + tr.in + '</td><td>' + tr.out +
       '</td><td>' + fmt(tr.size, 4) + '</td><td>' + fmt(tr.px_in, digits) +
       '</td><td>' + fmt(tr.px_out, digits) + '</td><td>' + fmt(tr.fees, 2) +

@@ -426,7 +426,7 @@ class TuneResult:
     """
 
     def __init__(self, study, strategy, best_result=None, oos_result=None,
-                 objective=None, sampler=None, min_trades=0):
+                 objective=None, sampler=None, min_trades=0, direction=None):
         self._study = study
         self._strategy = strategy
         best = study.best_trial
@@ -443,6 +443,7 @@ class TuneResult:
         # it is meant to describe (ADR 0058)
         self.objective = objective
         self.sampler = sampler
+        self.direction = direction
         self.min_trades = int(min_trades)
         self.data_hash = best_result.data_hash if best_result is not None else None
         self.trials = [
@@ -597,6 +598,7 @@ def tune(
         ),
         sampler=sampler,
         min_trades=min_trades,
+        direction=direction,
     )
 
 

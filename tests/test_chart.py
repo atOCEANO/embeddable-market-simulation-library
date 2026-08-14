@@ -98,7 +98,8 @@ def everything():
             Band(close + 1.0, close - 1.0, "channel", fill="#11223344"),
             Band(close, 120.0, only="above", panel="flow", fill=("#00000000", "#000000ff")),
             Level(110.0, "mid"),
-            Marker(3, text="here", shape="arrow_up", offset=20, value=105.0),
+            Marker(3, text="here", shape="arrow_up", offset=20, value=105.0,
+                   color="#ff5470"),
             Markers(mask=held, shape="arrow_down", offset=-16, value=fast),
             Background(held, fill="#11223344"),
         ],
@@ -1343,3 +1344,43 @@ def test_the_document_carries_exactly_the_keys_the_renderer_reads():
     path = pathlib.Path(__file__).parent / "chart_schema.json"
     golden = json.loads(path.read_text(encoding="utf-8"))
     assert sorted(set(key_paths(everything().spec()))) == golden
+
+
+def test_a_marker_and_a_markers_carry_the_same_keywords_into_the_document():
+    # one primitive draws both, so a keyword one branch writes and the other drops
+    # is a difference with no cause. The golden could not catch this: it records
+    # the keys that were there, so an absent one reads as the contract (ADR 0089)
+    mask = np.zeros(8, dtype=bool)
+    mask[3] = True
+    spec = emsl.chart(frame(8), [
+        Marker(3, text="label", color="#ff0000"),
+        Markers(mask, text="label", color="#ff0000"),
+    ]).spec()
+    single, plural = spec["series"][0], spec["series"][1]
+    assert single["text"] == plural["text"] == "label"
+    assert single["color"] == plural["color"] == "#ff0000"
+    assert set(single) == set(plural)
+
+
+def test_a_marker_given_neither_keyword_spends_no_bytes_on_them():
+    spec = emsl.chart(frame(8), Marker(3)).spec()
+    entry = spec["series"][0]
+    assert "text" not in entry and "color" not in entry
+
+
+def test_a_forced_close_is_marked_in_the_trade_payload():
+    # the golden covers everything() and everything() never dies, so this key is
+    # conditional and has to be asserted here instead. A forced close reads as an
+    # ordinary exit otherwise, and the leverage that caused it goes unread (0091)
+    data = sank()
+    dead = emsl.backtest.Backtester(
+        data, market="perp", quote=100.0, leverage=10.0,
+        fee_taker=0.0, fee_maker=0.0,
+    ).run(BuyAtOpen())
+    assert dead.bust
+    rows = emsl.chart(data, run=dead).spec()["trades"]
+    assert any(row.get("liq") for row in rows)
+
+    ordinary = emsl.chart(frame(8), run=run()).spec()["trades"]
+    assert ordinary
+    assert not any("liq" in row for row in ordinary)

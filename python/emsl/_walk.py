@@ -85,11 +85,12 @@ class WalkForward:
     takes a whole result and a window is a slice of one.
     """
 
-    def __init__(self, result, windows, span):
+    def __init__(self, result, windows, span, direction="maximize"):
         self.result = result
         self.stats = result.stats
         self.windows = windows
         self.span = span
+        self.direction = direction
 
     @property
     def decay(self):
@@ -99,8 +100,15 @@ class WalkForward:
         positive number says the search is finding things that do not survive the
         next stretch, which is the failure a single holdout can see once and this
         sees repeatedly.
+
+        Positive means degraded in both directions. Under ``minimize`` the raw
+        subtraction says the opposite, because there a smaller traded score is the
+        better one, so the gap is turned over before it is averaged (ADR 0090).
         """
-        gaps = [w["fitted"] - w["traded"] for w in self.windows
+        # the sign, not the operands: taking traded less fitted instead would read
+        # the same here and diverge the moment a window reports one of them None
+        sign = -1.0 if self.direction == "minimize" else 1.0
+        gaps = [sign * (w["fitted"] - w["traded"]) for w in self.windows
                 if w["traded"] is not None and w["fitted"] is not None]
         return float(np.mean(gaps)) if gaps else float("nan")
 
@@ -111,7 +119,13 @@ class WalkForward:
         Blunt on purpose. A procedure that works should clear zero more often than
         not, and one that clears it in one window out of five had one good quarter
         rather than an edge.
+
+        Not a number under ``minimize``, where zero is not a break-even but a floor
+        the objective never goes under, so the share would be a constant rather
+        than a reading (ADR 0090).
         """
+        if self.direction == "minimize":
+            return float("nan")
         scored = [w["traded"] for w in self.windows if w["traded"] is not None]
         return float(np.mean([s > 0.0 for s in scored])) if scored else float("nan")
 
@@ -201,7 +215,7 @@ def walk_forward(
         candles, periods_per_year=periods_per_year, risk_free=risk_free, **config,
     ).run(composite)
     _score_windows(records, result, composite, objective)
-    return WalkForward(result, records, (layout[0][1], layout[-1][2]))
+    return WalkForward(result, records, (layout[0][1], layout[-1][2]), direction)
 
 
 def _score_windows(records, result, composite, objective):

@@ -768,6 +768,10 @@ def _trades(result, num_bars):
             "net": round(float(trade["net_pnl"]), 8),
             "bars": int(trade["bars_held"]),
         })
+        # only when it is set, so an ordinary run spends no bytes on it. A forced
+        # close is the one row a reader must not mistake for a decision (ADR 0091)
+        if trade.get("liquidated"):
+            out[-1]["liq"] = True
     return out
 
 
@@ -1183,6 +1187,13 @@ def chart(
             entry["offset"] = mark.offset
             if mark.value is not None:
                 entry["values"] = [mark.value]
+            # the same two keys the plural branch writes, and for the same reason:
+            # one primitive draws both, so a keyword the constructor accepted on
+            # one of them and dropped on the other is a difference with no cause
+            if mark.text:
+                entry["text"] = mark.text
+            if mark.color:
+                entry["color"] = mark.color
         elif mark.kind == "markers":
             # one flatnonzero, used for both the bars and their anchors, so the
             # two lists cannot come out of step
@@ -1222,7 +1233,7 @@ def chart(
     spec = {
         # 2 adds stats.funding_paid, which arrives because the spec mirrors the
         # whole stats dict and the engine now reports the funding a perp run paid
-        "schema": 2,
+        "schema": 3,
         "n": num_bars,
         # both built by numpy rather than by a comprehension. The candles are the
         # largest thing in the document by far, and rounding each of the four
