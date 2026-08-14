@@ -52,6 +52,9 @@ COPY --from=builder /wheels /wheels
 COPY tests /tests
 COPY .Documentation /docs
 COPY README.md /README.md
+# the tools, so test_docs.py can check that a page explains each one (ADR 0084).
+# /devtools rather than /dev, which is the device filesystem on any linux box
+COPY dev /devtools
 RUN pip install --no-cache-dir /wheels/*.whl numpy gymnasium pandas pyarrow optuna cloudpickle pytest \
     && python -c "import emsl; print('py39 wheel import OK')" \
     && pytest -q /tests
@@ -61,6 +64,7 @@ COPY --from=builder /wheels /wheels
 COPY tests /tests
 COPY .Documentation /docs
 COPY README.md /README.md
+COPY dev /devtools
 RUN pip install --no-cache-dir /wheels/*.whl numpy gymnasium pandas pyarrow optuna cloudpickle pytest \
     && python -c "import emsl; print('py311 wheel import OK')" \
     && pytest -q /tests
@@ -70,6 +74,7 @@ COPY --from=builder /wheels /wheels
 COPY tests /tests
 COPY .Documentation /docs
 COPY README.md /README.md
+COPY dev /devtools
 RUN pip install --no-cache-dir /wheels/*.whl numpy gymnasium pandas pyarrow optuna cloudpickle pytest \
     && python -c "import emsl; print('py312 wheel import OK')" \
     && pytest -q /tests

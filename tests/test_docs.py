@@ -22,6 +22,13 @@ _CANDIDATES = (
     pathlib.Path(__file__).resolve().parent.parent / ".Documentation",
 )
 
+# the tools are not the library (ADR 0084). /dev is taken on any linux box, so the
+# python stages land them on /devtools; a source checkout has them beside tests
+_TOOLS = (
+    pathlib.Path("/devtools"),
+    pathlib.Path(__file__).resolve().parent.parent / "dev",
+)
+
 _API = {
     "chart": emsl.chart,
     "chart_defaults": emsl.chart_defaults,
@@ -97,8 +104,46 @@ def called(func):
     return None
 
 
+def tools():
+    for root in _TOOLS:
+        if root.is_dir():
+            return root
+    return None
+
+
 def test_the_documentation_has_pages_to_check():
     assert pages(), "no .Documentation found in the gate or beside tests"
+
+
+def test_every_tool_under_dev_is_named_by_a_page():
+    # dev/ grew three unrelated tools with three different homes for their
+    # explanation, and golden.py had none at all, which made the one tool that has
+    # to run in the same commit as the change it records the one nobody could find
+    root = tools()
+    assert root is not None, "dev/ was not found in the gate or beside tests"
+    text = "\n".join(page.read_text(encoding="utf-8") for page in pages())
+    missing = sorted(str(path.relative_to(root)).replace("\\", "/")
+                     for path in root.rglob("*.py") if path.name not in text)
+    # a directory holding no python of its own still has to be accounted for:
+    # dev/diagrams is mermaid sources and two config files and no tool at all
+    missing += sorted(f"{child.name}/" for child in root.iterdir()
+                      if child.is_dir() and child.name != "__pycache__"
+                      and child.name not in text)
+    assert not missing, f"under dev/ and explained by no page: {missing}"
+
+
+def test_dev_keeps_no_documentation_of_its_own():
+    # the guide says documentation lives in this set and there are no per-folder
+    # READMEs, and dev/diagrams carried one for as long as it existed. A rule held
+    # by review alone is a rule that rots
+    root = tools()
+    assert root is not None, "dev/ was not found in the gate or beside tests"
+    strays = sorted(str(path.relative_to(root)).replace("\\", "/")
+                    for path in root.rglob("*.md"))
+    assert not strays, (
+        f"documentation belongs in .Documentation and the top-level README, not "
+        f"beside the code it describes; found {strays}"
+    )
 
 
 def test_every_documented_example_parses():
