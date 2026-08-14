@@ -195,6 +195,108 @@ def test_per_env_cost_range_is_reproducible_from_the_seed():
     assert np.array_equal(rollout(), rollout())  # same seed draws the same costs
 
 
+def drawn_fees(rewards, price=100.0, size=1.0):
+    # on a flat series with no slippage the whole equity delta of a buy IS the fee,
+    # so the reward reads back the per-env taker fee the env was given
+    return -np.asarray(rewards, dtype=np.float64) / (price * size)
+
+
+def test_a_per_env_cost_is_drawn_inside_its_range_and_fixed_for_the_envs_life():
+    # ADR 0014 says the pair is sampled ONCE PER ENV, and the only thing asserted
+    # about it was that the rewards have a spread. A draw taken per step, or per
+    # episode, or from a range twice as wide as the one asked for, all produce a
+    # spread: none of them is what "a batch trains across a spread of cost regimes"
+    # means, because an env whose costs move underneath it is not a regime
+    low, high = 0.001, 0.02
+    env = VectorEnv(flat_data(), num_envs=8, window=4, fee_taker=(low, high), seed=0)
+    env.reset(seed=0)
+    _, first, _, _, _ = env.step(np.ones(8, dtype=np.int64))
+    fees = drawn_fees(first)
+    assert ((low <= fees) & (fees <= high)).all(), fees
+    assert fees.std() > 0.0            # eight regimes, not one
+    assert len(set(np.round(fees, 12))) == 8
+
+    # the same env, one bar later: a cost redrawn per step reads differently here
+    _, second, _, _, _ = env.step(np.ones(8, dtype=np.int64))
+    assert np.allclose(drawn_fees(second), fees, rtol=0.0, atol=1e-6)
+
+    # and a fresh episode keeps them: reset re-seeds the OFFSET stream only, so an
+    # env's costs are its own for its whole life and not for one episode of it
+    env.reset(seed=99)
+    _, third, _, _, _ = env.step(np.ones(8, dtype=np.int64))
+    assert np.allclose(drawn_fees(third), fees, rtol=0.0, atol=1e-6)
+
+
+def test_the_cost_fallback_is_the_expensive_end_of_the_range():
+    # _cost_arg hands back a scalar beside the per-env array, and the scalar is only
+    # what would stand if the array ever failed to apply. Handing back the low end
+    # makes that failure the cheapest possible market, which is the one direction a
+    # cost model must never fail in, and nothing anywhere reads this value (ADR 0014)
+    env = VectorEnv(flat_data(), num_envs=8, window=4, seed=0)
+    scalar, drawn = env._cost_arg((0.001, 0.02))
+    assert scalar == 0.02
+    assert drawn.shape == (8,)
+    assert ((0.001 <= drawn) & (drawn <= 0.02)).all()
+    # a plain number is passed through with no array beside it
+    assert env._cost_arg(0.007) == (0.007, None)
+
+
+def ranged_data(t=40, price=100.0, width=10.0):
+    # flat in open and close but with a real high and low, because a taker price is
+    # clipped to its own bar (ADR 0074) and flat_data prints ONE price: slippage and
+    # impact are both clipped away to nothing there, so a test of either on that
+    # series reads zero however the knob is wired
+    col = np.full(t, price, dtype=np.float64)
+    return np.stack(
+        [col, col + width, col - width, col, np.full(t, 1000.0)], axis=1
+    )
+
+
+def test_each_cost_knob_takes_its_own_range():
+    # "each cost knob accepts a (low, high) pair" is four claims and only fee_taker
+    # was ever read. A range wired to one knob and ignored on the others leaves this
+    # file green, and a cost silently pinned to its default is the worst kind of
+    # wrong number: it is plausible (ADR 0014)
+    def spread(**kw):
+        env = VectorEnv(ranged_data(), num_envs=8, window=4, seed=0, **kw)
+        env.reset(seed=0)
+        _, rewards, _, _, _ = env.step(np.ones(8, dtype=np.int64))
+        return float(np.std(rewards))
+
+    assert spread() == 0.0                                   # one shared venue
+    assert spread(fee_taker=(0.001, 0.02)) > 0.0
+    assert spread(slippage_bps=(1.0, 50.0), fee_taker=0.0) > 0.0
+    assert spread(impact=(0.1, 5.0), fee_taker=0.0) > 0.0
+    # fee_maker is the fourth, and the batched tier takes market orders only
+    # (ADR 0020), so no maker fill can happen here and no reward can read it at
+    # all. The draw itself is what there is to check
+    env = VectorEnv(ranged_data(), num_envs=8, window=4, seed=0)
+    scalar, drawn = env._cost_arg((0.0001, 0.001))
+    assert scalar == 0.001
+    assert drawn.shape == (8,) and drawn.std() > 0.0
+
+
+def test_a_discrete_action_of_two_sells_and_one_buys():
+    # ADR 0020's decoder: 1 buys, 2 sells, anything else holds. The sign is asserted
+    # NOWHERE, in Rust or Python, and flipping it leaves every test in this file
+    # green: the shapes, the dtypes and the spread of the rewards are all identical
+    # under a decoder that shorts on 1 and buys on 2. An agent would then learn a
+    # policy that trades the opposite way round from the one documented
+    seen = {}
+
+    def capture(cur, prev):
+        seen["position"] = cur.position.copy()
+        return np.zeros(cur.equity.shape, dtype=np.float64)
+
+    env = VectorEnv(
+        flat_data(), num_envs=4, window=4, market="perp", trade_size=3.0,
+        fee_taker=0.0, fee_maker=0.0, reward_fn=capture, seed=0,
+    )
+    env.reset(seed=0)
+    env.step(np.array([1, 2, 0, 1], dtype=np.int64))  # buy, sell, hold, buy
+    assert np.array_equal(seen["position"], [3.0, -3.0, 0.0, 3.0])
+
+
 def test_start_offsets_are_independent_of_cost_ranges():
     # the cost and offset RNG streams are independent, so a fixed constructor seed
     # gives the same start offsets (hence the same first observation) whether or not
