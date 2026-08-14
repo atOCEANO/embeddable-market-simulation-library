@@ -364,49 +364,120 @@ def test_every_trial_was_fitted_on_the_first_seventy_percent_and_saw_no_more():
 # config shows up as a stat that does not match
 VENUE = dict(
     market="perp",
-    quote=25_000.0,
+    quote=2_000.0,
     fee_taker=0.001,
     fee_maker=0.0005,
     slippage_bps=250.0,
     max_fill_fraction=0.5,
     max_open_orders=3,
     leverage=2.0,
-    impact=2.0,
+    impact=0.02,
     funding_rate=0.001,
     funding_interval=8,
 )
+
+# what a Backtester falls back to when a knob is not passed, which is where a knob
+# dropped on the way to a trial lands
+DEFAULTS = dict(
+    market="spot",
+    quote=10_000.0,
+    fee_taker=0.0006,
+    fee_maker=0.0002,
+    slippage_bps=0.0,
+    max_fill_fraction=1.0,
+    max_open_orders=8,
+    leverage=10.0,
+    impact=0.0,
+    funding_rate=0.0,
+    funding_interval=0,
+)
+
+
+def thin_series(n=300):
+    # a venue-sensitive series: the volume is small enough that one order exhausts
+    # the fill cap, and the bar is wide enough that the whole taker slip stays
+    # inside it, since a price clipped to the bar (ADR 0074) is the same price
+    # whatever the slippage was and neither knob would move a number. The swing is
+    # small enough that the venue's own position never busts, which would flatten
+    # every stat into agreement for a reason that has nothing to do with the knobs
+    t = np.arange(n, dtype=np.float64)
+    close = 100.0 + 2.0 * np.sin(t / 15.0) + 0.02 * t
+    high = close + 8.0
+    low = close - 8.0
+    volume = np.full(n, 20.0)
+    return np.column_stack([close, high, low, close, volume])
+
+
+class Crowd(Strategy):
+    """Rests eight limit buys at once, then takes more of a bar than the volume cap
+    allows on each of sixteen bars, then closes. Every venue knob changes one of its
+    numbers, the two order-book caps included: a market-order crossover feels
+    neither, which is what let them be dropped unnoticed. ``depth`` spaces the
+    limits, and every spacing in the space leaves more than three of them inside
+    the range the series later reaches, so the book cap is felt at every trial.
+    """
+
+    def __init__(self, depth):
+        self.depth = float(depth)
+
+    def init(self, engine):
+        self.close = engine.data[:, 3]
+
+    def next(self, state, engine):
+        i = state["tick_index"]
+        if i == 20:
+            for k in range(8):
+                engine.limit_buy(1.0, self.close[i] - self.depth * (k + 1))
+        elif 120 <= i < 136:
+            engine.market_buy(16.0)
+        elif i == 260:
+            engine.close()
+
+
+DEPTH = {"depth": [0.5, 1.0, 1.5]}
+
+
+def like(a, b):
+    # a stat that is NaN in both runs is the same stat, and nan == nan is False, so
+    # a bare == over a stats dict reports a difference that is not one
+    return a == b or (a != a and b != b)
 
 
 def test_the_whole_venue_reaches_every_trial_and_not_only_the_fees():
     # a knob missing from the trial config scores every trial at a DEFAULT venue,
     # and the winner is then optimal for a market nobody trades: 250 bps of
-    # slippage and a perp funding charge would be searched away as free. best_stats
-    # is the TRIAL's own stats, not the winner's re-run, so matching it key by key
-    # against a Backtester built here at the same venue is the reading that pins
-    # the config onto the trials themselves. A violation reads as best_stats
-    # agreeing with the default-venue run below instead (ADR 0021)
-    data = series()
-    result = tuned(SmaCross, SPACE, data, objective="sharpe", n_trials=10, seed=0,
-                   **VENUE)
-    direct = emsl.backtest.Backtester(
+    # slippage and a perp funding charge would be searched away as free. The
+    # search runs across worker processes, because that is where the trial
+    # Backtester is built (_worker_init) and nothing else in the suite reads a
+    # value out of a parallel search. Every trial's own stats are matched against
+    # a Backtester built here at the same venue, which pins the config onto the
+    # TRIALS: best_result is rebuilt from the config afterwards and agrees with it
+    # whatever the trials were scored at (ADR 0021)
+    data = thin_series()
+    result = tuned(Crowd, DEPTH, data, objective="total_return_pct", n_trials=8,
+                   n_jobs=2, seed=0, sampler="random", **VENUE)
+    venue = emsl.backtest.Backtester(
         data, periods_per_year=365.0, risk_free=0.0, **VENUE
-    ).run(SmaCross(**result.best_params))
-    assert direct.data_hash == result.best_result.data_hash  # the same bars
-    assert set(result.best_stats) == set(direct.stats)
-    for key in sorted(direct.stats):
-        assert result.best_stats[key] == direct.stats[key], key
-    # and the venue is distinctive, so the equality above is not two runs that
-    # would agree at any settings at all: at the defaults the same parameters pay
-    # no funding whatsoever and reach a different return
-    default = emsl.backtest.Backtester(data, periods_per_year=365.0).run(
-        SmaCross(**result.best_params)
     )
-    assert default.stats["funding_paid"] == 0.0
-    assert result.best_stats["funding_paid"] != 0.0
-    assert result.best_stats["total_return_pct"] != default.stats["total_return_pct"]
-    # every knob by value, including the two a market-order crossover cannot feel:
-    # max_fill_fraction and max_open_orders move no number on this series, so
-    # nothing but the config itself can say they were carried to the trials
+    scored = [t for t in result.trials if t["state"] == "COMPLETE"]
+    assert len(scored) == 8
+    assert len({t["params"]["depth"] for t in scored}) > 1  # not one config eight times
+    for trial in scored:
+        direct = venue.run(Crowd(**trial["params"]))
+        assert set(trial["stats"]) == set(direct.stats)
+        for key in sorted(direct.stats):
+            assert like(trial["stats"][key], direct.stats[key]), (trial["params"], key)
+    # and every knob in the venue is one this fixture can feel, so the equality
+    # above is not eleven numbers that would agree at any settings at all. Put a
+    # single knob back to the value a Backtester picks when it is not told, and
+    # the winner's own parameters reach a different set of stats
+    full = venue.run(Crowd(**result.best_params)).stats
+    for knob in sorted(DEFAULTS):
+        loosened = emsl.backtest.Backtester(
+            data, periods_per_year=365.0, risk_free=0.0,
+            **dict(VENUE, **{knob: DEFAULTS[knob]}),
+        ).run(Crowd(**result.best_params)).stats
+        assert not all(like(loosened[key], full[key]) for key in full), knob
     assert result.best_result.config == VENUE
 
 
@@ -418,12 +489,16 @@ def test_a_trade_floor_refuses_the_thin_winner_an_unfloored_search_takes():
     # count, so the thinnest configuration wins by construction and the floor is
     # the only thing that can stop it. A violation reads as the floored search
     # returning pulses=1 as well, or scoring those trials instead of failing them
-    # (ADR 0034)
+    # (ADR 0034). The space carries a middle choice whose FILLS clear the floor
+    # while its closed trades do not, so reading num_fills for num_trades scores
+    # it and wins with it; and the floored search is run on both drivers, because
+    # the floor reaches a worker through _worker_init and a search that dropped it
+    # there would take the thin winner on every parallel run
     data = series()
 
     class Pulses(Strategy):
         """Opens on bar 10k and closes on bar 10k + 5, so the number of trades a
-        trial closes is exactly its parameter and nothing else.
+        trial closes is exactly its parameter and its fills are twice that.
         """
 
         def __init__(self, pulses):
@@ -441,24 +516,30 @@ def test_a_trade_floor_refuses_the_thin_winner_an_unfloored_search_takes():
     def fewest_trades(result):
         return -float(result.stats["num_trades"])
 
+    space = {"pulses": [1, 3, 5]}
     kwargs = dict(objective=fewest_trades, n_trials=20, seed=3, sampler="random",
                   fee_taker=0.0, fee_maker=0.0)
-    loose = tuned(Pulses, {"pulses": [1, 5]}, data, min_trades=0, **kwargs)
-    floored = tuned(Pulses, {"pulses": [1, 5]}, data, min_trades=5, **kwargs)
-    # both choices were drawn in both searches, so neither winner is an artifact
-    # of a space one of them never explored
-    assert {t["params"]["pulses"] for t in loose.trials} == {1, 5}
-    assert {t["params"]["pulses"] for t in floored.trials} == {1, 5}
+    loose = tuned(Pulses, space, data, min_trades=0, **kwargs)
+    floored = tuned(Pulses, space, data, min_trades=5, **kwargs)
+    workers = tuned(Pulses, space, data, min_trades=5, n_jobs=2, **kwargs)
+    # every choice was drawn in every search, so no winner is an artifact of a
+    # space one of them never explored
+    for search in (loose, floored, workers):
+        assert {t["params"]["pulses"] for t in search.trials} == {1, 3, 5}
     # unfloored, the single-trade configuration is the maximum of -num_trades
     assert loose.best_params == {"pulses": 1}
     assert loose.best_value == -1.0
     assert loose.best_stats["num_trades"] == 1
-    # with the floor, every trial that drew it is failed rather than scored, so
-    # the winner is the only configuration that clears five closed trades
-    assert floored.best_params == {"pulses": 5}
-    assert floored.best_value == -5.0
-    assert floored.best_stats["num_trades"] == 5
-    assert floored.min_trades == 5
-    thin = [t for t in floored.trials if t["params"]["pulses"] == 1]
-    assert thin and all(t["state"] == "FAIL" for t in thin)
-    assert all(t["value"] is None and t["stats"] is None for t in thin)
+    # with the floor, every trial below it is failed rather than scored, so the
+    # winner is the only configuration that clears five CLOSED trades. Three
+    # closes is six fills, which clears a floor read off the wrong stat, and it
+    # scores better than five, so a search reading num_fills wins with it here
+    for search in (floored, workers):
+        assert search.best_params == {"pulses": 5}
+        assert search.best_value == -5.0
+        assert search.best_stats["num_trades"] == 5
+        assert search.best_stats["num_fills"] == 10
+        assert search.min_trades == 5
+        thin = [t for t in search.trials if t["params"]["pulses"] < 5]
+        assert thin and all(t["state"] == "FAIL" for t in thin)
+        assert all(t["value"] is None and t["stats"] is None for t in thin)
