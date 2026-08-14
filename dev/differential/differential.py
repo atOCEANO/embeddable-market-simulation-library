@@ -95,7 +95,7 @@ def drive_engine(bars, cfg, actions):
     for action in actions:
         place(engine, action, live)
         state = engine.step()
-        seen.append((state["position"], state["equity"]))
+        seen.append((state["position"], state["equity"], state["funding_paid"]))
         if engine.done():
             break
     return seen, engine
@@ -148,7 +148,7 @@ def drive_reference(bars, cfg, actions):
         if kind in ("limit", "post", "stop") and got is not None:
             live.append(got)
         ref.step()
-        seen.append((ref.position, ref.equity(ref.bars[ref.tick][3])))
+        seen.append((ref.position, ref.equity(ref.bars[ref.tick][3]), ref.funding_paid))
         if ref.tick + 1 >= len(bars):
             break
     return seen, ref
@@ -178,10 +178,17 @@ def main():
             continue
 
         where = None
-        for i, ((pa, ea), (pb, eb)) in enumerate(zip(mine, theirs)):
+        # funding_paid is read as well as position and equity, because a
+        # liquidation zeroes the equity on both sides and hides any disagreement
+        # about what the account paid on its way there. That blind spot is exactly
+        # where ADR 0082 was hiding: 3,000 cases over six seeds never saw it
+        for i, ((pa, ea, fa), (pb, eb, fb)) in enumerate(zip(mine, theirs)):
             if not close_enough(pa, pb) or not close_enough(ea, eb, cfg["quote"]):
                 where = (f"bar {i + 1}: position {pa:.6f} against {pb:.6f}, "
                          f"equity {ea:.6f} against {eb:.6f}")
+                break
+            if not close_enough(fa, fb, cfg["quote"]):
+                where = f"bar {i + 1}: funding_paid {fa:.6f} against {fb:.6f}"
                 break
         if where is None:
             agree += 1

@@ -527,11 +527,22 @@ impl Engine {
             // 3. funding at each interval boundary, on the position held at the
             //    funding event (so after this bar's fills, not the position carried
             //    into the bar), marked at the close, and before liquidation so a
-            //    funding debit can bust the account this bar (ADR 0017)
+            //    funding debit can bust the account this bar (ADR 0017).
+            //
+            //    At the close of the RESOLVING bar, which is the fenced one: this
+            //    read `bar.close` and so marked a liquidated account at a price on
+            //    the far side of the point its margin ran out. `fenced` calls
+            //    itself the honest picture of a market the account was not in, and
+            //    every order on the bar is resolved against it; funding was the one
+            //    event that reached past it. A short liquidated on a bar that kept
+            //    rising was CREDITED for the whole rise, which overstates
+            //    funding_paid on any run with a liquidation in it and, at the
+            //    margin, hands the account enough to clear the bust check it had
+            //    already failed (ADR 0082)
             if self.config.funding_interval > 0 && self.tick % self.config.funding_interval == 0 {
                 self.funding_paid += self
                     .account
-                    .apply_funding(self.config.funding_rate, Price(bar.close));
+                    .apply_funding(self.config.funding_rate, Price(resolving.close));
             }
 
             // 4. liquidation at the bar's adverse extreme (long at the low, short
@@ -3141,6 +3152,55 @@ mod tests {
         let trades = e.reporter().expect("reporting").trades();
         assert_eq!(trades.len(), 1);
         assert_eq!(trades[0].exit_price, 110.0);
+        assert!(trades[0].liquidated);
+    }
+
+    #[test]
+    fn funding_on_a_liquidating_bar_marks_at_the_fence_and_not_at_the_raw_close() {
+        // ADR 0082. Every order on a fenced bar resolves against the clipped
+        // candle, which `fenced` calls the honest picture of a market the account
+        // was not in, and funding reached past it to the raw close. This short
+        // dies at 110 on a bar that closes at 128, so the two readings are 11.0
+        // and 12.8: the second credits the account for 18 points of a rise it had
+        // already been closed out of, and funding_paid is reported
+        let bars = Candles::new(vec![
+            ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
+            ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
+            ohlc(100.0, 130.0, 100.0, 128.0, 1e6),
+        ]);
+        let config = EngineConfig {
+            funding_rate: 0.01,
+            funding_interval: 2, // tick 1 is not a boundary, tick 2 is
+            ..levered()
+        };
+        let mut e = Engine::new(bars, config);
+        e.reset();
+        e.market_sell(10.0); // short 10 at the open of 100, on 100 of margin
+        let state = e.step();
+        assert_eq!(state.position, -10.0);
+        assert_eq!(state.funding_paid, 0.0, "tick 1 is not a funding boundary");
+
+        // the margin runs out at 110, so the bar the account was in closes there
+        let state = e.step();
+        assert!(
+            (state.funding_paid + 11.0).abs() < 1e-9,
+            "funding was marked at {}, not at the fence",
+            state.funding_paid / -0.1
+        );
+        assert!(
+            (state.funding_paid + 12.8).abs() > 1e-9,
+            "funding was marked at the raw close of a bar the account never saw"
+        );
+        // and the credit lands before the liquidation, so the exit moves with it:
+        // 100 of margin plus 11 of funding runs out at 111.1 rather than 110
+        assert!(e.is_bust());
+        assert_eq!(state.position, 0.0);
+        // ADR 0052's nothing left, to the last bit the funding arithmetic allows:
+        // 100 of margin, 11 of credit and an exit at 111.1 land 5.7e-14 off zero
+        assert!(state.equity.abs() < 1e-9);
+        let trades = e.reporter().expect("reporting").trades();
+        assert_eq!(trades.len(), 1);
+        assert!((trades[0].exit_price - 111.1).abs() < 1e-9);
         assert!(trades[0].liquidated);
     }
 
