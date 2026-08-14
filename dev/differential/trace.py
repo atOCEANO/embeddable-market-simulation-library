@@ -22,8 +22,10 @@ def diverges(bars, cfg, actions):
         theirs, _ = D.drive_reference(bars, cfg, actions)
     except Exception:
         return None
-    for i, ((pa, ea), (pb, eb)) in enumerate(zip(mine, theirs)):
+    for i, ((pa, ea, fa), (pb, eb, fb)) in enumerate(zip(mine, theirs)):
         if not D.close_enough(pa, pb) or not D.close_enough(ea, eb, cfg["quote"]):
+            return i
+        if not D.close_enough(fa, fb, cfg["quote"]):
             return i
     return None
 
@@ -71,15 +73,10 @@ def trace(bars, cfg, actions):
     ref = Reference(bars, **cfg)
 
     rows = []
-    for i, action in enumerate(actions):
-        D.place(engine, action)
-        if action is not None:
-            if action[0] == "market":
-                ref.market_order(action[1], action[2])
-            elif action[0] == "limit":
-                ref.limit_order(action[1], action[2], action[3])
-            else:
-                ref.stop_order(action[1], action[2], action[3], True)
+    mine, theirs = [], []
+    for action in actions:
+        D.place(engine, action, mine)
+        D.place_reference(ref, action, theirs)
         state = engine.step()
         ref.step()
         rows.append(dict(
@@ -89,11 +86,21 @@ def trace(bars, cfg, actions):
             engine=dict(position=round(state["position"], 6),
                         equity=round(state["equity"], 6),
                         entry=round(state["avg_entry"], 6),
-                        quote=round(state["quote"], 6)),
+                        quote=round(state["quote"], 6),
+                        funding=round(state["funding_paid"], 6),
+                        live=list(mine)),
             reference=dict(position=round(ref.position, 6),
                            equity=round(ref.equity(bars[ref.tick][3]), 6),
                            entry=round(ref.entry, 6),
-                           quote=round(ref.quote, 6)),
+                           quote=round(ref.quote, 6),
+                           funding=round(ref.funding_paid, 6),
+                           live=list(theirs),
+                           resting=[None if o is None else
+                                    dict(id=o["id"], kind=o["kind"], side=o["side"],
+                                         size=round(o["size"], 6),
+                                         filled=round(o["filled"], 6),
+                                         price=o.get("price"), trigger=o.get("trigger"))
+                                    for o in ref.resting]),
         ))
         if engine.done():
             break

@@ -55,7 +55,7 @@ def config(rng):
 # Narrow it with KINDS=limit when a disagreement needs isolating, which is how
 # ADR 0079 was found: whole-surface runs said "limits", and limits alone said
 # which limit
-KINDS = os.environ.get("KINDS", "market,limit,stop,fok,post,cancel").split(",")
+KINDS = os.environ.get("KINDS", "market,limit,stop,fok,post,cancel,replace").split(",")
 
 
 def plan(rng, bars):
@@ -76,6 +76,9 @@ def plan(rng, bars):
         elif kind == "cancel":
             out.append(("cancel", side, 0.0))
         else:
+            # `replace` reads the same shape, and its `side` is deliberately
+            # ignored by both simulators: a replacement keeps the side of the
+            # order it moves (ADR 0032), which is the claim this exercises
             out.append((kind, side, rng.uniform(0.1, 20.0), rng.uniform(50.0, 200.0)))
     return out
 
@@ -119,6 +122,14 @@ def place(engine, action, live):
         got = None
         if live:
             engine.cancel(live[0])
+    elif kind == "replace":
+        got = None
+        if live:
+            # a refused replacement puts the original back under its own id
+            # (ADR 0069), so the slot is only re-pointed when one was placed
+            moved = engine.replace(live[0], action[2], action[3])
+            if moved is not None:
+                live[0] = moved
     else:
         got = engine.stop(action[1], action[2], action[3], True)
     if kind in ("limit", "post", "stop") and got is not None:
@@ -127,26 +138,41 @@ def place(engine, action, live):
         live.pop(0)
 
 
+def place_reference(ref, action, live):
+    """The reference's half of `place`, kept beside it so the two dispatches stay
+    in step. It used to be inlined in the driver and copied again in trace.py,
+    which is how trace.py came to handle three of the seven order kinds."""
+    if action is None:
+        return
+    kind = action[0]
+    got = None
+    if kind == "market":
+        got = ref.market_order(action[1], action[2])
+    elif kind == "limit":
+        got = ref.limit_order(action[1], action[2], action[3])
+    elif kind == "fok":
+        got = ref.market_order(action[1], action[2], fok=True)
+    elif kind == "post":
+        got = ref.limit_order(action[1], action[2], action[3], post_only=True)
+    elif kind == "cancel":
+        if live:
+            ref.cancel(live.pop(0))
+    elif kind == "replace":
+        if live:
+            moved = ref.replace(live[0], action[2], action[3])
+            if moved is not None:
+                live[0] = moved
+    elif kind == "stop":
+        got = ref.stop_order(action[1], action[2], action[3], True)
+    if kind in ("limit", "post", "stop") and got is not None:
+        live.append(got)
+
+
 def drive_reference(bars, cfg, actions):
     ref = Reference(bars, **cfg)
     seen, live = [], []
     for action in actions:
-        got, kind = None, action[0] if action else None
-        if kind == "market":
-            got = ref.market_order(action[1], action[2])
-        elif kind == "limit":
-            got = ref.limit_order(action[1], action[2], action[3])
-        elif kind == "fok":
-            got = ref.market_order(action[1], action[2], fok=True)
-        elif kind == "post":
-            got = ref.limit_order(action[1], action[2], action[3], post_only=True)
-        elif kind == "cancel":
-            if live:
-                ref.cancel(live.pop(0))
-        elif kind == "stop":
-            got = ref.stop_order(action[1], action[2], action[3], True)
-        if kind in ("limit", "post", "stop") and got is not None:
-            live.append(got)
+        place_reference(ref, action, live)
         ref.step()
         seen.append((ref.position, ref.equity(ref.bars[ref.tick][3]), ref.funding_paid))
         if ref.tick + 1 >= len(bars):

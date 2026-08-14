@@ -74,6 +74,8 @@ It has already earned its place twice. It found the slot leak of [ADR 0079](Deci
 
 `batch_differential.py` also reports what its cases reached: how many traded, funded, busted and ran out of bars, and it fails if any of those is zero. "0 disagreed" over a hundred flat accounts that never funded and never died is a pass that means nothing, and after the fact there is no way to tell one from the other.
 
+It also reaches things a unit test structurally cannot. `replace` carries the side of the order it moves ([ADR 0032](Decisions.md)), and that claim was asserted nowhere, in Rust or in Python: flipping Sell to Buy inside `Engine::replace` leaves all 178 Rust tests green. The harness places, moves and cancels orders through the same sequence on both simulators, so the flip parts company on 66 cases in 400.
+
 Read a disagreement as a question rather than a verdict: the reference is a second reading and can be the wrong one. On the way to that first agreement it was wrong three times and the engine right three times, and each time the decisions page was precise enough to convict the reference by reading it. `dev/differential/trace.py` shrinks a failing case to its smallest form and prints both simulators bar by bar, which is what makes the question answerable.
 
 <br>
