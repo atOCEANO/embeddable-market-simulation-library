@@ -416,7 +416,7 @@ impl Engine {
         price: Option<f64>,
         trigger: Option<f64>,
     ) -> Option<OrderId> {
-        let old = self.book.cancel(id)?;
+        let (slot, old) = self.book.cancel_at(id)?;
         let size = size.unwrap_or(old.remaining().get());
         let placed = match old.kind {
             OrderType::Limit => price.or(old.price.map(|p| p.get())).and_then(|price| {
@@ -441,9 +441,18 @@ impl Engine {
             // method defines as "nothing happened". A caller trailing a stop reads
             // that as "it has already filled" and stops arming one, so a refused
             // size or a non-finite trigger silently disarmed a live stop-loss. The
-            // slot the cancel just freed is the one being reclaimed, so putting the
-            // old order back cannot itself fail, and its id stays valid (ADR 0032).
-            let _ = self.book.place(old);
+            // slot it came from is still free, since nothing was placed on this
+            // path, so putting the old order back cannot fail and its id stays
+            // valid (ADR 0032).
+            //
+            // Back in that same slot, not wherever `place` would put it. `place`
+            // takes the FIRST free slot (ADR 0006), so an order whose neighbour had
+            // been cancelled was silently promoted up the queue by a replacement
+            // that was REFUSED, and resolution follows slot order: on a spot book
+            // with the cash clamp binding, the promoted order took the cash the
+            // other one would have had. "Nothing happened" has to include the
+            // queue (ADR 0083).
+            self.book.restore(slot, old);
         }
         placed
     }
@@ -2726,6 +2735,51 @@ mod tests {
         assert_eq!(
             resting[0].trigger.expect("a stop keeps its trigger").get(),
             90.0
+        );
+    }
+
+    #[test]
+    fn a_refused_replacement_leaves_the_original_where_it_was_in_the_queue() {
+        // ADR 0032 defines a None from `replace` as "nothing happened", and ADR 0069
+        // restores the original so that is true of the book too. It was not true of
+        // the order's PRIORITY. The restore goes through `place`, which takes the
+        // FIRST free slot (ADR 0006), so an order whose neighbour had been cancelled
+        // was silently promoted up the queue by a replacement that was refused.
+        //
+        // Resolution follows slot order, and slot order decides who gets the cash
+        // when the spot clamp binds, so the promotion moves a number. Sixty of cash
+        // against a 40 and a 50: the one resolved first fills whole and the other
+        // takes what is left.
+        let bars = Candles::new(vec![
+            ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
+            ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
+            ohlc(100.0, 100.0, 35.0, 100.0, 1e6),
+        ]);
+        let config = EngineConfig {
+            quote: 60.0,
+            ..cfg()
+        };
+        let mut e = Engine::new(bars, config);
+        e.reset();
+        let first = e.limit_buy(1.0, 10.0).expect("rests in the first slot");
+        let kept = e.limit_buy(1.0, 50.0).expect("rests in the second");
+        e.step();
+
+        // the first slot is free now, and a refused replacement must not take it
+        assert!(e.cancel(first));
+        assert_eq!(e.replace(kept, Some(-1.0), None, None), None);
+        e.limit_buy(1.0, 40.0)
+            .expect("takes the slot the cancel freed");
+        e.step();
+
+        // the 40 resolves first and fills whole, leaving 20 of the 60, so the 50
+        // fills 0.4 of its 1.0. Promote the 50 and it fills first for the whole 50,
+        // leaving 10 against the 40, which is 1.25
+        let state = e.current_state();
+        assert!(
+            (state.position - 1.4).abs() < 1e-9,
+            "position {} says the restored order jumped the queue",
+            state.position
         );
     }
 

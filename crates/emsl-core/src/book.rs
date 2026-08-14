@@ -76,6 +76,27 @@ impl RestingOrderBook {
         None
     }
 
+    /// Remove and return a resting order by id together with the slot it held, so
+    /// a caller that may have to put it back can restore its place in the queue.
+    pub fn cancel_at(&mut self, id: OrderId) -> Option<(usize, Order)> {
+        for (index, slot) in self.slots.iter_mut().enumerate() {
+            if slot.as_ref().is_some_and(|o| o.id == id) {
+                return slot.take().map(|order| (index, order));
+            }
+        }
+        None
+    }
+
+    /// Put `order` back in the slot it came from, rather than in the first free one
+    /// `place` would choose. Only for undoing a `cancel_at` that came to nothing:
+    /// resolution follows slot order, so restoring an order anywhere else hands it
+    /// a priority it did not have (ADR 0083).
+    pub fn restore(&mut self, index: usize, order: Order) {
+        if let Some(slot) = self.slots.get_mut(index) {
+            *slot = Some(order);
+        }
+    }
+
     /// Remove every resting order.
     pub fn cancel_all(&mut self) {
         for slot in &mut self.slots {
