@@ -106,6 +106,13 @@ class Reference:
                 return True
         return False
 
+    def cancel_all(self):
+        """Every RESTING order. A pending market order is not resting and fills on
+        the next step regardless, which is the distinction worth keeping."""
+        dropped = sum(1 for order in self.resting if order is not None)
+        self.resting = [None] * self.slots
+        return dropped
+
     def replace(self, order_id, size=None, price=None, trigger=None):
         """ADR 0032: cancel and re-rest, and place NOTHING when the id is gone.
 
@@ -124,9 +131,11 @@ class Reference:
         self.resting[slot] = None
         size = old["size"] - old["filled"] if size is None else size
         if old["kind"] == "limit":
+            # the tif rides along with the side and the flags: a replacement is the
+            # same order moved, so moving an IOC must not quietly make it a GTC
             placed = self.limit_order(old["side"], size,
                                       old["price"] if price is None else price,
-                                      post_only=old["post_only"])
+                                      post_only=old["post_only"], tif=old["tif"])
         else:
             placed = self.stop_order(old["side"], size,
                                      old["trigger"] if trigger is None else trigger,
@@ -135,7 +144,7 @@ class Reference:
             self.resting[slot] = old
         return placed
 
-    def limit_order(self, side, size, price, post_only=False, fok=False):
+    def limit_order(self, side, size, price, post_only=False, tif="gtc"):
         if not math.isfinite(size) or size <= 0.0 or not math.isfinite(price):
             return None
         # ADR 0045 by way of order.rs: a post_only limit that would cross the
@@ -150,7 +159,7 @@ class Reference:
             return None
         order = dict(id=self.next_id, side=side, size=size, kind="limit",
                      price=price, filled=0.0, reduce_only=False,
-                     post_only=post_only, fok=fok)
+                     post_only=post_only, fok=(tif == "fok"), tif=tif)
         self.next_id += 1
         self.resting[slot] = order
         return order["id"]
@@ -163,7 +172,7 @@ class Reference:
             return None
         order = dict(id=self.next_id, side=side, size=size, kind="stop",
                      trigger=trigger, filled=0.0, reduce_only=reduce_only,
-                     post_only=False, fok=False)
+                     post_only=False, fok=False, tif="gtc")
         self.next_id += 1
         self.resting[slot] = order
         return order["id"]
@@ -404,6 +413,13 @@ class Reference:
             order["filled"] += applied
         for i, order in enumerate(self.resting):
             if order is not None and order["size"] - order["filled"] <= DUST:
+                self.resting[i] = None
+        # ADR 0016: an IOC or FOK limit gets ONE bar of exposure and is cancelled
+        # after it, filled or not, where a GTC limit waits for the next bar. This
+        # is the whole difference between the three, and it lives here because a
+        # partially filled IOC keeps its fill and loses only the remainder
+        for i, order in enumerate(self.resting):
+            if order is not None and order["kind"] == "limit" and order["tif"] != "gtc":
                 self.resting[i] = None
 
         # 3. funding, then the liquidation check (ADRs 0002, 0017)

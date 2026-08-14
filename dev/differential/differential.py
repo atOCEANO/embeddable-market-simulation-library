@@ -56,7 +56,8 @@ def config(rng):
 # ADR 0079 was found: whole-surface runs said "limits", and limits alone said
 # which limit
 KINDS = os.environ.get(
-    "KINDS", "market,limit,stop,fok,post,cancel,replace,reduce,close"
+    "KINDS",
+    "market,limit,stop,fok,post,cancel,replace,reduce,close,ioc_limit,fok_limit,cancel_all",
 ).split(",")
 
 
@@ -77,6 +78,8 @@ def plan(rng, bars):
             out.append(("post", side, rng.uniform(0.1, 20.0), rng.uniform(50.0, 200.0)))
         elif kind == "cancel":
             out.append(("cancel", side, 0.0))
+        elif kind == "cancel_all":
+            out.append(("cancel_all", side, 0.0))
         elif kind == "close":
             out.append(("close", side, 0.0))
         elif kind == "reduce":
@@ -142,9 +145,16 @@ def place(engine, action, live):
         got = engine.close()
     elif kind == "reduce":
         got = engine.order(action[1], action[2], "market", None, None, True, False, "ioc")
+    elif kind == "cancel_all":
+        got = None
+        engine.cancel_all()
+        live.clear()
+    elif kind in ("ioc_limit", "fok_limit"):
+        tif = "ioc" if kind == "ioc_limit" else "fok"
+        got = engine.order(action[1], action[2], "limit", action[3], None, False, False, tif)
     else:
         got = engine.stop(action[1], action[2], action[3], True)
-    if kind in ("limit", "post", "stop") and got is not None:
+    if kind in ("limit", "post", "stop", "ioc_limit", "fok_limit") and got is not None:
         live.append(got)
     if kind == "cancel" and live:
         live.pop(0)
@@ -164,7 +174,7 @@ def place_reference(ref, action, live, reached=None):
         # no way to tell that from a real agreement
         if kind in ("close", "reduce") and ref.position != 0.0:
             reached[kind] += 1
-        elif kind in ("cancel", "replace") and live:
+        elif kind in ("cancel", "replace", "cancel_all") and live:
             reached[kind] += 1
     if kind == "market":
         got = ref.market_order(action[1], action[2])
@@ -192,10 +202,18 @@ def place_reference(ref, action, live, reached=None):
             )
     elif kind == "reduce":
         got = ref.market_order(action[1], action[2], reduce_only=True)
+    elif kind == "cancel_all":
+        ref.cancel_all()
+        live.clear()
+    elif kind in ("ioc_limit", "fok_limit"):
+        got = ref.limit_order(action[1], action[2], action[3],
+                              tif="ioc" if kind == "ioc_limit" else "fok")
     elif kind == "stop":
         got = ref.stop_order(action[1], action[2], action[3], True)
-    if kind in ("limit", "post", "stop") and got is not None:
+    if kind in ("limit", "post", "stop", "ioc_limit", "fok_limit") and got is not None:
         live.append(got)
+    if reached is not None and kind in ("ioc_limit", "fok_limit") and got is not None:
+        reached[kind] += 1
 
 
 def drive_reference(bars, cfg, actions, reached=None):
@@ -221,7 +239,8 @@ def main():
     seed = int(sys.argv[2]) if len(sys.argv) > 2 else 20260813
     rng = random.Random(seed)
 
-    reached = dict(close=0, reduce=0, cancel=0, replace=0)
+    reached = dict(close=0, reduce=0, cancel=0, replace=0, cancel_all=0,
+                   ioc_limit=0, fok_limit=0)
     agree, disagree = 0, []
     for case in range(cases):
         bars = walk(rng, rng.randint(8, 40))
