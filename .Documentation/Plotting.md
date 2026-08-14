@@ -297,7 +297,7 @@ close = numpy.asarray(frame.close, dtype=float)
 forward = numpy.concatenate([close[4:] / close[:-4] - 1.0, numpy.full(4, numpy.nan)])
 ```
 
-The rule is about when a value belongs, never about making a number fit. [`02-first-look`](../../emsl-plot-lab/notebooks/02-first-look.ipynb) is this whole session with the numbers in it, including the printed comparison that shows the two paddings disagreeing.
+The rule is about when a value belongs, never about making a number fit.
 
 **What this will not draw**, and should not: a feature against its forward return as a scatter, a histogram of trade returns, an autocorrelation. None of those has a time axis, and a chart whose x axis is bars is the wrong instrument for them. They belong wherever you already draw scatters.
 

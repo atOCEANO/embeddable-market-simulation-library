@@ -224,6 +224,18 @@ def test_every_link_between_the_pages_names_a_page_that_exists():
     assert not broken, "\n".join(broken)
 
 
+def test_no_link_leaves_the_repository():
+    # the test above only follows .md targets, so a link to anything else was
+    # unchecked, and one to a notebook in a scratch folder beside the checkout
+    # shipped in 1.0.0 pointing at a path no reader could ever have. Resolving
+    # these is not possible here, because the gate lays the pages out flat and a
+    # checkout does not, but the depth is the same in both: the pages sit one
+    # level down, so ../ reaches the repository root and ../../ is already gone
+    for page in pages():
+        for target in re.findall(r"\]\(([^)]+)\)", page.read_text(encoding="utf-8")):
+            assert "../../" not in target, f"{page.name} -> {target}"
+
+
 def test_the_documented_install_names_the_version_that_is_installed():
     # emsl is not on PyPI, so the release URL and the git tag in the README are
     # the install path rather than a convenience. A version bump is the one edit
