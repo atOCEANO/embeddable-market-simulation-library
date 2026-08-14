@@ -3084,10 +3084,16 @@ mod tests {
         // on whatever it printed afterwards. Every other liquidation fixture ends
         // at or below its own bust level, so marking the check at bar.close passes
         // all of them; this bar wicks to 85 and closes back at 100, where a
-        // close-marked check reads an equity of 100 and lets a dead account trade on
+        // close-marked check reads an equity of 100 and lets a dead account trade on.
+        //
+        // The favourable wick reaches 130, which is TWICE as far from the entry as
+        // the adverse one: a check reading whichever extreme is furthest from the
+        // entry, rather than the one that is adverse to this side, marks the long
+        // at 130 and finds it healthy. On a bar wicking to 85 and 101 the two
+        // readings agree, which is why the high is 130 and not 101
         let bars = Candles::new(vec![
             ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
-            ohlc(100.0, 101.0, 85.0, 100.0, 1e6),
+            ohlc(100.0, 130.0, 85.0, 100.0, 1e6),
             ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
         ]);
         let mut e = Engine::new(bars, levered());
@@ -3113,10 +3119,13 @@ mod tests {
         // short at all: a short's adverse extreme is the HIGH, so a wick up that
         // takes the margin kills it however calmly the bar ends (ADR 0003). A check
         // reading bar.close, or one that kept the long's low for both sides, reads
-        // 100 here and carries a dead short into the next bar
+        // 100 here and carries a dead short into the next bar. The favourable wick
+        // reaches 70, twice as far from the entry as the adverse one, so a check
+        // reading the furthest extreme rather than the adverse one marks the short
+        // at 70 and finds it richer than ever
         let bars = Candles::new(vec![
             ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
-            ohlc(100.0, 115.0, 99.0, 100.0, 1e6),
+            ohlc(100.0, 115.0, 70.0, 100.0, 1e6),
             ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
         ]);
         let mut e = Engine::new(bars, levered());
@@ -3136,12 +3145,18 @@ mod tests {
     }
 
     #[test]
-    fn an_over_cap_position_is_kept_whole_and_a_same_side_add_grows_it_by_nothing() {
+    fn an_over_cap_position_is_kept_whole_refuses_an_add_and_reduces_only_what_was_asked() {
         // ADR 0012's allowance runs one way only: a position pushed over its cap by
         // a fall in equity is not force-reduced, and it may not be extended either.
         // Dropping the max(pos.abs()) from the cap turns this refusal into a fill,
         // and the fill is on the SAME side, so the order that was meant to be
-        // blocked is the one that grows the long from 30 to 36.67
+        // blocked is the one that grows the long from 30 to 36.67.
+        //
+        // The refusal alone does not pin "kept whole", because an add and a cap
+        // that clamps to max_size both answer with a zero fill here. The reduce at
+        // the end is what separates them: it asks for 5 of the 30 and must get
+        // exactly 5, where a cap applied to every fill sells 6.67 to land the
+        // position on the cap itself, which is a liquidation the account did not owe
         let bars = Candles::new(vec![
             ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
             ohlc(100.0, 100.0, 100.0, 100.0, 1e6),
@@ -3171,6 +3186,19 @@ mod tests {
         assert_eq!(state.equity, 700.0);
         assert_eq!(state.quote, 1_000.0);
         assert_eq!(e.num_fills(), 1, "the refused add booked a fill");
+
+        // and a reduce is the size that was asked for, not the size that would put
+        // the position back inside the cap: 30 less 5 is 25, still over the 23.33
+        // the cap allows, and it stays there
+        e.market_sell(5.0);
+        let state = e.step();
+        assert_eq!(
+            state.position, 25.0,
+            "the reduce was widened to land the position on the cap"
+        );
+        assert_eq!(state.equity, 700.0);
+        assert_eq!(e.num_fills(), 2);
+        assert!(!e.is_bust());
     }
 
     #[test]
