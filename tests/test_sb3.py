@@ -21,6 +21,16 @@ def series(n=200):
     return np.stack([close, close + 1.0, close - 1.0, close, np.full(n, 1000.0)], axis=1)
 
 
+def halving(n=16):
+    # every bar opens where the last closed and halves inside itself, so a levered
+    # long dies on the step it opened whatever offset it drew. The volume is far
+    # past anything the position asks for, because a fill cap that bit would leave
+    # the late offsets holding too small a position to bankrupt
+    open_ = 100.0 * np.power(0.5, np.arange(n, dtype=np.float64))
+    close = open_ * 0.5
+    return np.stack([open_, open_, close, close, np.full(n, 1e9)], axis=1)
+
+
 def test_adapter_is_a_vecenv_and_steps():
     venv = EmslVecEnv(VectorEnv(series(), num_envs=4, window=8, seed=0))
     assert isinstance(venv, VecEnv)
@@ -47,6 +57,40 @@ def test_terminal_observation_lands_in_info_on_done():
         assert "terminal_observation" in info
         assert info["terminal_observation"].shape == (4, 5)
         assert info["TimeLimit.truncated"] is True  # a time limit, not a true terminal
+
+
+def test_a_liquidation_reaches_sb3_as_a_true_terminal():
+    # every other test here ends its episode with episode_len, so the only `done`
+    # any of them has ever seen is a truncation, and three claims rest on that gap
+    # (ADR 0022). All three of these pass every assertion above: `dones =
+    # truncations`, which never reports a death at all; an unconditional
+    # `TimeLimit.truncated = True`, which tells PPO to bootstrap the value past a
+    # bankruptcy; and `terminal_observation = obs[i]`, which hands back the fresh
+    # post-reset window as though the episode had ended there
+    def all_in(actions, prev):
+        # five times equity at whatever price the offset landed on, so the position
+        # carries the same leverage wherever the episode started
+        return 5.0 * prev.equity / prev.mark_price
+
+    venv = EmslVecEnv(VectorEnv(
+        halving(16), num_envs=2, window=4, market="perp", quote=10_000.0,
+        leverage=10.0, fee_taker=0.0, fee_maker=0.0, slippage_bps=0.0, impact=0.0,
+        action_fn=all_in, seed=0,
+    ))
+    venv.seed(0)
+    venv.reset()
+    venv.step_async(np.ones(2, dtype=np.int64))
+    obs, _rewards, dones, infos = venv.step_wait()
+
+    # no episode_len is set and the series is nowhere near its end, so nothing here
+    # can truncate: every done on this step is a death
+    assert dones.all()
+    for i, info in enumerate(infos):
+        assert info["TimeLimit.truncated"] is False
+        assert "terminal_observation" in info
+        # the window the episode DIED on, never the one it was reborn into
+        assert not np.array_equal(info["terminal_observation"], obs[i])
+        assert info["terminal_observation"].shape == (4, 5)
 
 
 def test_seed_forwards_from_sb3_to_the_env():
