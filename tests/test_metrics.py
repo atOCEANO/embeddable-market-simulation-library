@@ -609,29 +609,41 @@ def test_the_calendar_periods_compound_back_to_the_whole_run():
     # so the periods multiply back to the run. A period seeded from a fresh
     # balance passes every other check here: the labels are the same, the bars
     # still add up, and only the compounding identity says that a bad January
-    # shrank the size February had to trade with (ADR 0062)
+    # shrank the size February had to trade with (ADR 0062).
+    #
+    # All three groupings are read, over daily bars running into a third calendar
+    # year so that each one has several rows. On the hourly run this used to use,
+    # the quarterly table was a single row and the yearly table was never asked
+    # for at all: one row compounds back to the run whatever seeded it, so the
+    # quarter and the year were carried on the month's evidence
     pd = pytest.importorskip("pandas")
-    raw = series(n=2_000)
+    raw = series(n=900)
     data = pd.DataFrame(raw, columns=["open", "high", "low", "close", "volume"])
-    data.index = pd.date_range("2025-01-01", periods=len(raw), freq="1h", tz="UTC")
+    data.index = pd.date_range("2025-01-01", periods=len(raw), freq="1D", tz="UTC")
     result = Backtester(data).run(Alternate())
-    months = metrics.period_returns(result, data, by="month")
-    # 2,000 hourly bars from new year cover January, February and 584 hours of March
-    assert [m["period"] for m in months] == ["2025-01", "2025-02", "2025-03"]
-    assert sum(m["bars"] for m in months) == len(raw)
     path = np.concatenate(([result.initial], result.equity_curve))
-    product = 1.0
-    for month in months:
-        first, last = month["start_bar"], month["start_bar"] + month["bars"]
-        # the balance carried in, which is the opening balance only for the first
-        opening = path[first - 1] if first else path[0]
-        assert month["total_return_pct"] == pytest.approx(
-            (path[last - 1] / opening - 1.0) * 100.0
-        )
-        product *= 1.0 + month["total_return_pct"] / 100.0
-    assert (product - 1.0) * 100.0 == pytest.approx(
-        result.stats["total_return_pct"], abs=1e-9
-    )
+
+    counted = {}
+    for by in ("month", "quarter", "year"):
+        periods = metrics.period_returns(result, data, by=by)
+        counted[by] = len(periods)
+        assert sum(p["bars"] for p in periods) == len(raw), by
+        assert [p["period"] for p in periods] == sorted(p["period"] for p in periods)
+        product = 1.0
+        for period in periods:
+            first, last = period["start_bar"], period["start_bar"] + period["bars"]
+            # the balance carried in, the opening balance only for the first
+            opening = path[first - 1] if first else path[0]
+            assert period["total_return_pct"] == pytest.approx(
+                (path[last - 1] / opening - 1.0) * 100.0
+            ), (by, period["period"])
+            product *= 1.0 + period["total_return_pct"] / 100.0
+        assert (product - 1.0) * 100.0 == pytest.approx(
+            result.stats["total_return_pct"], abs=1e-9
+        ), by
+    # 900 daily bars from new year reach 19 June 2027, so no grouping here is the
+    # single row that cannot fail
+    assert counted == {"month": 30, "quarter": 10, "year": 3}
 
 
 def test_a_rolling_sharpe_is_aligned_like_an_indicator():
@@ -898,6 +910,55 @@ def test_the_sharpe_interval_is_the_sharpe_plus_and_minus_a_hand_computed_half()
     stretched = 1.959963984540054 * math.sqrt(1.0 / (size - 1.0))
     assert wide["low"] == pytest.approx((observed - stretched) * root)
     assert wide["high"] == pytest.approx((observed + stretched) * root)
+
+
+def skewed():
+    # 120 returns taking two values, 1/128 + 1/64 ninety times and 1/128 - 3/64
+    # thirty times. Centred those are +u and -3u, so the population moments come
+    # out at 3u^2, -6u^3 and 21u^4 and the shape is exact: skew -2/sqrt(3),
+    # kurtosis 7/3. Unlike blocked() the estimator variance is then well away from
+    # 1, which is what makes the non-normality correction visible
+    step = np.arange(120)
+    values = np.where(
+        step % 4 == 3, 1.0 / 128.0 - 3.0 / 64.0, 1.0 / 128.0 + 1.0 / 64.0
+    )
+    return BacktestResult(
+        stats={}, equity_curve=100.0 * np.cumprod(1.0 + values), trades=[],
+        initial=100.0, periods_per_year=365.0,
+    )
+
+
+def test_the_sharpe_interval_carries_the_non_normality_correction():
+    # blocked() is symmetric on purpose, which is what makes every figure above
+    # hand computable and is also a hole: a two-valued symmetric sample has skew
+    # exactly 0 and kurtosis exactly 1, so the estimator variance collapses to 1.0
+    # and the whole Bailey and Lopez de Prado correction can be deleted, or have
+    # its skew term flipped in sign, without moving a number. This sample is
+    # skewed, so the correction is a real factor and each wrong reading of it
+    # gives a different half width (ADR 0061)
+    result = skewed()
+    assert metrics.skew(result) == pytest.approx(-2.0 / math.sqrt(3.0))
+    assert metrics.kurtosis(result) == pytest.approx(7.0 / 3.0)
+    spread = math.sqrt(3.0) / 64.0 * math.sqrt(120.0 / 119.0)
+    observed = 1.0 / 128.0 / spread
+    # 1 - skew * observed + (kurtosis - 1) / 4 * observed^2, with the skew negative
+    variance = 1.0 + 2.0 / math.sqrt(3.0) * observed + observed ** 2 / 3.0
+    assert variance == pytest.approx(1.3594866)
+    root = math.sqrt(365.0)
+    quantile = 1.959963984540054
+    half = quantile * math.sqrt(variance / 119.0)
+    band = metrics.sharpe_interval(result, independent=True)
+    assert band["sharpe"] == pytest.approx(observed * root)
+    assert band["low"] == pytest.approx((observed - half) * root)
+    assert band["high"] == pytest.approx((observed + half) * root)
+    # and the two readings that survive blocked() are numbers this one is not:
+    # no correction at all, and the skew term entered with the wrong sign
+    uncorrected = quantile * math.sqrt(1.0 / 119.0)
+    flipped = quantile * math.sqrt(
+        (1.0 - 2.0 / math.sqrt(3.0) * observed + observed ** 2 / 3.0) / 119.0
+    )
+    assert abs(half - uncorrected) > 1e-3
+    assert abs(half - flipped) > 1e-3
 
 
 def test_the_track_record_length_converts_bets_back_into_bars_exactly_once():
