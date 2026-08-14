@@ -262,6 +262,23 @@ impl Stats {
     }
 }
 
+// Six boundary mutants in `compute` survive this module's tests and are
+// EQUIVALENT, not gaps. Recorded so nobody spends an afternoon on them again:
+//
+//   `n_returns > 0` at zero    the series is just the initial value, so the ratio
+//                              is 1.0, powf of 1.0 is 1.0, and both branches
+//                              return (0.0, 0.0)
+//   `final_equity > 0.0` at 0  `0.0.powf(positive)` is 0.0, so raw is -1.0, which
+//                              is the -1.0 the other branch hands back
+//   `w[0] > 0.0` at zero       the division gives an infinity or a NaN and the
+//                              `is_finite` check below already maps both to 0.0
+//   `e > peak` at equality     the assignment writes the value already there
+//   `cagr < 0.0` at zero       `ranked(0.0, risk, _)` is 0.0 for every risk, and
+//                              the mutant computes 0.0 * max_dd, also 0.0
+//   `net < 0.0` at zero        `net_loss -= 0.0` changes nothing
+//
+// The other twelve were real, and the four tests at the end of this module close
+// them: a nonzero risk_free, no closed trades, a scratch trade, a zero balance.
 #[cfg(test)]
 mod tests {
     use super::Stats;
@@ -540,5 +557,119 @@ mod tests {
         );
         assert!(!s.sharpe.is_nan());
         assert!(!s.sortino.is_nan());
+    }
+
+    #[test]
+    fn the_risk_free_rate_is_per_period_and_subtracted_from_both_ratios() {
+        // `risk_free` is a public knob on Backtester, tune and walk_forward, it is
+        // threaded through the whole engine, and NOTHING here ever passed a nonzero
+        // one: the only test that names it hands in a degenerate annualization,
+        // which falls back to a rate of zero before the rate is ever used. So four
+        // separate wrong readings of it all passed. It is a per-period rate, taken
+        // off the mean for sharpe and off each return for the downside deviation.
+        //
+        // Returns are +0.1 and -0.1, so the mean is 0 and the sample deviation is
+        // sqrt(0.02). The rate is 0.08 a year over 4 periods, so 0.02 a period, and
+        // the annualizer is 2. Every number below is hand computed from those.
+        let s = compute(100.0, &[110.0, 99.0], &[], 4.0, 0.08, 2);
+        let excess = -0.02; // mean 0 less the per-period rate
+        let deviation = 0.02_f64.sqrt();
+        // only the -0.1 return falls below the rate, by 0.12, and the downside
+        // deviation divides by the FULL count rather than the shortfall count
+        let downside = (0.12_f64.powi(2) / 2.0).sqrt();
+        assert!(
+            approx(s.sharpe, excess / deviation * 2.0),
+            "sharpe {} against {}",
+            s.sharpe,
+            excess / deviation * 2.0
+        );
+        assert!(
+            approx(s.sortino, excess / downside * 2.0),
+            "sortino {} against {}",
+            s.sortino,
+            excess / downside * 2.0
+        );
+        // and the rate genuinely moved them: at zero the mean IS the excess, and a
+        // mean of zero ranks at zero however the deviation is computed
+        let free = compute(100.0, &[110.0, 99.0], &[], 4.0, 0.0, 2);
+        assert!(approx(free.sharpe, 0.0) && approx(free.sortino, 0.0));
+    }
+
+    #[test]
+    fn a_run_with_no_closed_trades_reports_zeros_rather_than_nan() {
+        // both trade ratios divide by the trade count. Reaching that division with
+        // no trades is 0/0, and ADR 0007 says nothing here is ever NaN
+        let s = compute(100.0, &[110.0, 120.0], &[], 252.0, 0.0, 2);
+        assert_eq!(s.num_trades, 0);
+        assert!(approx(s.win_rate, 0.0), "win_rate {}", s.win_rate);
+        assert!(
+            approx(s.avg_trade_pct, 0.0),
+            "avg_trade {}",
+            s.avg_trade_pct
+        );
+        assert!(s.win_rate.is_finite() && s.avg_trade_pct.is_finite());
+    }
+
+    #[test]
+    fn a_trade_that_broke_exactly_even_is_neither_a_win_nor_a_loss() {
+        // the win gate is strict on purpose: a scratch is not a win. Counting it as
+        // one inflates the win rate of any strategy that scratches out of trades,
+        // which is the common shape of a break-even exit rule
+        let s = compute(
+            100.0,
+            &[100.0],
+            &[trade(1.0), trade(0.0), trade(-1.0)],
+            1.0,
+            0.0,
+            1,
+        );
+        assert_eq!(s.num_trades, 3);
+        assert!(approx(s.win_rate, 1.0 / 3.0), "win_rate {}", s.win_rate);
+        // and it is not counted on the loss side either, so the factor stays 1
+        assert!(
+            approx(s.profit_factor, 1.0),
+            "profit_factor {}",
+            s.profit_factor
+        );
+    }
+
+    #[test]
+    fn a_zero_starting_balance_reports_zeros_rather_than_infinities() {
+        // `compute` promises degenerate inputs come back defined, and a zero opening
+        // balance is the degenerate one every ratio here divides by. Three separate
+        // guards stand between it and an infinity, and all three were unread: the
+        // return, the drawdown, and the average trade. The curve goes NEGATIVE so
+        // the drawdown guard is reached with a peak of exactly zero, which is the
+        // only way to see it
+        let s = compute(0.0, &[0.0, -5.0, -3.0], &[trade(2.0)], 252.0, 0.0, 3);
+        assert!(
+            approx(s.total_return_pct, 0.0),
+            "return {}",
+            s.total_return_pct
+        );
+        assert!(approx(s.cagr_pct, 0.0), "cagr {}", s.cagr_pct);
+        assert!(
+            approx(s.max_drawdown_pct, 0.0),
+            "drawdown {}",
+            s.max_drawdown_pct
+        );
+        assert!(
+            approx(s.avg_trade_pct, 0.0),
+            "avg_trade {}",
+            s.avg_trade_pct
+        );
+        for value in [
+            s.total_return_pct,
+            s.cagr_pct,
+            s.sharpe,
+            s.sortino,
+            s.calmar,
+            s.max_drawdown_pct,
+            s.volatility_pct,
+            s.win_rate,
+            s.avg_trade_pct,
+        ] {
+            assert!(value.is_finite(), "a zero balance produced {value}");
+        }
     }
 }
