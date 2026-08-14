@@ -37,7 +37,7 @@ declares its tunables as constructor arguments and stores them as fields.
   state it; a numpy input has no timestamps and says so (ADR 0048).
 - **Parallelism**: ``n_jobs=1`` runs in this process; ``n_jobs>1`` (or ``-1`` for
   every core) runs trials in worker processes, rebuilding the engine in each worker
-  rather than shipping a live one across the boundary (ADR 0021). Note that only
+  rather than shipping a live one across the boundary (ADR 0021). Only
   ``n_jobs=1`` is reproducible from ``seed``: a parallel run asks for trials before
   earlier ones have reported, so the order results reach the sampler depends on
   which worker finishes first and the search follows a different path each time.

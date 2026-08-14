@@ -392,7 +392,7 @@ def test_the_feature_window_holds_exactly_the_bars_up_to_the_current_one():
     # would ship green. Each feature value names the bar it came from, and the tick
     # is read back off the account's mark price, a channel the gather has no part
     # in, so a window off by a row cannot agree with both. A violation looks like
-    # features[tick + 1] standing in the window, as its last row.
+    # features[tick + 1] standing in the window, as its last row
     t = 60
     window = 8
     features = marked_features(t)
@@ -437,7 +437,7 @@ def test_the_candle_window_holds_exactly_the_bars_up_to_the_current_one():
     # blind spot: only its shape is ever read (ADR 0010). The bars are priced so no
     # two are alike and the tick comes back off the account's mark price, so a
     # window holding bar tick + 1 (lookahead) or ending a bar early is caught by
-    # value. A violation looks like the last row being data[tick + 1].
+    # value. A violation looks like the last row being data[tick + 1]
     t = 40
     window = 6
     data = marked_data(t)

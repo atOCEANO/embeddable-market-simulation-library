@@ -253,7 +253,7 @@ def _smooth(values, alpha, length, where):
     # average of the same length, which made two EMAs computed in `init` 42% of an
     # entire backtest trial, paid again on every trial of every search. Each clean
     # stretch is a plain geometric decay, so it runs as one vectorized pass and
-    # only the seeding and the gaps stay in Python (ADR 0064).
+    # only the seeding and the gaps stay in Python (ADR 0064)
     size = values.size
     out = _blank(size)
     finite = np.isfinite(values)

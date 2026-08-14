@@ -309,7 +309,7 @@ class Reference:
         # The two markets book it differently and conflating them is the first
         # thing this reference got wrong: on SPOT the base is bought and sold, so
         # the notional leaves and returns; on a PERP nothing is bought, so opening
-        # and marking never move quote and only realized PnL and fees do.
+        # and marking never move quote and only realized PnL and fees do
         if self.market == "spot":
             self.quote -= signed * price + fee
         else:

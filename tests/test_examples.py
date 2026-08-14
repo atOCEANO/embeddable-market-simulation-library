@@ -39,7 +39,7 @@ if not PAGE.exists():
     pytest.skip("the documentation is not mounted here", allow_module_level=True)
 
 # A block whose point is prose rather than a call, keyed by a phrase it contains
-# so the list survives the page being edited around it. Each one says why.
+# so the list survives the page being edited around it. each one says why
 NOT_EXECUTABLE = {
     "class SmaCross": "declares the strategy the rest of the page stands on",
     "def marks(self)": "a method body, shown to explain where marks can live",

@@ -49,7 +49,7 @@ def to_ohlcv(data):
 
 def _validate_index(frame):
     # the spec's input contract: a real (datetime) index must be sorted ascending
-    # and unique. A default RangeIndex carries no timestamps, so it is exempt.
+    # and unique. A default RangeIndex carries no timestamps, so it is exempt
     import pandas as pd
 
     idx = frame.index
