@@ -11,8 +11,9 @@ it so a disagreement can be argued about rather than guessed at.
 
 Scope: market, limit and stop orders on spot and perp, with fees, slippage,
 market impact, the volume cap, the spot clamps, the perp margin cap, funding and
-liquidation. Not modelled: FOK, post_only, replace, partial-fill accumulation
-across bars for limits (the harness places one order at a time).
+liquidation. ``start`` begins an episode part way into the series, which is what
+the batched path does. Not modelled: FOK, post_only, replace, partial-fill
+accumulation across bars for limits (the harness places one order at a time).
 """
 
 import math
@@ -25,7 +26,7 @@ class Reference:
     def __init__(self, bars, market="spot", quote=10_000.0, fee_taker=0.0006,
                  fee_maker=0.0002, slippage_bps=0.0, max_fill_fraction=1.0,
                  leverage=10.0, impact=0.0, funding_rate=0.0, funding_interval=0,
-                 max_open_orders=8):
+                 max_open_orders=8, start=0):
         self.bars = bars
         self.market = market
         self.quote = float(quote)
@@ -49,8 +50,14 @@ class Reference:
         self.entry = 0.0
         self.realized = 0.0
         self.open_fee = 0.0          # ADR 0030: the entry-side fee of what is held
-        self.entry_tick = 0
-        self.tick = 0
+        # ADRs 0002 and 0017: the funding schedule belongs to the SERIES, so an
+        # episode started part way in funds the same absolute bars every other
+        # episode does. Which is why an offset start is a starting tick over the
+        # whole series here, and not a slice of it: `bars[start:]` would fund on
+        # bars counted from the episode, and the two readings only part company
+        # once something starts somewhere other than zero (ADR 0018)
+        self.entry_tick = int(start)
+        self.tick = int(start)
         self.fills = 0
         self.funding_paid = 0.0
         self.bust = False

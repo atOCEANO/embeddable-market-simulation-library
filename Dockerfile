@@ -99,6 +99,15 @@ CMD ["python", "/benchmarks/surfaces.py"]
 #
 # Six seeds of five hundred cases is about ninety seconds and has to be exact: the
 # tolerance is relative 1e-6 and any disagreement fails the build.
+#
+# `batch_differential.py` is the same idea one tier up, over `Batch`: every
+# reinforcement learning number comes out of `reset_at_each`, `advance` and
+# `snapshot`, and what stood behind them was a Rust test comparing the batch
+# against the engine it is built from, which shares every mistake the engine
+# makes. Each env is compared against a reference started at that env's own
+# offset, because an episode beginning part way into the series still funds on
+# the bars the SERIES funds on (ADRs 0002, 0017, 0018) and nothing that starts
+# every env at bar zero can see that rule at all.
 #   docker build --target test-differential .
 FROM python:3.11-slim AS test-differential
 COPY --from=builder /wheels /wheels
@@ -107,6 +116,9 @@ RUN pip install --no-cache-dir /wheels/*.whl numpy \
     && cd /differential \
     && for seed in 1 7 42 1337 20260813 99991; do \
          python differential.py 500 $seed || exit 1; \
+       done \
+    && for seed in 7 42 20260814; do \
+         python batch_differential.py 200 $seed || exit 1; \
        done
 
 # The chart layer's other half. Every assertion in the correctness gate reads the
