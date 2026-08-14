@@ -44,6 +44,11 @@ def config(rng):
         fee_maker=rng.choice([0.0, 0.0002]),
         slippage_bps=rng.choice([0.0, 5.0, 50.0]),
         max_fill_fraction=rng.choice([0.25, 1.0]),
+        # the book bound was always the default 8, so a full book was reached only
+        # by accumulating eight orders and the refusal path was mostly unvisited.
+        # Both the resting book and the pending market queue are bounded by this
+        # (ADRs 0027, 0028, 0047), and at 1 every second placement is refused
+        max_open_orders=rng.choice([1, 2, 8]),
         leverage=rng.choice([0.0, 3.0, 10.0]) if market == "perp" else 10.0,
         impact=rng.choice([0.0, 0.01, 0.5]),
         funding_rate=rng.choice([0.0, 0.0001, 0.01]) if market == "perp" else 0.0,
@@ -103,6 +108,7 @@ def drive_engine(bars, cfg, actions):
         array, market=cfg["market"], quote=cfg["quote"],
         fee_taker=cfg["fee_taker"], fee_maker=cfg["fee_maker"],
         slippage_bps=cfg["slippage_bps"], max_fill_fraction=cfg["max_fill_fraction"],
+        max_open_orders=cfg["max_open_orders"],
         leverage=cfg["leverage"], impact=cfg["impact"],
         funding_rate=cfg["funding_rate"], funding_interval=cfg["funding_interval"],
         report=True,

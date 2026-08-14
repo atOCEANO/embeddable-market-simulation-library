@@ -55,6 +55,7 @@ def drive_batch(bars, cfg, offsets, actions):
         array, num_envs=len(offsets), market=cfg["market"], quote=cfg["quote"],
         fee_taker=cfg["fee_taker"], fee_maker=cfg["fee_maker"],
         slippage_bps=cfg["slippage_bps"], max_fill_fraction=cfg["max_fill_fraction"],
+        max_open_orders=cfg["max_open_orders"],
         leverage=cfg["leverage"], impact=cfg["impact"],
         funding_rate=cfg["funding_rate"], funding_interval=cfg["funding_interval"],
         report=False,
