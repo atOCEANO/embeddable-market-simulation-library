@@ -1,0 +1,14 @@
+flowchart TD
+    E["<b>one Rust engine</b><br/>step, orders, honest costs<br/>no same-bar lookahead"]
+    B["<b>Backtester</b><br/>one strategy over a series<br/>stats, equity, trades"]
+    V["<b>VectorEnv</b><br/>Gymnasium RL env<br/>thousands of envs, GIL free"]
+    T["<b>tune</b><br/>parameter search<br/>any strategy, across cores"]
+
+    E --> B
+    E --> V
+    E --> T
+
+    classDef entry fill:#16232e,stroke:#4d9feb,stroke-width:2px,color:#e6edf3
+    classDef stage fill:#16232e,stroke:#2ee6a6,stroke-width:2px,color:#e6edf3
+    class E stage
+    class B,V,T entry

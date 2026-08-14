@@ -1,0 +1,14 @@
+flowchart LR
+    C["<b>emsl-core</b><br/>pure primitives<br/>units, orders, fills<br/>position, account<br/>costs, order book"]
+    B["<b>bar-engine</b><br/>bar-level realization<br/>candles, next-bar fills<br/>step, reporter, stats<br/>rayon batch, sweep"]
+    P["<b>emsl-py</b><br/>the Python-linked crate<br/>PyO3, numpy bridge<br/>GIL release"]
+    W["<b>python / emsl</b><br/>thin wrappers<br/>backtest, rl, batch"]
+
+    C --> B
+    B --> P
+    P --> W
+
+    classDef entry fill:#16232e,stroke:#4d9feb,stroke-width:2px,color:#e6edf3
+    classDef stage fill:#16232e,stroke:#2ee6a6,stroke-width:2px,color:#e6edf3
+    class W entry
+    class C,B,P stage

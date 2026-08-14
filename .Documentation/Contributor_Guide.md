@@ -83,15 +83,18 @@ Regenerating should change nothing unless the drawing changed, and that is the c
 
 `dev/golden.py` rewrites `tests/chart_schema.json`, the key-path golden for the chart spec. The renderer is JavaScript and the gate has no browser, so the contract between the two halves is the one thing a Python test cannot reach directly: a key renamed in `_chart.py` passes every test in the suite and draws a blank chart. Recording every key path the spec carries turns that rename into a one-line diff instead. Run it whenever the spec gains, loses or renames a key, and bump `schema` in `_chart.py` in the same commit. It imports the test module rather than rebuilding the fixture itself, so the golden cannot be recorded against a different chart from the one the test checks.
 
-`dev/diagrams/` holds the mermaid sources for the images in `.Documentation/imgs/`. They are in the repository because the originals were not kept and had to be reconstructed from the rendered PNGs, which is a thing to do once. Render one file per `docker run`, and never a loop inside `sh -c`:
+`dev/diagrams/` holds the mermaid source for every hand-made diagram in `.Documentation/imgs/`, one `.mmd` per image, and its own stage renders all of them ([ADR 0087](Decisions.md)):
 
 ```bash
-docker run --rm --shm-size=1g -v "${PWD}/dev/diagrams:/data" minlag/mermaid-cli \
-  -i /data/205314.mmd -o /data/205314.png \
-  -c /data/config.json -p /data/puppeteer.json -b transparent -s 3
+docker build --target diagrams -t emsl-diagrams .
+docker run --rm --shm-size=1g -v "${PWD}/.Documentation:/out" emsl-diagrams
 ```
 
-Then copy the PNG into `.Documentation/imgs/`. Two things the recipe depends on. The image's bundled headless-shell is broken with an ENOENT, so `puppeteer.json` points `executablePath` at `/usr/bin/chromium`. And the background has to be `transparent` rather than white, or the images invert badly against GitHub's dark mode. The palette in `config.json` is the project's own: node fill `#16232e`, a teal `#2ee6a6` border for the engine stages, a blue `#4d9feb` one for the entry point, `#e6edf3` text, `#8b949e` arrows, trebuchet sans. The images are numbered rather than named and the descriptive name survives only in their alt text: 205310 is the README hero, 205312 the crate layering, 205314 the step lifecycle, 205316 no-lookahead, 205318 the RL loop. Only 205314 has its source here so far; the rest are still PNG alone, and reconstructing one is the price of changing it.
+The images are numbered rather than named and the descriptive name survives only in their alt text: 205310 is the README hero, 205312 the crate layering, 205314 the step lifecycle, 205316 no-lookahead, 205318 the RL loop. Four of the five were reconstructed by reading the rendered PNG, because the originals were never kept, so a rerun redraws them rather than reproducing them byte for byte; 205314 is the one whose source survived and it still renders identical, which is what says the pipeline is faithful rather than merely working.
+
+Three things the setup depends on, each of which cost an afternoon. The image's bundled headless-shell is broken with an ENOENT, so `puppeteer.json` points `executablePath` at the chromium the image also ships, and its entrypoint is `mmdc` itself, so the stage clears it and calls the binary by full path. The background has to be `transparent` rather than white, or the images invert badly against GitHub's dark mode. And no `-w`: setting a width made every wide diagram 2304 across where the rest are 2352.
+
+The palette in `config.json` is the project's own: node fill `#16232e`, a teal `#2ee6a6` border for an engine stage, a blue `#4d9feb` one for anything the caller invokes, `#e6edf3` text, `#8b949e` arrows, trebuchet sans. It also names the cluster and edge-label colours, which look like padding and are not: mermaid derives whatever the palette leaves out, and left to itself it drew the no-lookahead frames as opaque brown boxes.
 
 <br>
 

@@ -167,6 +167,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends fonts-dejavu-co
 RUN pip install --no-cache-dir /wheels/*.whl numpy pandas pyarrow playwright==1.47.0
 CMD ["sh", "-c", "python /charts/build.py && python /charts/shoot.py"]
 
+# The hand-made diagrams, rendered from their mermaid sources (ADR 0087). The
+# other half of the same idea as `charts`: every picture in the documentation is
+# produced by something committed here, so none of them is a file nobody can
+# remake. Opt-in, and it writes into the tree rather than asserting anything:
+#   docker build --target diagrams -t emsl-diagrams .
+#   docker run --rm -v "${PWD}/.Documentation:/out" emsl-diagrams
+# The bundled headless-shell in this image is broken with an ENOENT, which is why
+# puppeteer.json points executablePath at the chromium the image also ships.
+FROM minlag/mermaid-cli AS diagrams
+USER root
+COPY dev/diagrams /diagrams
+# the image's entrypoint is mmdc itself, with its own puppeteer config bolted on,
+# so it has to be cleared to run a loop; mmdc is not on PATH, hence the full path
+ENTRYPOINT []
+# no -w: the width is mermaid's own, and setting one made every wide diagram
+# 2304 where the committed pair are 2352. `-b transparent` rather than white, or
+# the images invert badly against GitHub's dark mode
+CMD ["sh", "-c", "set -e; mkdir -p /out/imgs; for f in /diagrams/*.mmd; do n=$(basename \"$f\" .mmd); /home/mermaidcli/node_modules/.bin/mmdc -i \"$f\" -o \"/out/imgs/$n.png\" -c /diagrams/config.json -p /diagrams/puppeteer.json -b transparent -s 3; echo \"rendered $n\"; done"]
+
 # Stable-Baselines3 integration: install torch and sb3 and run the adapter tests.
 # torch is heavy, so this is opt-in and kept out of the correctness gate:
 #   docker build --target test-sb3 .

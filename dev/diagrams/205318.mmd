@@ -1,0 +1,17 @@
+flowchart LR
+    R["<b>reset()</b><br/>random start per env"]
+    O["observation<br/>(window, features)"]
+    P["your policy<br/>picks actions"]
+    S["<b>step(actions)</b><br/>batched, GIL released"]
+    T["reward, terminations,<br/>truncations"]
+
+    R --> O
+    O --> P
+    P --> S
+    S --> T
+    T -- "running, or done: same-step autoreset" --> O
+
+    classDef entry fill:#16232e,stroke:#4d9feb,stroke-width:2px,color:#e6edf3
+    classDef stage fill:#16232e,stroke:#2ee6a6,stroke-width:2px,color:#e6edf3
+    class R,S entry
+    class O,P,T stage

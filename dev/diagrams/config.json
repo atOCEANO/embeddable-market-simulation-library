@@ -6,7 +6,13 @@
     "lineColor": "#8b949e",
     "primaryColor": "#16232e",
     "primaryTextColor": "#e6edf3",
-    "primaryBorderColor": "#2ee6a6"
+    "primaryBorderColor": "#2ee6a6",
+    "edgeLabelBackground": "#16232e",
+    "tertiaryColor": "#16232e",
+    "tertiaryTextColor": "#8b949e",
+    "tertiaryBorderColor": "#8b949e",
+    "clusterBkg": "transparent",
+    "clusterBorder": "#8b949e"
   },
   "flowchart": {
     "curve": "linear",

@@ -1,0 +1,18 @@
+flowchart LR
+    subgraph BT["bar t"]
+        D["you decide<br/>at the close"]
+    end
+    subgraph BT1["bar t + 1"]
+        F["the order fills<br/>at the open"]
+    end
+
+    D -- "order queued" --> F
+
+    classDef stage fill:#16232e,stroke:#2ee6a6,stroke-width:2px,color:#e6edf3
+    class D,F stage
+
+    %% the bar frames are scenery rather than nodes, so they are dashed and grey.
+    %% Left to the theme they come out an opaque brown: mermaid derives a cluster
+    %% background from the palette, and this palette only names a few colours
+    classDef frame fill:transparent,stroke:#8b949e,stroke-width:2px,stroke-dasharray:6 6,color:#8b949e
+    class BT,BT1 frame
