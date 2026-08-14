@@ -820,6 +820,33 @@ impl Engine {
     /// forced close appeared in no trade row, counted toward no fill, and left the
     /// dead position's entry fee standing to be charged against the NEXT trade
     /// (ADRs 0030, 0031).
+    ///
+    /// Thirteen boundary mutants survive here and ALL THIRTEEN are equivalent or
+    /// sit on an unreachable branch. Measured, not argued: probes asserting the
+    /// three invariants below ran against 179 Rust tests, 547 Python tests and
+    /// 3,600 randomised differential cases without firing once.
+    ///
+    ///   `applied` is never zero or less. `apply_fill_clamped` returns before
+    ///   calling this on a non-positive size and `liquidate` never books a flat
+    ///   position, so the two `applied > 0.0` guards and the `else` that carries
+    ///   `open_fee` without a fee share are all dead. Four mutants.
+    ///
+    ///   `closed` is never between zero and CLOSE_EPS. It comes from the
+    ///   position's own dust rule (ADR 0023), so it is either exactly zero or
+    ///   comfortably above the epsilon, and `>` cannot be told from `>=`. That
+    ///   also makes the `&&` in the entry-fee guard equivalent to `||`: at
+    ///   `closed == 0` the share is `open_fee * 0 / pos` either way. Four mutants.
+    ///
+    ///   `kept` is only ever read through `(pos_before.abs() - kept).max(0.0)`,
+    ///   and every sign comparison in it collapses at exactly zero: opening from
+    ///   flat closes nothing under both readings, and a full close closes the
+    ///   whole old side under both. Two mutants, and two more on the new-side
+    ///   stamp, which is guarded by `pos_after != 0.0` before either sign is read.
+    ///
+    /// So the count here overstates the gap. What this function actually does is
+    /// pinned by value: `a_trade_carries_both_sides_of_its_fee`,
+    /// `adding_to_a_position_does_not_double_charge_its_entry_fee` and the two
+    /// partial-close tests.
     fn book_fill(
         &mut self,
         applied: f64,
