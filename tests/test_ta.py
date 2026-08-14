@@ -775,10 +775,12 @@ def test_vwma_leans_on_the_bars_that_traded():
 
 
 def block_size(alpha):
-    # where the seams fall. Computed the way `_decay` computes it, from alpha, so a
-    # test crosses the block hand-off on purpose rather than by being long enough by
-    # luck. Every test below is worthless the moment its series stops crossing one
-    return max(1, int(150.0 / -math.log10(1.0 - alpha)))
+    # where the seams fall, so a test crosses the block hand-off on purpose rather
+    # than by being long enough by luck. Every test below is worthless the moment
+    # its series stops crossing one. Read from the module rather than recomputed
+    # here: a copy of the formula beside the tests agrees with itself, so replacing
+    # the module's with a picked constant used to leave all three of these green
+    return ta._block(1.0 - alpha)
 
 
 def rolled_ema(values, length):
@@ -917,3 +919,26 @@ def test_a_short_length_over_a_hundred_thousand_bars_stays_finite_throughout():
     assert np.allclose(out[length - 1:], expected[length - 1:],
                        rtol=1e-12, atol=0.0)
     assert out[-1] == pytest.approx(expected[-1], rel=1e-12)
+
+
+def test_no_single_block_size_suits_both_a_short_length_and_a_long_one():
+    # the block has to be DERIVED, and one length cannot show that. ema(20) keeps
+    # 0.905 a bar and affords 3,452; ema(2) keeps a third and affords 314, because
+    # a third to the minus thousandth is 1e477. So a block picked to suit the test
+    # above overflows here, silently, from the first seam on: the output is NaN
+    # from bar 1001 and the shape, the dtype and the warm-up are all still right.
+    # Both lengths run over the same series, so no constant can pass this (ADR 0064)
+    size = 100000
+    step = np.arange(float(size))
+    close = 100.0 + 10.0 * np.sin(step / 500.0) + 0.5 * np.cos(step / 7.0)
+    short, long_ = 2, 20
+    lo, hi = block_size(2.0 / (short + 1.0)), block_size(2.0 / (long_ + 1.0))
+    assert lo < 1000 < hi, "the two lengths no longer straddle a picked block"
+    for length in (short, long_):
+        out = ta.ema(close, length)
+        assert np.isnan(out[:length - 1]).all()
+        assert np.isfinite(out[length - 1:]).all(), f"ema({length}) overflowed"
+        assert out[length - 1:].min() >= close.min() - 1e-9
+        assert out[length - 1:].max() <= close.max() + 1e-9
+    assert np.allclose(ta.ema(close, short)[short - 1:],
+                       rolled_ema(close, short)[short - 1:], rtol=1e-12, atol=0.0)

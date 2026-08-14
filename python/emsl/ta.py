@@ -286,6 +286,15 @@ def _smooth(values, alpha, length, where):
     return out
 
 
+def _block(keep):
+    # how many bars one cumulative sum may span before its own weights overflow:
+    # keep**-block held under about 1e150, ten orders of magnitude inside the
+    # largest finite double. A function rather than a line inside `_decay` so a
+    # test can read the size the module actually uses instead of recomputing the
+    # formula beside it and agreeing with itself (ADR 0064)
+    return max(1, int(150.0 / -math.log10(keep)))
+
+
 def _decay(values, seed, alpha):
     """One exponential pass over a stretch that has no gaps in it.
 
@@ -304,9 +313,7 @@ def _decay(values, seed, alpha):
     if keep <= 0.0:
         # alpha of exactly 1 keeps nothing, so every value is its own average
         return values * alpha
-    # keep**-block held under about 1e150, ten orders of magnitude inside the
-    # largest finite double
-    block = max(1, min(values.size, int(150.0 / -math.log10(keep))))
+    block = max(1, min(values.size, _block(keep)))
     out = np.empty(values.size, dtype=np.float64)
     carried = seed
     for start in range(0, values.size, block):
