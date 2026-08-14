@@ -29,6 +29,23 @@ _TOOLS = (
     pathlib.Path(__file__).resolve().parent.parent / "dev",
 )
 
+# the gate copies the Dockerfile too, so the pages can be checked against the
+# stages they tell a contributor to run
+_GATE = (
+    pathlib.Path("/Dockerfile"),
+    pathlib.Path(__file__).resolve().parent.parent / "Dockerfile",
+)
+
+# 0080 was never written. The numbering skipped it and no commit in the history
+# ever held it, so there is nothing to recover; renumbering now would break every
+# cross-reference and every commit message that cites a decision, which is a far
+# worse trade than one recorded hole
+_UNUSED_DECISIONS = {80}
+
+# builder produces the wheel every other stage installs and is never run on its
+# own, so it is the one stage a contributor has no reason to read about
+_INTERNAL_STAGES = {"builder"}
+
 _API = {
     "chart": emsl.chart,
     "chart_defaults": emsl.chart_defaults,
@@ -130,6 +147,94 @@ def test_every_tool_under_dev_is_named_by_a_page():
                       if child.is_dir() and child.name != "__pycache__"
                       and child.name not in text)
     assert not missing, f"under dev/ and explained by no page: {missing}"
+
+
+def decisions_page():
+    for page in pages():
+        if page.name == "Decisions.md":
+            return page.read_text(encoding="utf-8")
+    raise AssertionError("Decisions.md is not among the pages")
+
+
+def declared_decisions(text):
+    # a decision is a bolded title carrying its number, and a title can carry two
+    # ("Funding (0002, 0017)") when one paragraph settled two things at once
+    found = set()
+    for line in text.splitlines():
+        if not line.startswith("**") or "**" not in line[2:]:
+            continue
+        title = line[2:line.index("**", 2)]
+        found.update(int(number) for number in re.findall(r"\b(\d{4})\b", title))
+    return found
+
+
+def gate_stages():
+    for path in _GATE:
+        if path.is_file():
+            return set(re.findall(r"^FROM .* AS ([a-z0-9-]+)$",
+                                  path.read_text(encoding="utf-8"), re.M))
+    return None
+
+
+def test_the_decisions_are_numbered_without_a_gap_or_a_repeat():
+    # the top number was verified by hand with a grep every time one was added,
+    # which is how 0080 came to be skipped without anyone noticing
+    declared = declared_decisions(decisions_page())
+    assert declared, "no numbered decisions were found"
+    expected = set(range(1, max(declared) + 1)) - _UNUSED_DECISIONS
+    missing = sorted(expected - declared)
+    extra = sorted(_UNUSED_DECISIONS & declared)
+    assert not missing, (
+        f"the decisions run to {max(declared):04d} but {[f'{n:04d}' for n in missing]} "
+        f"is not among them; either it was lost or the numbering skipped it"
+    )
+    assert not extra, (
+        f"{[f'{n:04d}' for n in extra]} is recorded as never written, but the page "
+        f"now uses it; drop it from _UNUSED_DECISIONS in this file"
+    )
+
+
+def test_every_decision_a_page_cites_is_one_that_exists():
+    # a citation is the load-bearing half of this documentation set: the code
+    # comments, the commit messages and the guides all point at these numbers
+    declared = declared_decisions(decisions_page())
+    text = "\n".join(page.read_text(encoding="utf-8") for page in pages())
+    cited = set()
+    for run in re.findall(r"ADRs?\s+((?:\d{4})(?:(?:,|\s+and)\s+\d{4})*)", text):
+        cited.update(int(number) for number in re.findall(r"\d{4}", run))
+    assert cited, "no decisions were cited anywhere, which cannot be right"
+    dangling = sorted(cited - declared)
+    assert not dangling, (
+        f"pages cite {[f'{n:04d}' for n in dangling]}, which the decisions page "
+        f"does not define"
+    )
+
+
+def test_every_link_between_the_pages_names_a_page_that_exists():
+    # matched on the file name rather than the path, because the gate lays the
+    # pages out flat under /docs while a checkout keeps README.md a level above
+    # them, and a link is relative to whichever of those it was written in
+    known = {page.name for page in pages()}
+    broken = []
+    for page in pages():
+        for target in re.findall(r"\]\(([^)]+\.md)(?:#[^)]*)?\)",
+                                 page.read_text(encoding="utf-8")):
+            if pathlib.PurePosixPath(target).name not in known:
+                broken.append(f"{page.name} -> {target}")
+    assert not broken, "\n".join(broken)
+
+
+def test_every_gate_stage_a_contributor_can_run_is_written_down():
+    # a stage nobody documented is a stage nobody runs, and bench-surfaces was
+    # exactly that: it existed, it worked, and no page mentioned it
+    stages = gate_stages()
+    assert stages is not None, "no Dockerfile in the gate or beside tests"
+    text = "\n".join(page.read_text(encoding="utf-8") for page in pages())
+    undocumented = sorted(
+        stage for stage in stages - _INTERNAL_STAGES
+        if f"--target {stage}" not in text and f"`{stage}`" not in text
+    )
+    assert not undocumented, f"a stage no page tells anyone about: {undocumented}"
 
 
 def test_dev_keeps_no_documentation_of_its_own():

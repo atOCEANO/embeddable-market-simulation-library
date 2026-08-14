@@ -49,7 +49,9 @@ This needs no interpreter, so it is the inner loop for anything below the Python
 The `emsl-py` crate is an `extension-module` cdylib: it cannot be unit-tested with `cargo test`, because the test binary has no interpreter to link. So the binding is checked two ways. The Rust side compiles and lints with `cargo build -p emsl-py` and `clippy`. The behavior is checked through the built wheel on a Docker gate that builds one `abi3` wheel and installs it on Python 3.9, 3.11, and 3.12, running the `tests/` suite on each:
 
 ```bash
-docker build --target test311 .    # 3.11; also test39, test312
+docker build --target test39  .
+docker build --target test311 .
+docker build --target test312 .
 ```
 
 Because the wheel is `abi3-py39`, the same artifact is what ships, so the gate tests the real deliverable, not a per-version rebuild. This is the "works on Python 3.9 and up" check, run before a Python-facing change is done, not on every edit.
@@ -74,15 +76,15 @@ It has already earned its place twice. It found the slot leak of [ADR 0079](Deci
 
 `batch_differential.py` also reports what its cases reached: how many traded, funded, busted and ran out of bars, and it fails if any of those is zero. "0 disagreed" over a hundred flat accounts that never funded and never died is a pass that means nothing, and after the fact there is no way to tell one from the other.
 
-It also reaches things a unit test structurally cannot. `replace` carries the side of the order it moves ([ADR 0032](Decisions.md)), and that claim was asserted nowhere, in Rust or in Python: flipping Sell to Buy inside `Engine::replace` leaves all 178 Rust tests green. The harness places, moves and cancels orders through the same sequence on both simulators, so the flip parts company on 66 cases in 400.
+It also reaches things a unit test structurally cannot. `replace` carries the side of the order it moves ([ADR 0032](Decisions.md)), and that claim was asserted nowhere, in Rust or in Python: flipping Sell to Buy inside `Engine::replace` leaves every Rust test in the workspace green. The harness places, moves and cancels orders through the same sequence on both simulators, so the flip parts company on 66 cases in 400.
 
 Read a disagreement as a question rather than a verdict: the reference is a second reading and can be the wrong one. On the way to that first agreement it was wrong three times and the engine right three times, and each time the decisions page was precise enough to convict the reference by reading it. `dev/differential/trace.py` shrinks a failing case to its smallest form and prints both simulators bar by bar, which is what makes the question answerable.
 
 <br>
 
-### The two stages outside the gate
+### The stages outside the gate
 
-Both are opt-in, because each pulls an image far heavier than the correctness gate, and each covers something the gate structurally cannot:
+Five stages exist that the gate does not run. Two of them are tests, opt-in because each pulls an image far heavier than the correctness gate and each covers something the gate structurally cannot:
 
 ```bash
 docker build --target test-browser .    # the chart's javascript, in chromium
@@ -90,6 +92,16 @@ docker build --target test-sb3 .        # the Stable-Baselines3 adapter, with to
 ```
 
 `test-browser` is the other half of the chart layer. Everything in `tests/test_chart.py` reads `Chart.spec()`, because the gate has no browser and a spec assertion is the sharper test of what Python decided ([ADR 0043](Decisions.md)). What that cannot reach is whether the shipped JavaScript parses, runs and draws, and roughly 1,250 lines of it had never been executed by anything in the project. The first run of it found that the vendored renderer joins a line straight across whitespace, so ADR 0038's central claim was false in the artifact while true in the document ([ADR 0073](Decisions.md)). `tests/test_render.py` skips wherever playwright is absent, so the correctness gate stays green without one.
+
+The other three assert nothing, which is exactly why they are not gates:
+
+```bash
+docker build --target bench .                                 # engine throughput
+docker build --target bench-surfaces -t emsl-bench-surfaces . # then docker run it
+docker build --target charts -t emsl-charts .                 # the documentation images
+```
+
+`bench` prints the engine's throughput and `bench-surfaces` prints it per surface (`Engine`, `Backtester`, `tune`, `VectorEnv`, `Batch`). Neither can fail, and it is worth being plain about what that means: **there is no performance guard anywhere in this project**. `_smooth` could regress from 33x to 1x and every stage above would stay green. The numbers are visible to somebody who runs them and invisible to everybody who does not, which is a known hole rather than an oversight, and closing it needs a baseline that survives being run on different hardware. `charts` rebuilds every chart image the documentation shows, from frozen data so that a rerun redraws rather than redecides ([ADR 0085](Decisions.md)); the [Contributor Guide](Contributor_Guide.md) has the recipe.
 
 <br>
 
