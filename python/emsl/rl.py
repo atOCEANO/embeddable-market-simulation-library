@@ -108,10 +108,10 @@ class VectorEnv(gym.vector.VectorEnv):
         self._cost_rng = np.random.default_rng(cost_seed)
         self._rng = np.random.default_rng(offset_seed)
 
-        fee_taker, fee_taker_per_env = self._cost_arg(fee_taker)
-        fee_maker, fee_maker_per_env = self._cost_arg(fee_maker)
-        slippage_bps, slippage_bps_per_env = self._cost_arg(slippage_bps)
-        impact, impact_per_env = self._cost_arg(impact)
+        fee_taker, fee_taker_per_env = self._cost_arg("fee_taker", fee_taker)
+        fee_maker, fee_maker_per_env = self._cost_arg("fee_maker", fee_maker)
+        slippage_bps, slippage_bps_per_env = self._cost_arg("slippage_bps", slippage_bps)
+        impact, impact_per_env = self._cost_arg("impact", impact)
 
         self._batch = Batch(
             data,
@@ -154,13 +154,36 @@ class VectorEnv(gym.vector.VectorEnv):
         self._prev = None
         self._steps = np.zeros(self.num_envs, dtype=np.int64)
 
-    def _cost_arg(self, value):
+    # the floor each cost knob respects, and whether the floor itself is allowed.
+    # Slippage and impact are adverse by definition (ADR 0004) so zero is fine; a
+    # fee at or below -1 is a rebate larger than the notional, which mints equity
+    _FLOORS = {
+        "fee_taker": (-1.0, False),
+        "fee_maker": (-1.0, False),
+        "slippage_bps": (0.0, True),
+        "impact": (0.0, True),
+    }
+
+    def _cost_arg(self, name, value):
         # a scalar shares one cost across the batch; a (low, high) pair samples a
         # per-env override array uniformly, so each env carries its own regime
         if isinstance(value, (tuple, list)):
             if len(value) != 2:
                 raise ValueError("a cost range must be a (low, high) pair")
             low, high = float(value[0]), float(value[1])
+            # the engine holds this rule too and now applies it to the drawn array
+            # (ADR 0086), but it can only name `fee_taker_per_env[0]`, and a range
+            # is what the caller typed. Checked on the LOW end because the scalar
+            # handed to the engine is the high one, so a range straddling the
+            # floor used to pass the guard and hand the negatives to the envs
+            floor, allowed = self._FLOORS[name]
+            worst = min(low, high)
+            if worst < floor or (worst == floor and not allowed):
+                raise ValueError(
+                    f"{name} range ({low}, {high}) reaches {worst}, which is not "
+                    f"{'at or ' if allowed else ''}above {floor}; a cost below that "
+                    f"pays the account to trade"
+                )
             drawn = self._cost_rng.uniform(low, high, size=self.num_envs).astype(np.float64)
             # the per-env array is what actually applies, and the scalar beside it
             # is only what would stand if it ever failed to. Handing back the low

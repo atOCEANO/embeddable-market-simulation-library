@@ -201,6 +201,25 @@ def drawn_fees(rewards, price=100.0, size=1.0):
     return -np.asarray(rewards, dtype=np.float64) / (price * size)
 
 
+def test_a_cost_range_that_reaches_below_its_floor_is_refused():
+    # the scalar handed to the engine's guard is the HIGH end (ADR 0014), so a
+    # range straddling the floor passed it and handed the negative draws to the
+    # per-env array, which checked nothing. VectorEnv(fee_taker=(-2.0, 0.0)) built
+    # happily and paid its envs to trade (ADR 0086)
+    for knob, bad in (
+        ("fee_taker", (-2.0, 0.0)),
+        ("fee_maker", (-2.0, 0.0)),
+        ("slippage_bps", (-5.0, 0.0)),
+        ("impact", (-5.0, 0.0)),
+    ):
+        with pytest.raises(ValueError) as caught:
+            VectorEnv(halving_data(BARS), num_envs=2, window=2, **{knob: bad})
+        # the message names the range the caller typed, not the array it drew
+        assert knob in str(caught.value)
+    # a range wholly above the floor is what the knob is for, and still works
+    VectorEnv(halving_data(BARS), num_envs=2, window=2, fee_taker=(0.001, 0.02))
+
+
 def test_a_per_env_cost_is_drawn_inside_its_range_and_fixed_for_the_envs_life():
     # ADR 0014 says the pair is sampled ONCE PER ENV, and the only thing asserted
     # about it was that the rewards have a spread. A draw taken per step, or per
@@ -233,12 +252,12 @@ def test_the_cost_fallback_is_the_expensive_end_of_the_range():
     # makes that failure the cheapest possible market, which is the one direction a
     # cost model must never fail in, and nothing anywhere reads this value (ADR 0014)
     env = VectorEnv(flat_data(), num_envs=8, window=4, seed=0)
-    scalar, drawn = env._cost_arg((0.001, 0.02))
+    scalar, drawn = env._cost_arg("fee_taker", (0.001, 0.02))
     assert scalar == 0.02
     assert drawn.shape == (8,)
     assert ((0.001 <= drawn) & (drawn <= 0.02)).all()
     # a plain number is passed through with no array beside it
-    assert env._cost_arg(0.007) == (0.007, None)
+    assert env._cost_arg("fee_taker", 0.007) == (0.007, None)
 
 
 def ranged_data(t=40, price=100.0, width=10.0):
@@ -271,7 +290,7 @@ def test_each_cost_knob_takes_its_own_range():
     # (ADR 0020), so no maker fill can happen here and no reward can read it at
     # all. The draw itself is what there is to check
     env = VectorEnv(ranged_data(), num_envs=8, window=4, seed=0)
-    scalar, drawn = env._cost_arg((0.0001, 0.001))
+    scalar, drawn = env._cost_arg("fee_maker", (0.0001, 0.001))
     assert scalar == 0.001
     assert drawn.shape == (8,) and drawn.std() > 0.0
 

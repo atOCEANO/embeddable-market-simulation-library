@@ -164,6 +164,20 @@ fn at_least(name: &str, value: f64, low: f64) -> PyResult<f64> {
     Ok(value)
 }
 
+/// Reject a fee rate at or below -1. A rebate larger than the notional turns the
+/// spot cash clamp's `1 + rate` divisor non-positive and mints equity out of a
+/// fill that never happened. Its own function because the per-env arrays need the
+/// identical rule, and a rule written twice is a rule two paths will disagree
+/// about, which is exactly what happened (ADR 0086).
+fn a_rebate(name: &str, rate: f64) -> PyResult<f64> {
+    if finite(name, rate)? <= -1.0 {
+        return Err(PyValueError::new_err(format!(
+            "{name} must be greater than -1.0 (a rebate cannot exceed the notional), got {rate}"
+        )));
+    }
+    Ok(rate)
+}
+
 /// Validate every engine knob and build the config. One place, so `Engine` and
 /// `Batch` cannot drift apart on what they accept (ADR 0027).
 #[allow(clippy::too_many_arguments)]
@@ -190,11 +204,7 @@ fn build_config(
     // spot cash clamp's `1 + rate` divisor non-positive and mints equity out of a
     // fill that never happens.
     for (name, rate) in [("fee_taker", fee_taker), ("fee_maker", fee_maker)] {
-        if finite(name, rate)? <= -1.0 {
-            return Err(PyValueError::new_err(format!(
-                "{name} must be greater than -1.0 (a rebate cannot exceed the notional), got {rate}"
-            )));
-        }
+        a_rebate(name, rate)?;
     }
     Ok(EngineConfig {
         market: parse_market(market)?,
@@ -228,6 +238,7 @@ fn per_env_vec(
     name: &str,
     num_envs: usize,
     array: &Option<PyReadonlyArray1<'_, f64>>,
+    check: impl Fn(&str, f64) -> PyResult<f64>,
 ) -> PyResult<Option<Vec<f64>>> {
     match array {
         Some(a) => {
@@ -239,6 +250,13 @@ fn per_env_vec(
                     "{name} length {} must equal num_envs {num_envs}",
                     slice.len()
                 )));
+            }
+            // the same rule the scalar gets, one entry at a time (ADR 0086). This
+            // checked contiguity and length and nothing else, so a per-env array
+            // was the one way past every range guard in `build_config`: a fee of
+            // -2.0 reached an env and minted equity the scalar path refuses
+            for (env, value) in slice.iter().enumerate() {
+                check(&format!("{name}[{env}]"), *value)?;
             }
             Ok(Some(slice.to_vec()))
         }
@@ -899,10 +917,16 @@ impl Batch {
 
         // Per-env cost randomization (ADR 0014): each override, if given, replaces
         // its scalar field for the matching env; absent overrides keep the scalar.
-        let ft = per_env_vec("fee_taker_per_env", num_envs, &fee_taker_per_env)?;
-        let fm = per_env_vec("fee_maker_per_env", num_envs, &fee_maker_per_env)?;
-        let sb = per_env_vec("slippage_bps_per_env", num_envs, &slippage_bps_per_env)?;
-        let im = per_env_vec("impact_per_env", num_envs, &impact_per_env)?;
+        let ft = per_env_vec("fee_taker_per_env", num_envs, &fee_taker_per_env, a_rebate)?;
+        let fm = per_env_vec("fee_maker_per_env", num_envs, &fee_maker_per_env, a_rebate)?;
+        let adverse = |name: &str, value: f64| at_least(name, value, 0.0);
+        let sb = per_env_vec(
+            "slippage_bps_per_env",
+            num_envs,
+            &slippage_bps_per_env,
+            adverse,
+        )?;
+        let im = per_env_vec("impact_per_env", num_envs, &impact_per_env, adverse)?;
 
         let inner = if ft.is_some() || fm.is_some() || sb.is_some() || im.is_some() {
             let configs: Vec<EngineConfig> = (0..num_envs)

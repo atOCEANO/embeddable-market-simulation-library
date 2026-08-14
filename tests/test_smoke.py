@@ -475,6 +475,26 @@ def test_non_finite_config_scalars_are_rejected():
             emsl.Batch(series(), num_envs=2, **kwargs)
 
 
+def test_out_of_range_per_env_costs_are_rejected_like_the_scalars():
+    # the per-env arrays were checked for contiguity and length and nothing else,
+    # so they were the one way past every guard below (ADR 0086). A fee of -2.0
+    # reached an env: on a perp, four buys of five units took equity from 10,000
+    # to 14,000, minted out of a rebate larger than the notional
+    for name, bad in (
+        ("fee_taker_per_env", -2.0),
+        ("fee_maker_per_env", -2.0),
+        ("slippage_bps_per_env", -5.0),
+        ("impact_per_env", -5.0),
+    ):
+        with pytest.raises(ValueError):
+            emsl.Batch(series(), num_envs=2,
+                       **{name: np.array([0.0, bad], dtype=np.float64)})
+        # and the good value beside it still builds, so the guard is a range check
+        # rather than a refusal to accept the argument at all
+        emsl.Batch(series(), num_envs=2,
+                   **{name: np.array([0.0, 0.5], dtype=np.float64)})
+
+
 def test_out_of_range_config_scalars_are_rejected():
     for kwargs in (
         {"quote": -1.0},
