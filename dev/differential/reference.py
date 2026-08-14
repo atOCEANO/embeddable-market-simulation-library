@@ -135,7 +135,8 @@ class Reference:
             # same order moved, so moving an IOC must not quietly make it a GTC
             placed = self.limit_order(old["side"], size,
                                       old["price"] if price is None else price,
-                                      post_only=old["post_only"], tif=old["tif"])
+                                      post_only=old["post_only"], tif=old["tif"],
+                                      reduce_only=old["reduce_only"])
         else:
             placed = self.stop_order(old["side"], size,
                                      old["trigger"] if trigger is None else trigger,
@@ -144,7 +145,8 @@ class Reference:
             self.resting[slot] = old
         return placed
 
-    def limit_order(self, side, size, price, post_only=False, tif="gtc"):
+    def limit_order(self, side, size, price, post_only=False, tif="gtc",
+                    reduce_only=False):
         if not math.isfinite(size) or size <= 0.0 or not math.isfinite(price):
             return None
         # ADR 0045 by way of order.rs: a post_only limit that would cross the
@@ -158,7 +160,7 @@ class Reference:
         if slot is None:
             return None
         order = dict(id=self.next_id, side=side, size=size, kind="limit",
-                     price=price, filled=0.0, reduce_only=False,
+                     price=price, filled=0.0, reduce_only=reduce_only,
                      post_only=post_only, fok=(tif == "fok"), tif=tif)
         self.next_id += 1
         self.resting[slot] = order

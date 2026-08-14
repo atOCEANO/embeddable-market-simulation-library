@@ -57,7 +57,8 @@ def config(rng):
 # which limit
 KINDS = os.environ.get(
     "KINDS",
-    "market,limit,stop,fok,post,cancel,replace,reduce,close,ioc_limit,fok_limit,cancel_all",
+    "market,limit,stop,fok,post,cancel,replace,reduce,close,ioc_limit,fok_limit,"
+    "cancel_all,reduce_limit,stop_entry",
 ).split(",")
 
 
@@ -86,6 +87,8 @@ def plan(rng, bars):
             # deliberately either side: a reduce_only order pointed the wrong way
             # is clamped to nothing rather than opening the other side (ADR 0028)
             out.append(("reduce", side, rng.uniform(0.1, 40.0)))
+        elif kind in ("reduce_limit", "stop_entry"):
+            out.append((kind, side, rng.uniform(0.1, 20.0), rng.uniform(50.0, 200.0)))
         else:
             # `replace` reads the same shape, and its `side` is deliberately
             # ignored by both simulators: a replacement keeps the side of the
@@ -152,9 +155,15 @@ def place(engine, action, live):
     elif kind in ("ioc_limit", "fok_limit"):
         tif = "ioc" if kind == "ioc_limit" else "fok"
         got = engine.order(action[1], action[2], "limit", action[3], None, False, False, tif)
+    elif kind == "reduce_limit":
+        got = engine.order(action[1], action[2], "limit", action[3], None, True, False, "gtc")
+    elif kind == "stop_entry":
+        # a breakout stop, which OPENS rather than protects, so reduce_only is off
+        got = engine.stop(action[1], action[2], action[3], False)
     else:
         got = engine.stop(action[1], action[2], action[3], True)
-    if kind in ("limit", "post", "stop", "ioc_limit", "fok_limit") and got is not None:
+    if kind in ("limit", "post", "stop", "ioc_limit", "fok_limit",
+                "reduce_limit", "stop_entry") and got is not None:
         live.append(got)
     if kind == "cancel" and live:
         live.pop(0)
@@ -208,11 +217,18 @@ def place_reference(ref, action, live, reached=None):
     elif kind in ("ioc_limit", "fok_limit"):
         got = ref.limit_order(action[1], action[2], action[3],
                               tif="ioc" if kind == "ioc_limit" else "fok")
+    elif kind == "reduce_limit":
+        got = ref.limit_order(action[1], action[2], action[3], reduce_only=True)
+    elif kind == "stop_entry":
+        got = ref.stop_order(action[1], action[2], action[3], False)
     elif kind == "stop":
         got = ref.stop_order(action[1], action[2], action[3], True)
-    if kind in ("limit", "post", "stop", "ioc_limit", "fok_limit") and got is not None:
+    if kind in ("limit", "post", "stop", "ioc_limit", "fok_limit",
+                "reduce_limit", "stop_entry") and got is not None:
         live.append(got)
-    if reached is not None and kind in ("ioc_limit", "fok_limit") and got is not None:
+    if reached is not None and got is not None and kind in (
+        "ioc_limit", "fok_limit", "reduce_limit", "stop_entry"
+    ):
         reached[kind] += 1
 
 
@@ -240,7 +256,7 @@ def main():
     rng = random.Random(seed)
 
     reached = dict(close=0, reduce=0, cancel=0, replace=0, cancel_all=0,
-                   ioc_limit=0, fok_limit=0)
+                   ioc_limit=0, fok_limit=0, reduce_limit=0, stop_entry=0)
     agree, disagree = 0, []
     for case in range(cases):
         bars = walk(rng, rng.randint(8, 40))
