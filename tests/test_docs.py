@@ -224,6 +224,22 @@ def test_every_link_between_the_pages_names_a_page_that_exists():
     assert not broken, "\n".join(broken)
 
 
+def test_the_documented_install_names_the_version_that_is_installed():
+    # emsl is not on PyPI, so the release URL and the git tag in the README are
+    # the install path rather than a convenience. A version bump is the one edit
+    # always made in a hurry, and a stale one here sends a reader to a release
+    # that predates everything the page around it describes. The wheel is built
+    # from Cargo.toml, so this holds the README to that number without reading it
+    want = f"v{emsl.__version__}"
+    wrong = []
+    for page in pages():
+        for found in re.findall(r"\bv\d+\.\d+\.\d+\b",
+                                page.read_text(encoding="utf-8")):
+            if found != want:
+                wrong.append(f"{page.name} says {found}, the wheel is {want}")
+    assert not wrong, "\n".join(wrong)
+
+
 def test_every_gate_stage_a_contributor_can_run_is_written_down():
     # a stage nobody documented is a stage nobody runs, and bench-surfaces was
     # exactly that: it existed, it worked, and no page mentioned it
