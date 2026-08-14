@@ -67,9 +67,19 @@ Python-facing work (anything in `emsl-py` or `python/emsl`) is validated on the 
 
 ### The dev directory
 
-`dev/` holds the tools that check the library rather than any part of it ([ADR 0084](Decisions.md)). Nothing there is packaged into the wheel and nothing under `python/emsl` imports it. The line between it and `tests/` is that a test asserts and a tool produces: the gate runs a test and fails a build, while a tool here is run by hand and writes a file you then read and commit. There are three, and each is explained in this documentation set rather than beside itself, which is the same rule every other folder follows.
+`dev/` holds the tools that check the library rather than any part of it ([ADR 0084](Decisions.md)). Nothing there is packaged into the wheel and nothing under `python/emsl` imports it. The line between it and `tests/` is that a test asserts and a tool produces: the gate runs a test and fails a build, while a tool here is run by hand and writes a file you then read and commit. There are four, and each is explained in this documentation set rather than beside itself, which is the same rule every other folder follows.
 
 `dev/differential/` is the second simulator and the two harnesses that drive it, `differential.py` over `Engine` and `batch_differential.py` over `Batch`, plus `trace.py` for shrinking a failure. It is the one part of `dev/` the gate runs, as its own stage, and the [Validation Guide](Validation_Guide.md) is where it is explained.
+
+`dev/charts/` produces every chart image the documentation shows. `build.py` runs the documented examples for real against a frozen parquet and saves each one as a chart, and `shoot.py` points a headless browser at what it saved and screenshots it at the size it was drawn ([ADR 0085](Decisions.md)). Nothing is cropped or retouched, so what a reader sees is what the library drew, and the snippet printed beside a picture is the snippet that produced it. Both run in one opt-in stage, which needs the published [sample dataset](https://github.com/atOCEANO/sample-market-data) mounted because a picture built from live candles cannot be regenerated, only redrawn differently:
+
+```bash
+docker build --target charts -t emsl-charts .
+docker run --rm -v "<sample-market-data>/data:/data:ro" \
+  -v "${PWD}/.Documentation:/out" emsl-charts
+```
+
+Regenerating should change nothing unless the drawing changed, and that is the check worth making: thirteen of the fourteen images survived the move to this stage byte for byte. If a rerun rewrites images you did not touch, something moved that you did not mean to move, and the fonts are the first place to look.
 
 `dev/golden.py` rewrites `tests/chart_schema.json`, the key-path golden for the chart spec. The renderer is JavaScript and the gate has no browser, so the contract between the two halves is the one thing a Python test cannot reach directly: a key renamed in `_chart.py` passes every test in the suite and draws a blank chart. Recording every key path the spec carries turns that rename into a one-line diff instead. Run it whenever the spec gains, loses or renames a key, and bump `schema` in `_chart.py` in the same commit. It imports the test module rather than rebuilding the fixture itself, so the golden cannot be recorded against a different chart from the one the test checks.
 

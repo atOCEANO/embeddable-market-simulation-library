@@ -141,6 +141,28 @@ COPY tests /tests
 RUN pip install --no-cache-dir /wheels/*.whl numpy pandas pytest playwright==1.47.0 \
     && pytest -q -p no:cacheprovider /tests/test_render.py
 
+# Every chart image in the documentation, rebuilt from the frozen sample data and
+# screenshotted (ADR 0085). Opt-in, because it needs the published dataset
+# mounted and it writes into the tree rather than asserting anything:
+#   docker build --target charts -t emsl-charts .
+#   docker run --rm -v "<sample-market-data>/data:/data:ro" \
+#       -v "${PWD}/.Documentation:/out" emsl-charts
+# It shares test-browser's base, so it pulls no image that stage has not already
+# pulled: the browsers ship in it and pip cannot install them on its own.
+FROM mcr.microsoft.com/playwright/python:v1.47.0-jammy AS charts
+COPY --from=builder /wheels /wheels
+COPY dev/charts /charts
+# the chart asks for `system-ui, -apple-system, "Segoe UI", sans-serif` and a
+# container has none of the first three, so every label in every image is drawn
+# by whatever this box calls sans-serif. This image calls it WenQuanYi Zen Hei, a
+# CJK face whose latin glyphs are narrower and lighter, so without this line the
+# whole documentation set silently re-renders in a font nobody chose. DejaVu wins
+# the fallback as soon as it is present, and it is what the images already use
+RUN apt-get update && apt-get install -y --no-install-recommends fonts-dejavu-core \
+    && rm -rf /var/lib/apt/lists/*
+RUN pip install --no-cache-dir /wheels/*.whl numpy pandas pyarrow playwright==1.47.0
+CMD ["sh", "-c", "python /charts/build.py && python /charts/shoot.py"]
+
 # Stable-Baselines3 integration: install torch and sb3 and run the adapter tests.
 # torch is heavy, so this is opt-in and kept out of the correctness gate:
 #   docker build --target test-sb3 .
