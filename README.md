@@ -279,26 +279,40 @@ For the probabilities there are `probabilistic_sharpe`, `sharpe_interval`, `min_
 The five paths above produce numbers. `emsl.chart` is how you look at them: candles, the fills on the bars they happened on, an equity curve, a drawdown panel, a trade log, and any array of your own beside them.
 
 ```python
+import numpy
+
 import emsl
-from emsl.plot import Line
+from emsl.plot import Background, Band, Histogram, Level, Line
 
-strategy = SmaCross(fast=20, slow=50)
+result = emsl.backtest.Backtester(candles=frame, market="spot").run(strategy)
 
-result = emsl.backtest.Backtester(candles=frame, market="perp").run(strategy)
+# the bars the rule was actually in the market. Ticks index bars, so this is one
+# entry per candle; an equity curve is one shorter and the chart aligns it for you
+held = numpy.zeros(len(frame), dtype=bool)
+for trade in result.trades:
+    held[trade["entry_tick"]:trade["exit_tick"] + 1] = True
 
 emsl.chart(
     frame=frame,
-    marks=[
-        Line(values=strategy.fast, name="SMA 20"),
-        Line(values=strategy.slow, name="SMA 50", style="dashed"),
+    marks=[                                    # every array here is the strategy's
+        Background(values=strategy.uptrend, fill="#2fe0a814"),
+        Band(upper=strategy.upper, lower=strategy.lower, name="channel 96",
+             fill="#8b97a514"),
+        Line(values=strategy.basis, name="basis 96", width=1, style="dashed"),
+        Histogram(values=strategy.hist, name="MACD 12/26/9", panel="momentum",
+                  color=numpy.where(strategy.hist >= 0.0, "#2fe0a8", "#ff5470")),
+        Level(value=0.0, panel="momentum", style="dotted"),
     ],
     run=result,
+    candle_color=numpy.where(held, "#4d9fff", None),
 ).show()
 ```
 
+Those are the arrays the rule decided on, handed over as they are. Nothing here recomputes an indicator, because a recomputed copy is a picture of a rule that was never executed.
+
 <div align="center">
-  <img src=".Documentation/imgs/charts/chart-backtest.png" alt="A backtest drawn: candles, two averages, fills on the bars they filled on, momentum, equity and drawdown" width="100%" />
-  <p style="margin: 0;"><i>One call, one year of hourly candles. Nothing above configures a panel, an axis, or a colour</i></p>
+  <img src=".Documentation/imgs/charts/chart-backtest.png" alt="A backtest drawn: a channel and its basis, a regime shaded behind the candles, the fills on the bars they filled on, a MACD histogram, equity and drawdown" width="100%" />
+  <p style="margin: 0;"><i>One call, one year of hourly candles. Five panels, their order, their weights and the trade log are the library's; every mark on them is the strategy's own array</i></p>
 </div>
 
 <br>

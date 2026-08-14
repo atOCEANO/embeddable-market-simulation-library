@@ -31,7 +31,7 @@ import pandas
 
 import emsl
 from emsl.plot import (
-    Background, Band, Level, Line, Markers, Panel, Recorder, ramp,
+    Background, Band, Histogram, Level, Line, Markers, Panel, Recorder, ramp,
 )
 
 DATA = pathlib.Path("/data/binance_spot_BTCUSDT_5m.parquet")
@@ -105,46 +105,76 @@ def load():
 # ------------------------------------------------------- the flagship charts
 
 
-class SmaCross(emsl.Strategy):
-    """The README's strategy: cross into a long, unless momentum is already hot."""
+class Channel(emsl.Strategy):
+    """The README's strategy: hold above the channel basis while MACD agrees.
 
-    def __init__(self, fast, slow, momentum, hot_above):
+    Every indicator is shifted a bar before it is read, so a decision on bar `i`
+    sees only what closed at `i - 1` and fills at the open of `i + 1`.
+    """
+
+    def __init__(self, length, fast, slow, signal, trend):
+        self.length = length
         self.fast_n = fast
         self.slow_n = slow
-        self.momentum_n = momentum
-        self.hot_above = hot_above
+        self.signal_n = signal
+        self.trend_n = trend
 
     def init(self, engine):
         close = pandas.Series(engine.data[:, 3])
-        self.fast = close.rolling(self.fast_n).mean().shift(1).to_numpy()
-        self.slow = close.rolling(self.slow_n).mean().shift(1).to_numpy()
-        self.momentum = relative_strength(
-            close=close, length=self.momentum_n,
-        ).shift(1).to_numpy()
+        basis = close.rolling(self.length).mean()
+        width = close.rolling(self.length).std()
+        self.basis = basis.shift(1).to_numpy()
+        self.upper = (basis + 2.0 * width).shift(1).to_numpy()
+        self.lower = (basis - 2.0 * width).shift(1).to_numpy()
+
+        # the regime gate. A breakout system is long only, so the half of the year
+        # the market spends below its own long average is the half it has no
+        # business trading, and the shading behind the candles is that half
+        slower = close.rolling(self.trend_n).mean().shift(1)
+        self.uptrend = (close.shift(1) > slower).fillna(False).to_numpy()
+
+        macd = (close.ewm(span=self.fast_n, adjust=False).mean()
+                - close.ewm(span=self.slow_n, adjust=False).mean())
+        self.hist = (macd - macd.ewm(span=self.signal_n, adjust=False).mean()) \
+            .shift(1).to_numpy()
+
+        self.close = close.shift(1).to_numpy()
         self.blocked = numpy.zeros(len(close), dtype=bool)
 
     def next(self, state, engine):
         bar = state["tick_index"]
-        if bar < self.slow_n + 1:
+        if bar < self.length + 1:
             return
-        leading = self.fast[bar] > self.slow[bar]
-        if state["position"] == 0.0 and leading:
-            if self.momentum[bar] < self.hot_above:
+        # in on a break of the upper edge, out on a loss of the basis. The two
+        # thresholds are deliberately different: entering and leaving on the same
+        # line whipsaws on every bar that straddles it, which on hourly candles
+        # was 181 trades in a year and a chart nobody could read
+        if state["position"] == 0.0 and self.uptrend[bar] \
+                and self.close[bar] > self.upper[bar]:
+            # the break has to arrive while momentum is still building; one taken
+            # into a fading impulse is what this filters, and the arrow marks it
+            if self.hist[bar] > 0.0:
                 engine.market_buy(engine.qty_from_weight(1.0))
             else:
                 self.blocked[bar] = True
-        elif state["position"] > 0.0 and not leading:
+        elif state["position"] > 0.0 and self.close[bar] < self.basis[bar]:
             engine.close()
 
     def marks(self):
         return [
-            Line(values=self.fast, name=f"SMA {self.fast_n}"),
-            Line(values=self.slow, name=f"SMA {self.slow_n}", style="dashed"),
+            Background(values=self.uptrend, fill="#2fe0a814"),
+            Band(upper=self.upper, lower=self.lower, name=f"channel {self.length}",
+                 fill="#8b97a514"),
+            Line(values=self.basis, name=f"basis {self.length}", color=GREY,
+                 width=1, style="dashed"),
             Markers(mask=self.blocked, shape="arrow_down", offset=22),
-            Line(values=self.momentum, name=f"RSI {self.momentum_n}",
-                 panel="momentum"),
-            Level(value=self.hot_above, panel="momentum", style="dotted"),
-            Level(value=100.0 - self.hot_above, panel="momentum", style="dotted"),
+            Histogram(
+                values=self.hist,
+                name=f"MACD {self.fast_n}/{self.slow_n}/{self.signal_n}",
+                panel="momentum",
+                color=numpy.where(self.hist >= 0.0, GREEN, RED),
+            ),
+            Level(value=0.0, panel="momentum", style="dotted"),
         ]
 
 
@@ -211,7 +241,7 @@ def start_here(raw):
     # year it happened to be run in
     frame = resample_to(bars=raw, rule="1h").loc["2025"]
 
-    strategy = SmaCross(fast=24, slow=96, momentum=14, hot_above=70.0)
+    strategy = Channel(length=96, fast=12, slow=26, signal=9, trend=480)
     result = emsl.backtest.Backtester(
         candles=frame,
         market="spot",
@@ -222,23 +252,21 @@ def start_here(raw):
         periods_per_year=8760,
     ).run(strategy)
 
-    # 760 rather than the 880 the notebook used, because a chart sizes itself to
-    # its window and the extra room changes which ticks the axis picks: at 880 the
-    # momentum panel drew 0 to 120 despite being pinned to 0 to 100, so the
-    # picture contradicted the keyword printed beside it
+    held = numpy.zeros(len(frame), dtype=bool)
+    for trade in result.trades:
+        held[trade["entry_tick"]:trade["exit_tick"] + 1] = True
+
     keep("chart-backtest", emsl.chart(
         frame=frame,
         marks=strategy.marks(),
         run=result,
-        panels=[
-            Panel(name="price", weight=6.0),
-            Panel(name="momentum", weight=2.0, range=(0.0, 100.0)),
-            Panel(name="equity", weight=2.5),
-            Panel(name="drawdown", weight=1.5),
-        ],
-        title="SMA 24/96 with an RSI filter, BTCUSDT 1h, binance spot, 2025",
+        candle_color=numpy.where(held, BLUE, None),
+        # deliberately no `panels=`. The README prints this call and claims the
+        # placement is the library's, so the claim has to be true of the picture
+        # beside it: five panels, their order and their weights are all chosen here
+        title="A channel breakout with a MACD filter, BTCUSDT 1h, binance spot, 2025",
         height=760,
-    ), WIDE, "an SMA cross with an RSI filter, on a frozen year of candles")
+    ), WIDE, "a channel, a momentum histogram, and the bars it was holding")
 
     return frame, result, strategy
 
@@ -284,7 +312,14 @@ def cloud_break(raw):
             Panel(name="volume", show=False),
         ],
         future=AHEAD,
-        title="Ichimoku cloud break, BTCUSDT 4h, 2024 to 2025",
+        # framed on the tail, because that is the whole point of the picture. Over
+        # two years of 4h candles the twenty-six projected bars are one percent of
+        # the width, so the image demonstrating `future=` did not show it. The
+        # integer form rather than a pair: it means the last N bars PLUS whatever
+        # was projected past them, and a pair ending on the last bar caps the
+        # window there and clips off exactly the projection being demonstrated
+        focus=180,
+        title="Ichimoku cloud break, BTCUSDT 4h, the cloud projected past the last candle",
         height=780,
     ), WIDE, "a cloud drawn twenty-six bars past the last candle")
 
