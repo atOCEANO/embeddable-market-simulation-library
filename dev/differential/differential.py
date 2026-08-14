@@ -55,7 +55,9 @@ def config(rng):
 # Narrow it with KINDS=limit when a disagreement needs isolating, which is how
 # ADR 0079 was found: whole-surface runs said "limits", and limits alone said
 # which limit
-KINDS = os.environ.get("KINDS", "market,limit,stop,fok,post,cancel,replace").split(",")
+KINDS = os.environ.get(
+    "KINDS", "market,limit,stop,fok,post,cancel,replace,reduce,close"
+).split(",")
 
 
 def plan(rng, bars):
@@ -75,6 +77,12 @@ def plan(rng, bars):
             out.append(("post", side, rng.uniform(0.1, 20.0), rng.uniform(50.0, 200.0)))
         elif kind == "cancel":
             out.append(("cancel", side, 0.0))
+        elif kind == "close":
+            out.append(("close", side, 0.0))
+        elif kind == "reduce":
+            # deliberately either side: a reduce_only order pointed the wrong way
+            # is clamped to nothing rather than opening the other side (ADR 0028)
+            out.append(("reduce", side, rng.uniform(0.1, 40.0)))
         else:
             # `replace` reads the same shape, and its `side` is deliberately
             # ignored by both simulators: a replacement keeps the side of the
@@ -130,6 +138,10 @@ def place(engine, action, live):
             moved = engine.replace(live[0], action[2], action[3])
             if moved is not None:
                 live[0] = moved
+    elif kind == "close":
+        got = engine.close()
+    elif kind == "reduce":
+        got = engine.order(action[1], action[2], "market", None, None, True, False, "ioc")
     else:
         got = engine.stop(action[1], action[2], action[3], True)
     if kind in ("limit", "post", "stop") and got is not None:
@@ -138,7 +150,7 @@ def place(engine, action, live):
         live.pop(0)
 
 
-def place_reference(ref, action, live):
+def place_reference(ref, action, live, reached=None):
     """The reference's half of `place`, kept beside it so the two dispatches stay
     in step. It used to be inlined in the driver and copied again in trace.py,
     which is how trace.py came to handle three of the seven order kinds."""
@@ -146,6 +158,14 @@ def place_reference(ref, action, live):
         return
     kind = action[0]
     got = None
+    if reached is not None:
+        # what the action had to act on when it was placed. An action that never
+        # meets a live position agrees with anything, and after the fact there is
+        # no way to tell that from a real agreement
+        if kind in ("close", "reduce") and ref.position != 0.0:
+            reached[kind] += 1
+        elif kind in ("cancel", "replace") and live:
+            reached[kind] += 1
     if kind == "market":
         got = ref.market_order(action[1], action[2])
     elif kind == "limit":
@@ -162,17 +182,27 @@ def place_reference(ref, action, live):
             moved = ref.replace(live[0], action[2], action[3])
             if moved is not None:
                 live[0] = moved
+    elif kind == "close":
+        # what Engine::close does: a reduce_only market order for the whole
+        # position, sized at PLACEMENT time, and nothing at all when flat
+        if ref.position != 0.0:
+            got = ref.market_order(
+                "sell" if ref.position > 0.0 else "buy", abs(ref.position),
+                reduce_only=True,
+            )
+    elif kind == "reduce":
+        got = ref.market_order(action[1], action[2], reduce_only=True)
     elif kind == "stop":
         got = ref.stop_order(action[1], action[2], action[3], True)
     if kind in ("limit", "post", "stop") and got is not None:
         live.append(got)
 
 
-def drive_reference(bars, cfg, actions):
+def drive_reference(bars, cfg, actions, reached=None):
     ref = Reference(bars, **cfg)
     seen, live = [], []
     for action in actions:
-        place_reference(ref, action, live)
+        place_reference(ref, action, live, reached)
         ref.step()
         seen.append((ref.position, ref.equity(ref.bars[ref.tick][3]), ref.funding_paid))
         if ref.tick + 1 >= len(bars):
@@ -191,6 +221,7 @@ def main():
     seed = int(sys.argv[2]) if len(sys.argv) > 2 else 20260813
     rng = random.Random(seed)
 
+    reached = dict(close=0, reduce=0, cancel=0, replace=0)
     agree, disagree = 0, []
     for case in range(cases):
         bars = walk(rng, rng.randint(8, 40))
@@ -198,7 +229,7 @@ def main():
         actions = plan(rng, bars)
         try:
             mine, engine = drive_engine(bars, cfg, actions)
-            theirs, ref = drive_reference(bars, cfg, actions)
+            theirs, ref = drive_reference(bars, cfg, actions, reached)
         except Exception as exc:
             disagree.append((case, seed, cfg, bars, actions, f"raised: {type(exc).__name__}: {exc}"))
             continue
@@ -221,7 +252,13 @@ def main():
         else:
             disagree.append((case, seed, cfg, bars, actions, where))
 
-    print(f"\n{agree} of {cases} agreed, {len(disagree)} disagreed\n")
+    print(f"\n{agree} of {cases} agreed, {len(disagree)} disagreed")
+    print("actions placed with something to act on: "
+          + ", ".join(f"{k} {v}" for k, v in sorted(reached.items())) + "\n")
+    for kind, count in sorted(reached.items()):
+        if kind in KINDS and count == 0:
+            print(f"NO {kind} EVER MET A LIVE POSITION OR ORDER: it agrees for free")
+            return 1
     for case, seed, cfg, bars, actions, why in disagree[:8]:
         print(f"--- case {case} ({cfg['market']}) {why}")
         print(f"    cfg  {cfg}")
