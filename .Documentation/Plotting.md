@@ -269,12 +269,12 @@ emsl.chart(
     marks=[
         Background(values=regime, fill={"hi": "#2fe0a81f", "lo": "#ff54701f"}),
         Line(values=vam72, name="vam 72", panel="vam", color=shade),
-        Band(upper=vam72, lower=2.5, only="above", panel="vam",
+        Band(upper=vam72, lower=2.0, only="above", panel="vam",
              fill=("#2fe0a800", "#2fe0a859")),
         Line(values=forward, name="fwd 4h", panel="fwd"),
         Level(value=0.0, panel="fwd", style="dotted"),
     ],
-    candle_color=numpy.where(numpy.abs(vam72) > 2.5, "#4d9fff", None),
+    candle_color=numpy.where(numpy.abs(vam72) > 2.0, "#4d9fff", None),
     title="vam 72 extremes against the next four hours",
 ).show()
 ```

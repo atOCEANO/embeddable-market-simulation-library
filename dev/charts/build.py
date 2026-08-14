@@ -317,8 +317,11 @@ def documented_examples(raw):
 
     vam72 = vam(close=close, n=72)
     shade = ramp(values=vam72, colors=[RED, GREY, GREEN], domain=(-3.0, 3.0))
+    # two sigma either way. It was 2.5, and over this window vam 72 runs -2.46 to
+    # +2.75, so the "lo" half of the fill map fired on none of the 4,344 bars: the
+    # picture teaching a two-colour label map could only ever show one colour
     regime = numpy.where(
-        vam72 > 2.5, "hi", numpy.where(vam72 < -2.5, "lo", "flat")
+        vam72 > 2.0, "hi", numpy.where(vam72 < -2.0, "lo", "flat")
     ).astype(object)
 
     hours = 4
@@ -400,12 +403,12 @@ def documented_examples(raw):
         marks=[
             Background(values=regime, fill={"hi": "#2fe0a81f", "lo": "#ff54701f"}),
             Line(values=vam72, name="vam 72", panel="vam", color=shade),
-            Band(upper=vam72, lower=2.5, only="above", panel="vam",
+            Band(upper=vam72, lower=2.0, only="above", panel="vam",
                  fill=("#2fe0a800", "#2fe0a859")),
             Line(values=forward, name="fwd 4h", panel="fwd"),
             Level(value=0.0, panel="fwd", style="dotted"),
         ],
-        candle_color=numpy.where(numpy.abs(vam72) > 2.5, "#4d9fff", None),
+        candle_color=numpy.where(numpy.abs(vam72) > 2.0, "#4d9fff", None),
         title="vam 72 extremes against the next four hours",
         height=820,
     ), NARROW, "a feature judged against what came next")

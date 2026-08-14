@@ -17,7 +17,6 @@ at bar zero, which is what the batched tests do.
   python batch_differential.py [cases] [seed]
 """
 
-import math
 import random
 import sys
 

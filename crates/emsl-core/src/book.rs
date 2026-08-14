@@ -23,11 +23,6 @@ impl RestingOrderBook {
         }
     }
 
-    /// Number of slots.
-    pub fn capacity(&self) -> usize {
-        self.slots.len()
-    }
-
     /// Number of resting orders.
     pub fn len(&self) -> usize {
         self.slots.iter().filter(|s| s.is_some()).count()

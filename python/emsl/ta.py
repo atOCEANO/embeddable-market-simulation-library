@@ -205,11 +205,6 @@ def _windows(values, length):
     return np.lib.stride_tricks.sliding_window_view(values, length)
 
 
-def _first_finite(values):
-    finite = np.flatnonzero(np.isfinite(values))
-    return int(finite[0]) if finite.size else None
-
-
 def _aligned(where, **named):
     # every series a multi-input indicator reads has to describe the same bars,
     # and the error names which one is the odd size rather than reporting a shape
