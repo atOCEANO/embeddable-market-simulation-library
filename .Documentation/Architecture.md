@@ -55,13 +55,16 @@ The Python package `emsl` re-exports the compiled `Engine` and `Batch` and adds 
 
 `reset()` positions at the first bar; `reset_at(offset)` starts at an arbitrary bar, which is how the RL env gives each env a different slice of history. `step()` advances exactly one bar, resolves it, then marks and returns the state.
 
-The defining rule is **no same-bar lookahead**: an order decided while looking at bar `t` is resolved against bar `t+1`, never the bar the decision saw. Within a step the events follow the bar:
+The defining rule is **no same-bar lookahead**: an order decided while looking at bar `t` is resolved against bar `t+1`, never the bar the decision saw. Within a step the events follow the bar, numbered as the engine's own comments number them:
 
+0. The liquidation fence is worked out first, before anything resolves. A perp position's margin runs out at a price that is a point on this bar's own path, and everything past it belongs to a market the account had already been closed out of, so the bar is clipped there. A bar that OPENED past it killed the account before it opened, so that is closed first and nothing on the bar fills ([ADR 0067](Decisions.md)).
 1. Pending market orders fill at the open.
 2. Resting limit and stop orders fill against the bar's range (a gap through a limit still fills at the limit, never better; a triggered stop fills at the worse of open and trigger).
-3. Funding is charged on a held perp position at each interval boundary (ADR 0017).
+3. Funding is charged on a held perp position at each interval boundary (ADR 0017), on the position held at that moment rather than the one carried into the bar, and marked at the clipped close, so a position liquidated part way through the bar is not charged at a price it never saw ([ADR 0082](Decisions.md)).
 4. Liquidation is checked at the bar's adverse extreme, the low for a long, the high for a short, and the forced close is then priced where the margin ran out rather than at that extreme, so a loss cannot exceed the margin behind it ([ADR 0052](Decisions.md)).
 5. Equity is marked at the close, and the new state is returned.
+
+Steps 1, 2 and 3 all read the clipped bar, which is what makes the fence a rule about the account's existence rather than a rule about exit orders.
 
 <br>
 

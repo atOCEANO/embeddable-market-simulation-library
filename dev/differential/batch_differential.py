@@ -160,9 +160,15 @@ def main():
             fresh.reset_at_each(np.array(offsets, dtype=np.int64))
             where = observation_disagreement(fresh, bars, offsets, window)
             if where is None:
+                # and again at the end of the run, where the window is full and
+                # the envs sit on different bars: at reset alone a window built
+                # from the wrong end of the series still looks right at warmup
+                ended = [min(off + len(actions), len(bars) - 1) for off in offsets]
+                where = observation_disagreement(batch, bars, ended, window)
+            if where is None:
                 where = compare(mine, theirs, cfg, num_envs)
             last = mine[-1]
-            reached["traded"] += any(abs(p) > 0.0 for p in last["position"]) or any(
+            reached["traded"] += any(
                 abs(p) > 0.0 for step in mine for p in step["position"]
             )
             reached["funded"] += any(f != 0.0 for f in last["funding_paid"])

@@ -1,0 +1,18 @@
+{
+  "theme": "base",
+  "themeVariables": {
+    "fontFamily": "trebuchet ms, sans-serif",
+    "fontSize": "18px",
+    "lineColor": "#8b949e",
+    "primaryColor": "#16232e",
+    "primaryTextColor": "#e6edf3",
+    "primaryBorderColor": "#2ee6a6"
+  },
+  "flowchart": {
+    "curve": "linear",
+    "nodeSpacing": 45,
+    "rankSpacing": 55,
+    "padding": 18,
+    "wrappingWidth": 520
+  }
+}

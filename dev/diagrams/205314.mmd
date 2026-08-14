@@ -1,0 +1,20 @@
+flowchart TD
+    S["<b>step()</b> advances one bar"]
+    F["<b>0</b> liquidation fence worked out,<br/>the bar clipped where the margin ran out"]
+    A["<b>1</b> pending market orders<br/>fill at the open"]
+    B["<b>2</b> resting limits and stops<br/>fill against the clipped range"]
+    C["<b>3</b> funding charged on a held perp<br/>at each interval boundary,<br/>marked at the clipped close"]
+    D["<b>4</b> liquidation checked at<br/>the bar adverse extreme"]
+    E["<b>5</b> equity marked at the close,<br/>new state returned"]
+
+    S --> F
+    F --> A
+    A --> B
+    B --> C
+    C --> D
+    D --> E
+
+    classDef entry fill:#16232e,stroke:#4d9feb,stroke-width:2px,color:#e6edf3
+    classDef stage fill:#16232e,stroke:#2ee6a6,stroke-width:2px,color:#e6edf3
+    class S entry
+    class F,A,B,C,D,E stage
