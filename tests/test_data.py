@@ -154,19 +154,21 @@ def test_a_row_whose_prices_are_not_a_bar_is_refused():
     assert "column order" in said
 
 
-def test_a_feed_that_ships_low_high_open_close_is_refused_too():
-    # Coinbase's /candles returns [time, low, high, open, close, volume], and
-    # slicing columns 1:6 positionally out of it gives an array where high is at
-    # or above low on EVERY row and every value is finite. A high >= low check
-    # passes it untouched, which is why the whole ordering is what gets checked
+def test_a_column_order_that_keeps_the_high_above_the_low_is_refused_too():
+    # the case that decides how much of the ordering has to be checked. Read a
+    # low, high, open, close feed positionally and the two columns emsl calls
+    # high and low are the real high and the real OPEN, so the high is at or
+    # above the low on every row, every value is finite, and a high >= low check
+    # passes it untouched while the fill model still prices off a bar that never
+    # traded. Only the full ordering catches it (ADR 0096)
     import emsl
 
-    true_bars = [(100.0, 101.0, 99.0, 100.0), (100.0, 102.0, 98.0, 101.0)]
-    coinbase = np.array([[low, high, opened, close, 1000.0]
-                         for opened, high, low, close in true_bars])
-    assert (coinbase[:, 1] >= coinbase[:, 2]).all()      # the naive check passes
+    real = [(100.0, 101.0, 99.0, 100.0), (100.0, 102.0, 98.0, 101.0)]
+    shuffled = np.array([[low, high, opened, close, 1000.0]
+                         for opened, high, low, close in real])
+    assert (shuffled[:, 1] >= shuffled[:, 2]).all()      # the naive check passes
     with pytest.raises(ValueError) as excinfo:
-        emsl.Engine(coinbase)
+        emsl.Engine(shuffled)
     assert "not a bar" in str(excinfo.value)
 
 
