@@ -1572,6 +1572,68 @@ mod tests {
     }
 
     #[test]
+    fn a_replacement_keeps_the_side_it_was_placed_on() {
+        // the KIND half of ADR 0032 is pinned, by re-resting a stop as a limit and
+        // watching the unwrap fail. The SIDE half is asserted nowhere, and flipping
+        // it in either branch left every test green: the one fixture that reaches
+        // this replaces a stop that is reduce_only against a FLAT position, so the
+        // flipped order triggers, gets zeroed by the clamp, and rests on with the
+        // id and trigger the assertions read. Here the replacement has to FILL, and
+        // a buy and a sell move the position opposite ways (ADR 0108)
+        let candles = Candles::new(vec![
+            ohlc(100.0, 101.0, 99.0, 100.0, 1_000_000.0),
+            ohlc(100.0, 101.0, 99.0, 100.0, 1_000_000.0),
+            ohlc(100.0, 106.0, 99.0, 100.0, 1_000_000.0),
+        ]);
+        let mut e = Engine::new(candles, cfg());
+        e.reset();
+        e.market_buy(10.0);
+        e.step();
+        assert_eq!(e.state().position, 10.0);
+
+        let id = e.limit_sell(5.0, 105.0).expect("the book has room");
+        e.replace(id, None, Some(102.0), None)
+            .expect("moving a resting limit is not refused here");
+        let s = e.step(); // the bar reaches 106, so a sell at 102 fills
+        assert_eq!(
+            s.position, 5.0,
+            "the replacement filled on the wrong side: 15 means it became a buy"
+        );
+    }
+
+    #[test]
+    fn a_replaced_stop_keeps_the_side_it_was_placed_on() {
+        // the stop branch is a second copy of the same rule and the limit test
+        // above cannot reach it. NOT reduce_only, deliberately: that flag is what
+        // let the existing fixture survive a flipped side, because the wrong-way
+        // order was zeroed by the clamp before it could move anything, so nothing
+        // downstream could tell it apart from an order that never fired (ADR 0108)
+        let candles = Candles::new(vec![
+            ohlc(100.0, 101.0, 99.0, 100.0, 1_000_000.0),
+            ohlc(100.0, 101.0, 99.0, 100.0, 1_000_000.0),
+            ohlc(100.0, 101.0, 94.0, 95.0, 1_000_000.0),
+        ]);
+        let mut e = Engine::new(candles, cfg());
+        e.reset();
+        e.market_buy(10.0);
+        e.step();
+        assert_eq!(e.state().position, 10.0);
+
+        let id = e
+            .stop(Side::Sell, 5.0, 95.0, false)
+            .expect("the book has room");
+        e.replace(id, None, None, Some(98.0))
+            .expect("moving a resting stop is not refused here");
+        // the bar dips through 98, so a sell stop triggers; a buy stop at 98 would
+        // trigger on the same bar too, since its high is above it, and would buy
+        let s = e.step();
+        assert_eq!(
+            s.position, 5.0,
+            "the replaced stop fired on the wrong side: 15 means it became a buy"
+        );
+    }
+
+    #[test]
     fn impact_scales_with_the_fraction_actually_filled() {
         // both existing fixtures take exactly a tenth of their bar, so they are
         // degenerate in the one dimension the claim is about and two wrong
@@ -2292,6 +2354,7 @@ mod tests {
         ]);
         let mut config = perp_cfg(); // quote 100
         config.max_leverage = 10.0;
+        config.report = true; // the only surface that can see the refusal
         let mut e = Engine::new(candles, config);
         e.reset();
         e.market_buy(10.0);
@@ -2311,6 +2374,17 @@ mod tests {
             busted.equity,
             after.equity
         );
+        // and the two assertions above cannot see the refusal on their own, which
+        // is why these are here. Waving an insolvent account through opens 5000 at
+        // the open of 40 and has it liquidated again at the bankruptcy price,
+        // which for a position bought with nothing behind it IS the entry, so the
+        // realized pnl is zero, the account ends flat, and equity lands on exactly
+        // the same dead zero. Only the fill count and the trade log differ, and
+        // the fixture had reporting off (ADR 0108)
+        assert_eq!(e.num_fills(), 2, "the refused fill was applied anyway");
+        let trades = e.reporter().expect("reporting is on").trades();
+        assert_eq!(trades.len(), 1, "a phantom position was opened and closed");
+        assert!(trades[0].liquidated);
     }
 
     #[test]
