@@ -84,7 +84,9 @@ print(state["equity"], state["position"])      # account value and position at t
 
 **Volume is in base units**, the same units an order's size is in. The volume cap compares one against the other and the market-impact term divides one by the other, so a feed shipping quote volume instead inflates the cap by roughly the price: `max_fill_fraction` stops binding, impact goes to zero, and nothing says so. The router's frames carry base `volume` alongside a separate `volume_usd`, and only the first is read.
 
-A frame carrying a real (datetime) index must be sorted ascending and unique; a plain `RangeIndex` holds no timestamps, so it is exempt. A missing column, a wrong shape, or an unsorted index raises `ValueError`, and an unsupported type raises `TypeError`. pandas and pyarrow are imported only when a frame or a path is passed, so the numpy path needs neither installed.
+A frame carrying a real (datetime) index must be sorted ascending and unique; a plain `RangeIndex` holds no timestamps, so it is exempt. A missing column, a wrong shape, or an unsorted index raises `ValueError`, and an unsupported type raises `TypeError`.
+
+**Every row has to be a bar**: `low <= open <= high` and `low <= close <= high`, checked per row alongside finiteness ([ADR 0096](Decisions.md)). The fill model bounds a taker to what the bar traded, and on an unordered row that bound moves the fill toward the account instead, so a dead flat market pays out. The realistic cause is a positional slice of a feed that ships its columns in another order, which is why the message names the order it wants: a venue returning `low, high, open, close` satisfies `high >= low` on every row and still mints money. A bar that never moved, every price equal, is a bar. pandas and pyarrow are imported only when a frame or a path is passed, so the numpy path needs neither installed.
 
 The wrappers call it for you, so a DataFrame can go straight into `Backtester` or `VectorEnv`. Handing the `Backtester` a datetime index is also what stamps each trade with `entry_time` and `exit_time` ([Trades](#trades)).
 

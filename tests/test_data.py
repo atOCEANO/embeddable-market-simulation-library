@@ -135,3 +135,49 @@ def test_a_series_without_times_says_so_instead_of_assuming_daily():
     with pytest.warns(UserWarning) as caught:
         assert annualization(None, None) == 365.0
     assert "no datetime index" in str(caught[0].message)
+
+
+def test_a_row_whose_prices_are_not_a_bar_is_refused():
+    # the taker clamp bounds a fill by price.min(high) on a buy and price.max(low)
+    # on a sell, so on an unordered row those move the fill toward the account
+    # rather than away from it, silently and always favourably (ADR 0096)
+    import emsl
+
+    data = np.array([
+        [100.0, 101.0, 99.0, 100.0, 1000.0],
+        [100.0, 99.0, 101.0, 100.0, 1000.0],   # high and low transposed
+    ])
+    with pytest.raises(ValueError) as excinfo:
+        emsl.Engine(data)
+    said = str(excinfo.value)
+    assert "row 1" in said
+    assert "column order" in said
+
+
+def test_a_feed_that_ships_low_high_open_close_is_refused_too():
+    # Coinbase's /candles returns [time, low, high, open, close, volume], and
+    # slicing columns 1:6 positionally out of it gives an array where high is at
+    # or above low on EVERY row and every value is finite. A high >= low check
+    # passes it untouched, which is why the whole ordering is what gets checked
+    import emsl
+
+    true_bars = [(100.0, 101.0, 99.0, 100.0), (100.0, 102.0, 98.0, 101.0)]
+    coinbase = np.array([[low, high, opened, close, 1000.0]
+                         for opened, high, low, close in true_bars])
+    assert (coinbase[:, 1] >= coinbase[:, 2]).all()      # the naive check passes
+    with pytest.raises(ValueError) as excinfo:
+        emsl.Engine(coinbase)
+    assert "not a bar" in str(excinfo.value)
+
+
+def test_a_bar_that_never_moved_is_still_a_bar():
+    # every price equal is a real, if dull, candle and the rule is inclusive at
+    # both ends, so a dead feed must not be refused as malformed
+    import emsl
+
+    flat = np.array([
+        [100.0, 100.0, 100.0, 100.0, 0.0],
+        [100.0, 100.0, 100.0, 100.0, 0.0],
+    ])
+    engine = emsl.Engine(flat)
+    assert engine.reset()["equity"] > 0.0

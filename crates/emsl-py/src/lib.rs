@@ -120,6 +120,26 @@ fn candles_from_array(array: PyReadonlyArray2<'_, f64>) -> PyResult<Candles> {
                 "candles contain a non-finite value at row {i}; clean NaN and inf rows first"
             )));
         }
+        // and that the four prices are a bar. The taker clamp bounds a fill to
+        // what the bar traded by taking price.min(high) on a buy and
+        // price.max(low) on a sell, so on a row whose prices are out of order
+        // that min and max move the fill TOWARD the account instead of away, and
+        // a dead flat market pays out. The reachable cause is not a typo: a feed
+        // that ships low/high/open/close, sliced positionally, satisfies
+        // high >= low on every row and still mints money, so the whole ordering
+        // is what has to be checked rather than the one pair (ADR 0096)
+        if !(bar.low <= bar.open
+            && bar.open <= bar.high
+            && bar.low <= bar.close
+            && bar.close <= bar.high)
+        {
+            return Err(PyValueError::new_err(format!(
+                "candles are not a bar at row {i}: open {}, high {}, low {}, close {}; \
+                 need low <= open <= high and low <= close <= high, so check the \
+                 column order, which is open, high, low, close, volume",
+                bar.open, bar.high, bar.low, bar.close
+            )));
+        }
     }
     Ok(Candles::new(bars))
 }
