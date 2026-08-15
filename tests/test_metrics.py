@@ -1258,3 +1258,90 @@ def test_every_calendar_period_of_hourly_candles_reports_a_growth_rate():
     assert len(rows) == 2
     assert rows[-1]["bars"] == 1
     assert all(math.isfinite(row["cagr_pct"]) for row in rows)
+
+
+def test_an_excursion_does_not_read_the_bar_the_trade_left_on_whole():
+    # exit_tick is the bar the closing fill resolved on, so everything it printed
+    # after the exit was folded in. The engine already disagreed: bars_held is
+    # exit_tick minus entry_tick, one fewer bar than this used to span (ADR 0095)
+    data = np.array([
+        [100.0, 100.0, 100.0, 100.0, 1e6],
+        [100.0, 100.0, 100.0, 100.0, 1e6],
+        [100.0, 101.0, 99.0, 100.0, 1e6],
+        [100.0, 180.0, 20.0, 100.0, 1e6],
+        [100.0, 100.0, 100.0, 100.0, 1e6],
+    ])
+
+    class InThenOut(Strategy):
+        def next(self, state, engine):
+            i = state["tick_index"]
+            if i == 0:
+                engine.market_buy(1.0)
+            elif i == 2:
+                engine.close()
+
+    result = Backtester(data, periods_per_year=365.0).run(InThenOut())
+    trade = result.trades[0]
+    row = metrics.excursions(result, data)[0]
+    # it exits at the open of bar 3, so the 180 and the 20 that bar went on to
+    # print belong to nobody
+    assert trade["exit_tick"] == 3
+    assert row["best_pct"] == pytest.approx(1.0)
+    assert row["worst_pct"] == pytest.approx(-1.0)
+
+
+def test_an_excursion_does_not_credit_a_limit_entry_with_the_bar_before_it_filled():
+    # a maker bid rests BELOW the market, so the bar has to come down to it and
+    # everything it printed on the way is above the entry. Reading the entry bar
+    # whole put that into what a target could have caught, which is the flattering
+    # direction and it happens by construction rather than by accident (ADR 0095)
+    data = np.array([
+        [100.0, 100.0, 100.0, 100.0, 1e6],
+        [130.0, 130.0, 100.0, 101.0, 1e6],
+        [101.0, 101.0, 101.0, 101.0, 1e6],
+        [101.0, 101.0, 101.0, 101.0, 1e6],
+    ])
+
+    class BidThenLeave(Strategy):
+        def next(self, state, engine):
+            i = state["tick_index"]
+            if i == 0:
+                engine.limit_buy(1.0, 100.0)
+            elif i == 1:
+                engine.close()
+
+    result = Backtester(data, periods_per_year=365.0,
+                        fee_taker=0.0, fee_maker=0.0).run(BidThenLeave())
+    trade = result.trades[0]
+    row = metrics.excursions(result, data)[0]
+    assert trade["entry_tick"] == 1
+    assert trade["entry_price"] == pytest.approx(100.0)
+    # bar 1 opened at 130, its own high, and only then fell to the bid. Nothing
+    # from the fill onward ever printed above 101, so the most a target could
+    # have caught is one percent, not thirty
+    assert row["best_pct"] == pytest.approx(1.0)
+
+
+def test_an_excursion_still_holds_every_bar_a_trade_was_open_across():
+    # the bars strictly between the two ends are lived through whole, and the
+    # bound must not quietly shrink those away too
+    data = np.array([
+        [100.0, 100.0, 100.0, 100.0, 1e6],
+        [100.0, 100.0, 100.0, 100.0, 1e6],
+        [100.0, 130.0, 70.0, 100.0, 1e6],
+        [100.0, 100.0, 100.0, 100.0, 1e6],
+        [100.0, 100.0, 100.0, 100.0, 1e6],
+    ])
+
+    class Across(Strategy):
+        def next(self, state, engine):
+            i = state["tick_index"]
+            if i == 0:
+                engine.market_buy(1.0)
+            elif i == 3:
+                engine.close()
+
+    result = Backtester(data, periods_per_year=365.0).run(Across())
+    row = metrics.excursions(result, data)[0]
+    assert row["best_pct"] == pytest.approx(30.0)
+    assert row["worst_pct"] == pytest.approx(-30.0)

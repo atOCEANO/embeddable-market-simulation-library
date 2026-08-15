@@ -1122,8 +1122,16 @@ def excursions(result, frame):
     maximum favourable is what a target would have caught. A trade log says what a
     rule earned; this says what it lived through, and it is the direct answer to
     "where does my stop go".
+
+    Both are a **bound rather than an exact figure**, and they never overstate. A
+    bar prints its open first and its close last and nothing else in it is
+    ordered, so the bar a trade entered on is only known from the fill forward to
+    its close, and the bar it left on only from its open up to the fill; the bars
+    strictly between were lived through whole. A market entry fills at its bar's
+    open and so did live through that whole bar, which this does not credit,
+    because nothing in a trade row says which kind of order opened it (ADR 0095).
     """
-    high, low = _highs_lows(frame)
+    opens, high, low, closes = _bar_prices(frame)
     _same_bars(result, frame, len(high), "excursions")
     out = []
     for trade in result.trades or []:
@@ -1134,7 +1142,14 @@ def excursions(result, frame):
             # makes that true rather than hoped for
             continue
         entry = trade["entry_price"]
-        peak, trough = float(high[first:last + 1].max()), float(low[first:last + 1].min())
+        seen = [entry, float(trade["exit_price"])]
+        if last > first:
+            seen.append(float(closes[first]))
+            seen.append(float(opens[last]))
+            if last - first > 1:
+                seen.append(float(high[first + 1:last].max()))
+                seen.append(float(low[first + 1:last].min()))
+        peak, trough = max(seen), min(seen)
         if trade["side"] == "buy":
             best, worst = peak - entry, trough - entry
         else:
@@ -1236,17 +1251,20 @@ def _same_bars(result, frame, bars, where):
         )
 
 
-def _highs_lows(frame):
-    if hasattr(frame, "high") and hasattr(frame, "low"):
-        return (np.asarray(frame.high, dtype=np.float64),
-                np.asarray(frame.low, dtype=np.float64))
+def _bar_prices(frame):
+    # all four, because the two an excursion can trust on a partly held bar are the
+    # open and the close rather than the extremes (ADR 0095)
+    if all(hasattr(frame, name) for name in ("open", "high", "low", "close")):
+        return tuple(np.asarray(getattr(frame, name), dtype=np.float64)
+                     for name in ("open", "high", "low", "close"))
     data = np.asarray(frame, dtype=np.float64)
     if data.ndim != 2 or data.shape[1] != 5:
         raise TypeError(
-            "frame must be a DataFrame with high and low columns, or a (T, 5) "
+            "excursions needs each bar's open and close as well as its high and "
+            "low, so frame must be a DataFrame carrying the four, or a (T, 5) "
             "OHLCV array"
         )
-    return data[:, 1], data[:, 2]
+    return data[:, 0], data[:, 1], data[:, 2], data[:, 3]
 
 
 def _stamps(frame):
