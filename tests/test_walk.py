@@ -294,3 +294,21 @@ def test_consistency_refuses_a_minimized_objective_rather_than_answering():
     assert down.direction == "minimize"
     up = forward(objective="sharpe", direction="maximize")
     assert 0.0 <= up.consistency <= 1.0
+
+
+def test_each_window_trades_the_account_the_last_one_left_it():
+    # test_the_windows_compound_to_the_run above is a telescoping identity: the
+    # product of (c1/c0)(c2/c1)(c3/c2) is c3/c0 for ANY curve, whatever produced
+    # it, so it holds exactly as well for windows run independently from the
+    # opening balance and concatenated. What separates a continuous account from a
+    # stitched one is the LEVEL a window starts at, and only the first window
+    # starts at the balance the run opened with (ADR 0108)
+    out = forward(windows=3)
+    curve = np.concatenate(([out.result.initial], out.result.equity_curve))
+    starts = [curve[w["traded_on"][0]] for w in out.windows]
+    assert starts[0] == pytest.approx(out.result.initial)
+    # every later window inherits a different account, and a stitched run would
+    # hand all three the same opening balance
+    assert len(set(starts)) == len(starts)
+    for level in starts[1:]:
+        assert level != pytest.approx(out.result.initial, abs=1e-9)
