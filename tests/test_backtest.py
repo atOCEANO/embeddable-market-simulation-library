@@ -210,3 +210,34 @@ def test_a_frame_was_never_aliased_and_still_is_not():
     before = bt.run(BuyThenClose()).stats["total_return_pct"]
     frame.loc[:, "close"] = frame["close"] * 2.0
     assert bt.run(BuyThenClose()).stats["total_return_pct"] == before
+
+
+def test_a_warmup_computed_inside_init_is_the_one_that_is_honoured():
+    # ADR 0050 reads it AFTER init, so a strategy can work it out from the data it
+    # just looked at. The only test asserting the skip declares warmup as a CLASS
+    # attribute, which is already set before init runs, so reading it early passes
+    # that one; the fixtures that do compute it inside init fall back to the class
+    # default of zero and take empty-slice means, which are NaN and make every
+    # comparison false, so nothing there notices either (ADR 0108)
+    seen = []
+
+    class Computed(Strategy):
+        # deliberately zero on the class, so an early read finds no warm-up at all
+        warmup = 0
+
+        def init(self, engine):
+            self.warmup = len(engine.closes) // 10
+            self.expected = self.warmup
+
+        def next(self, state, engine):
+            seen.append(state["tick_index"])
+
+    close = 100.0 + np.arange(40, dtype=np.float64)
+    data = np.column_stack(
+        [close, close + 1.0, close - 1.0, close, np.full(40, 1000.0)]
+    )
+    strategy = Computed()
+    Backtester(data, market="spot", fee_taker=0.0, fee_maker=0.0).run(strategy)
+    assert strategy.expected == 4
+    assert seen, "next was never called at all"
+    assert min(seen) == 4

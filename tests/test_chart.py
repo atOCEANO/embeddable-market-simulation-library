@@ -1435,3 +1435,42 @@ def test_a_forced_close_is_marked_in_the_trade_payload():
     ordinary = emsl.chart(frame(8), run=run()).spec()["trades"]
     assert ordinary
     assert not any("liq" in row for row in ordinary)
+
+
+def test_the_drawdown_panel_falls_from_the_running_peak_not_from_the_balance():
+    # ADR 0042 seeds the peak from the opening balance and then RUNS it, the way
+    # the engine does. The fixture behind that never makes a new high before its
+    # worst bar, so the peak IS the opening balance throughout and a plain anchor
+    # on `initial` returns the identical number. A run that doubles and then gives
+    # it all back is the shape that separates them (ADR 0108)
+    close = np.array([100.0, 100.0, 200.0, 100.0])
+    data = pd.DataFrame(
+        {"open": close, "high": close + 1.0, "low": close - 1.0, "close": close,
+         "volume": np.full(4, 1000.0)},
+        index=pd.date_range("2024-01-01", periods=4, freq="1h"),
+    )
+    result = emsl.backtest.Backtester(
+        data, market="spot", fee_taker=0.0, fee_maker=0.0
+    ).run(BuyAtOpen())
+    # 50 units bought at 100, so the account rides to 15,000 and back to 10,000
+    assert list(result.equity_curve) == pytest.approx([10_000.0, 15_000.0, 10_000.0])
+    fallen = emsl.chart(data, run=result).spec()["drawdown"]["v"]
+    # a third given back from the peak, where an anchor on the opening balance
+    # reports a run that never fell at all. The tolerance is the track's own
+    # display rounding and nothing looser: the error being hunted is 33 points
+    assert min(fallen) == pytest.approx(-100.0 / 3.0, abs=1e-3)
+    assert result.stats["max_drawdown_pct"] == pytest.approx(100.0 / 3.0, abs=1e-9)
+
+
+def test_a_line_ships_the_values_it_was_handed_not_the_panels_rounding():
+    # the module already records this for the candles: a Level(70) beside a coin
+    # priced 0.000012 dragged the panel from eight digits to two and rounded every
+    # candle to 0.0. A line rounded to the PANEL's digits instead of its own extent
+    # is that same defect one mark over, and across the whole file the only value
+    # ever asserted on a series' v is a single 2.0, an integer that survives
+    # rounding to any number of places (ADR 0108)
+    feature = np.full(8, 1.2345e-05)
+    spec = emsl.chart(frame(8), Line(feature, "tiny", panel="price")).spec()
+    line = next(s for s in spec["series"] if s.get("name") == "tiny")
+    assert line["v"][0] == pytest.approx(1.2345e-05, rel=1e-9)
+    assert line["v"][0] != 0.0
