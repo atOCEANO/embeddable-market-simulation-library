@@ -508,3 +508,20 @@ def test_a_level_on_the_drawdown_panel_is_actually_drawn(tmp_path):
         result,
     )
     assert drawn_colours(built, tmp_path, "level-drawdown.html", [255, 0, 255]) > 50
+
+
+def test_an_equity_panel_asked_for_as_a_percent_mounts_clean(tmp_path):
+    # the percent axis bases itself on the track's first value, which is the
+    # opening balance now rather than the first advance (ADR 0098). The labels are
+    # painted into a canvas and cannot be read back, so what a browser can add
+    # here is that the documented composition still mounts and paints
+    candles = frame()
+    result = run(candles)
+    built = emsl.chart(
+        candles, result,
+        panels=[Panel("equity", weight=2.0, scale="percent")],
+    )
+    seen = observe(built, tmp_path, "percent-equity.html")
+    assert seen["errors"] == []
+    assert seen["canvases"] > 0
+    assert max(seen["colours"]) > 20

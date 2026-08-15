@@ -192,8 +192,59 @@ def test_an_all_nan_series_draws_nothing_rather_than_raising():
     assert spec["series"][0]["v"] == []
 
 
-def test_the_equity_curve_is_drawn_from_bar_one():
-    spec = emsl.chart(frame(8), run()).spec()
+def test_the_equity_panel_is_drawn_from_the_balance_the_run_opened_with():
+    # this asserted i0 == 1 and a length of T-1, which was the curve's own shape
+    # read straight onto the chart. The curve holds a point per advance, so its
+    # first entry is the account AFTER the first bar, and everything that divided
+    # by it was reporting a return from the wrong base (ADR 0098)
+    result = run()
+    spec = emsl.chart(frame(8), result).spec()
+    assert spec["equity"]["i0"] == 0
+    assert len(spec["equity"]["v"]) == 8
+    assert spec["equity"]["v"][0] == pytest.approx(result.initial)
+    assert spec["equity"]["v"][1:] == pytest.approx(list(result.equity_curve))
+    # the drawdown panel starts on the same bar, so the crosshair reads both
+    assert spec["drawdown"]["i0"] == 0
+    assert spec["drawdown"]["v"][0] == pytest.approx(0.0)
+
+
+def test_a_run_that_ends_where_it_started_reads_zero_on_the_equity_panel():
+    # the number the legend prints on hover and the axis a percent panel asks for
+    # are both taken from the track's first value, so both said +25% on a run the
+    # headline correctly called +0.0%
+    # the position has to be held THROUGH the first advance, or the curve's first
+    # entry already equals the opening balance and there is no gap to expose: the
+    # order decided on bar 0 fills at bar 1's open of 100, and bar 1 then closes
+    # at 80, so the account is down a tenth on the very point the legend used to
+    # divide by. It recovers to exactly where it began
+    close = np.array([100.0, 80.0, 85.0, 90.0, 95.0, 100.0, 100.0, 100.0])
+    opens = np.concatenate(([100.0], close[:-1]))
+    data = pd.DataFrame(
+        {"open": opens,
+         "high": np.maximum(opens, close) + 1.0,
+         "low": np.minimum(opens, close) - 1.0,
+         "close": close,
+         "volume": np.full(close.size, 1000.0)},
+        index=pd.date_range("2024-01-01", periods=close.size, freq="1h"),
+    )
+    result = emsl.backtest.Backtester(
+        data, fee_taker=0.0, fee_maker=0.0
+    ).run(BuyAtOpen())
+    spec = emsl.chart(data, run=result).spec()
+    base, last = spec["equity"]["v"][0], spec["equity"]["v"][-1]
+    assert base == pytest.approx(result.initial)
+    assert (last / base - 1.0) * 100.0 == pytest.approx(
+        result.stats["total_return_pct"], abs=1e-9
+    )
+
+
+def test_a_result_with_no_opening_balance_still_draws_from_bar_one():
+    # a hand-built result carries no initial, and there is nothing honest to seed
+    # with, so the track keeps the shape the curve has
+    bare = emsl.backtest.BacktestResult(
+        stats={}, equity_curve=np.arange(7, dtype=float) + 100.0, trades=[],
+    )
+    spec = emsl.chart(frame(8), bare).spec()
     assert spec["equity"]["i0"] == 1
     assert len(spec["equity"]["v"]) == 7
 

@@ -1093,6 +1093,18 @@ def chart(
         with np.errstate(divide="ignore", invalid="ignore"):
             fallen = np.maximum((equity / peak - 1.0) * 100.0, -100.0)
             drawdown = np.where(peak > 0, fallen, np.nan)
+        # and the panels start from that balance too, rather than from the first
+        # advance. Two returns were read off the track's own first value: the one
+        # the legend prints on hover, and the axis a Panel(scale="percent") asks
+        # the renderer for, which bases itself on the same point. A run whose
+        # first bar fell twenty percent and then recovered to exactly where it
+        # started reported +25.00% in both places while the headline above the
+        # chart, which reads the engine, correctly said +0.0%. The account before
+        # its first advance is a real datum, not a pad, which is why ADR 0042
+        # already seeds the drawdown peak from it (ADR 0098)
+        if start is not None:
+            equity = np.concatenate(([float(start)], equity))
+            drawdown = np.concatenate(([0.0], drawdown))
 
     names = _assign(marks, ohlc)
     order = _order(names, config, volume is not None, result is not None)
