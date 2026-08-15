@@ -712,3 +712,46 @@ def test_spot_buy_cannot_spend_more_quote_than_held():
     s = e.step()
     assert s["position"] == 50.0
     assert s["quote"] == 0.0
+
+
+def costed_bars():
+    # bar 1 is the one a decision on bar 0 fills against: its open is the fill
+    # price, its volume is what an impact fraction is taken of, and its high sits
+    # far enough above both that the taker clamp of ADR 0074 never binds and the
+    # slip can be read straight off the price
+    return np.array([
+        [100.0, 200.0, 90.0, 100.0, 1000.0],
+        [100.0, 200.0, 90.0, 100.0, 10.0],
+        [100.0, 200.0, 90.0, 100.0, 1000.0],
+    ], dtype=np.float64)
+
+
+def test_a_per_env_slippage_lands_on_slippage_and_not_on_impact():
+    # asserted by VALUE. The only thing standing behind these two arrays was
+    # np.std(rewards) > 0.0, a property, and crossing the two assignments still
+    # spreads the rewards: a slippage draw landing on impact moves the price by
+    # size/volume times the number instead of by basis points, which is wrong by
+    # orders of magnitude and reads identical to a property (ADR 0108)
+    b = emsl.Batch(
+        costed_bars(), num_envs=2, market="spot", fee_taker=0.0, fee_maker=0.0,
+        slippage_bps_per_env=np.array([0.0, 50.0], dtype=np.float64),
+        impact_per_env=np.array([0.0, 0.0], dtype=np.float64),
+    )
+    b.reset_all()
+    states = b.step_all(np.array([1.0, 1.0], dtype=np.float64))
+    assert states[0]["quote"] == 9_900.0            # one unit at the open of 100
+    assert states[1]["quote"] == 9_899.5            # 50 bps of 100 is 0.5
+
+
+def test_a_per_env_impact_lands_on_impact_and_not_on_slippage():
+    # the mirror. One unit of a ten-volume bar is a tenth of it, so an impact of
+    # 5.0 is half the price; the same 5.0 read as slippage_bps would be 5 bps
+    b = emsl.Batch(
+        costed_bars(), num_envs=2, market="spot", fee_taker=0.0, fee_maker=0.0,
+        slippage_bps_per_env=np.array([0.0, 0.0], dtype=np.float64),
+        impact_per_env=np.array([0.0, 5.0], dtype=np.float64),
+    )
+    b.reset_all()
+    states = b.step_all(np.array([1.0, 1.0], dtype=np.float64))
+    assert states[0]["quote"] == 9_900.0
+    assert states[1]["quote"] == 9_850.0            # 5.0 * (1 / 10) is half of 100

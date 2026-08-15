@@ -1572,6 +1572,75 @@ mod tests {
     }
 
     #[test]
+    fn impact_scales_with_the_fraction_actually_filled() {
+        // both existing fixtures take exactly a tenth of their bar, so they are
+        // degenerate in the one dimension the claim is about and two wrong
+        // implementations reproduce them exactly: a hard-coded tenth, and the
+        // REQUESTED size over the volume rather than the filled one, which are the
+        // same number whenever max_fill_fraction does not bind. Here it binds, so
+        // requested, capped and a tenth are three different fractions (ADR 0108)
+        let wide = Candles::new(vec![
+            ohlc(100.0, 200.0, 90.0, 100.0, 1000.0),
+            ohlc(100.0, 200.0, 90.0, 100.0, 1000.0),
+            ohlc(100.0, 200.0, 90.0, 100.0, 1000.0),
+        ]);
+        // both caps have to BIND on a request of 400, or the fraction is the
+        // request's own and the second mutant is indistinguishable again
+        for (cap, filled, price) in [(0.25, 250.0, 125.0), (0.2, 200.0, 120.0)] {
+            let mut config = cfg();
+            config.quote = 1_000_000.0;
+            config.impact = 1.0;
+            config.max_fill_fraction = cap;
+            let mut e = Engine::new(wide.clone(), config);
+            e.reset();
+            e.market_buy(400.0); // more than either cap allows
+            let s = e.step();
+            assert_eq!(s.position, filled, "cap {cap} filled the wrong size");
+            // impact 1.0 times the FILLED fraction, off an open of 100
+            assert_eq!(
+                s.quote,
+                1_000_000.0 - filled * price,
+                "cap {cap} priced the fill at something other than {price}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_fok_limit_the_cash_cannot_afford_fills_nothing() {
+        // ADR 0025 says all or nothing against EVERY clamp, not just the bar's
+        // liquidity, and the resting path judges that with a second copy of the
+        // rule the pending path already has. Only the pending one was pinned:
+        // a_fok_limit_fills_fully_or_not_at_all is refused by the volume cap
+        // before any clamp is consulted, so the case the decision actually names,
+        // where the bar HAS the liquidity and a clamp shrinks the fill, was never
+        // reached on a limit. Comparing the pre-clamp size here books the five
+        // units the quote affords out of the twenty asked (ADR 0108)
+        let mut config = cfg();
+        config.quote = 1_000.0;
+        config.report = true;
+        let mut e = Engine::new(dip_series(), config);
+        e.reset();
+        e.order(
+            Side::Buy,
+            20.0,
+            OrderType::Limit,
+            Some(200.0),
+            None,
+            false,
+            false,
+            TimeInForce::Fok,
+        );
+        let s = e.step();
+        assert_eq!(
+            s.position, 0.0,
+            "a FOK the cash cannot cover filled in part"
+        );
+        assert_eq!(s.quote, 1_000.0);
+        assert_eq!(e.num_fills(), 0);
+        assert!(s.open_orders.is_empty());
+    }
+
+    #[test]
     fn a_fok_market_fills_fully_or_nothing() {
         let mut config = cfg();
         config.max_fill_fraction = 0.1; // cap at 100 of a 1000-volume bar
