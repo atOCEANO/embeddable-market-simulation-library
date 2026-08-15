@@ -1048,17 +1048,20 @@ def cost_curve(strategy, data, costs=(0.0, 2.0, 5.0, 10.0, 20.0), **config):
     five out. Anything else in ``config`` goes to the ``Backtester`` unchanged.
 
     ``strategy`` is a ``Strategy`` subclass, which is rebuilt for each run, or an
-    instance, which is reused.
+    instance, whose attributes are put back as they were before each one. Either
+    way every run starts from the same strategy, since the point of the sweep is
+    that only the fee moved (ADR 0103).
     """
     from .backtest import Backtester
 
     _own_the_fees(config, "cost_curve")
+    rebuild = _rebuilder(strategy)
     out = []
     for bps in costs:
         rate = float(bps) / 2.0 / 10_000.0
         result = Backtester(
             data, fee_taker=rate, fee_maker=rate, **config
-        ).run(_fresh(strategy))
+        ).run(rebuild())
         out.append({
             "round_trip_bps": float(bps),
             "total_return_pct": result.stats["total_return_pct"],
@@ -1081,11 +1084,12 @@ def breakeven_bps(strategy, data, ceiling=100.0, tolerance=0.05, **config):
     from .backtest import Backtester
 
     _own_the_fees(config, "breakeven_bps")
+    rebuild = _rebuilder(strategy)
 
     def earned(bps):
         rate = float(bps) / 2.0 / 10_000.0
         run = Backtester(data, fee_taker=rate, fee_maker=rate, **config)
-        return run.run(_fresh(strategy)).stats["total_return_pct"]
+        return run.run(rebuild()).stats["total_return_pct"]
 
     if earned(0.0) <= 0.0:
         return None
@@ -1104,11 +1108,31 @@ def breakeven_bps(strategy, data, ceiling=100.0, tolerance=0.05, **config):
     return (low + high) / 2.0
 
 
-def _fresh(strategy):
-    # a class is rebuilt per run so nothing carries over between them; an instance
-    # is taken as given, since the caller may have configured it
-    if not isinstance(strategy, type):
+def _rebuilder(strategy):
+    """A callable handing back a strategy with nothing carried over from the last run.
+
+    A class is rebuilt. An instance cannot be, so its attributes are taken once
+    and put back before each run: the caller's configuration survives, which is
+    the whole reason to pass one, and anything a previous run left does not.
+    ``copy.deepcopy`` is the wrong tool here, because a strategy that followed the
+    documented idiom holds ``engine.closes``, a zero-copy view that keeps a whole
+    Engine alive behind it (ADR 0103).
+    """
+    if isinstance(strategy, type):
+        return lambda: _built(strategy)
+    kept = dict(vars(strategy))
+
+    def restore():
+        # restored into the same object rather than replaced by a copy, so a
+        # caller still holding it sees the strategy it passed
+        strategy.__dict__.clear()
+        strategy.__dict__.update(kept)
         return strategy
+
+    return restore
+
+
+def _built(strategy):
     try:
         return strategy()
     except TypeError as exc:

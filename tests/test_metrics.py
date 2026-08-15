@@ -302,11 +302,18 @@ def test_the_cost_curve_charges_more_as_the_friction_rises():
     assert curve[0]["total_return_pct"] > curve[2]["total_return_pct"]
 
 
-def test_a_strategy_class_is_rebuilt_for_each_run_and_an_instance_is_reused():
+def test_a_strategy_class_is_rebuilt_and_an_instance_is_put_back_as_it_was():
     # a class comes back fresh per run, so nothing carries over between them
-    assert metrics._fresh(Alternate) is not metrics._fresh(Alternate)
+    rebuild = metrics._rebuilder(Alternate)
+    assert rebuild() is not rebuild()
+    # an instance is the same object each time, which is what lets a caller keep
+    # a reference to it, but its attributes are the ones it was handed over with
     instance = Alternate()
-    assert metrics._fresh(instance) is instance
+    instance.marker = 1
+    rebuild = metrics._rebuilder(instance)
+    assert rebuild() is instance
+    instance.marker = 99
+    assert rebuild().marker == 1
 
 
 def trending(n=120):
@@ -1413,3 +1420,47 @@ def test_the_expected_shortfall_is_unchanged_where_nothing_ties_at_the_cutoff():
     cutoff = np.quantile(values, 0.05)
     by_comparison = float(-values[values <= cutoff].mean() * 100.0)
     assert metrics.conditional_value_at_risk(result) == pytest.approx(by_comparison)
+
+
+class Capped(Strategy):
+    # a budget set in __init__ rather than in init, which is the one construction
+    # the documented examples never show and the one ADR 0092 steered callers into
+    def __init__(self, budget):
+        self.budget = int(budget)
+        self.taken = 0
+
+    def next(self, state, engine):
+        if self.taken < self.budget and state["tick_index"] % 10 == 0:
+            engine.market_buy(1.0)
+            self.taken += 1
+        elif state["position"] > 0.0 and state["tick_index"] % 10 == 5:
+            engine.close()
+
+
+def test_a_cost_sweep_starts_every_run_from_the_same_strategy():
+    # only the fee is supposed to move. An instance carried its spent budget from
+    # one cost level into the next, so every level after the first traded nothing
+    # and the curve read as an edge that dies at the first basis point (ADR 0103)
+    rows = metrics.cost_curve(Capped(4), series(), costs=(0.0, 2.0, 5.0, 10.0),
+                              periods_per_year=365.0)
+    counts = [row["num_trades"] for row in rows]
+    assert counts[0] > 0
+    assert counts == [counts[0]] * len(counts)
+
+
+def test_a_cost_sweep_hands_back_the_instance_the_caller_still_holds():
+    # restored into the same object rather than replaced by a copy, so a caller
+    # who kept a reference is looking at the strategy they passed
+    held = Capped(4)
+    metrics.cost_curve(held, series(), costs=(0.0, 5.0), periods_per_year=365.0)
+    assert held.budget == 4
+
+
+def test_a_breakeven_search_is_not_biased_by_what_the_last_probe_left():
+    # the bisection calls the strategy many times, so a leak here moves the answer
+    # rather than one row of a table
+    instance = metrics.breakeven_bps(Capped(4), series(), ceiling=50.0,
+                                     periods_per_year=365.0)
+    rebuilt = metrics.breakeven_bps(Capped(4), series(), ceiling=50.0,
+                                    periods_per_year=365.0)
+    assert instance == rebuilt
