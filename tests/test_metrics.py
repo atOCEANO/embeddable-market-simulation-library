@@ -1345,3 +1345,41 @@ def test_an_excursion_still_holds_every_bar_a_trade_was_open_across():
     row = metrics.excursions(result, data)[0]
     assert row["best_pct"] == pytest.approx(30.0)
     assert row["worst_pct"] == pytest.approx(-30.0)
+
+
+def flat_with_a_few_losses(n=100, losses=4, size=0.01):
+    # a selective strategy: mostly out of the market, so most returns are exactly
+    # zero, and the few real bars lose. The zero mass is the whole point
+    steps = np.ones(n)
+    steps[:losses] = 1.0 - size
+    return BacktestResult(
+        stats={}, equity_curve=100.0 * np.cumprod(steps), trades=[],
+        initial=100.0, periods_per_year=365.0,
+    )
+
+
+def test_the_expected_shortfall_is_not_diluted_by_a_mass_of_flat_bars():
+    # taken by comparison against the quantile, the cutoff landed on the zero mass
+    # and swept in almost the whole sample, so the reported shortfall was the
+    # average of every bar rather than of the worst one in twenty (ADR 0100)
+    result = flat_with_a_few_losses()
+    values = metrics.returns(result)
+    assert (values == 0.0).sum() == 96                 # the mass the cutoff lands on
+    # the worst five of a hundred: four losses of one percent and one flat bar
+    assert metrics.conditional_value_at_risk(result) == pytest.approx(0.8, abs=1e-9)
+    # and the quantile beside it is honestly zero, since fewer than one bar in
+    # twenty lost anything at all. That one is not wrong and is not changed
+    assert metrics.value_at_risk(result) == pytest.approx(0.0, abs=1e-12)
+
+
+def test_the_expected_shortfall_is_unchanged_where_nothing_ties_at_the_cutoff():
+    # ranking and comparing are the same answer on an ordinary distribution, so
+    # the fix must not move a number anybody already had. Hold rather than
+    # Alternate, because a strategy that steps out of the market has its own mass
+    # of zero returns and would not be tie-free
+    result = run(Hold())
+    values = np.sort(metrics.returns(result))
+    assert len(set(values.tolist())) == values.size     # no ties anywhere
+    cutoff = np.quantile(values, 0.05)
+    by_comparison = float(-values[values <= cutoff].mean() * 100.0)
+    assert metrics.conditional_value_at_risk(result) == pytest.approx(by_comparison)

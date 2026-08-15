@@ -705,14 +705,26 @@ def conditional_value_at_risk(result, alpha=0.95):
 
     The number to look at rather than the value at risk itself: it says how bad
     the bad days are, where the quantile only says where they start.
+
+    Taken by rank, as the worst ``ceil((1 - alpha) * n)`` of them, rather than by
+    comparing each against the quantile (ADR 0100).
     """
     values = returns(result)
     if values.size == 0:
         return 0.0
     alpha = _confidence(alpha, "conditional_value_at_risk")
-    cutoff = np.quantile(values, 1.0 - alpha)
-    tail = values[values <= cutoff]
-    return float(-tail.mean() * 100.0) if tail.size else 0.0
+    # a comparison takes everything at or below the cutoff, and a strategy that is
+    # flat most of the time has a mass of returns at exactly zero for the cutoff to
+    # land on: at eight percent exposure that swept in 96.1% of the sample instead
+    # of 5% and reported a shortfall nineteen times too small. Ranking cannot be
+    # diluted by a tie, and the two agree to the last bit when there is none
+    # nudged before the ceiling because 1.0 - 0.95 is 0.05000000000000004, so a
+    # round hundred bars at the default confidence asks for the worst 5.000000004
+    # and takes six. The nudge is far below one bar and cannot round a real
+    # fraction down
+    k = max(1, int(math.ceil((1.0 - alpha) * values.size - 1e-9)))
+    worst = np.partition(values, k - 1)[:k]
+    return float(-worst.mean() * 100.0)
 
 
 def probabilistic_sharpe(result, benchmark=0.0, independent=False):
