@@ -443,6 +443,31 @@ mod tests {
     }
 
     #[test]
+    fn a_degenerate_annualization_drops_the_rate_with_it() {
+        // finiteness alone is satisfied by every fallback that merely avoids NaN,
+        // including an incomplete one that keeps the caller's rate: 2% a YEAR is
+        // then charged as 2% a BAR, which moves sharpe and sortino and nothing
+        // above notices. The fallback is no annualization AND no rate, so it has
+        // to be the same number as an honest call at one period and zero (0108)
+        let curve = [110.0, 99.0, 121.0];
+        let honest = compute(100.0, &curve, &[], 1.0, 0.0, 3);
+        for ppy in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let fell_back = compute(100.0, &curve, &[], ppy, 0.02, 3);
+            assert!(
+                approx(fell_back.sharpe, honest.sharpe),
+                "ppy {ppy} charged the rate: {} against {}",
+                fell_back.sharpe,
+                honest.sharpe
+            );
+            assert!(approx(fell_back.sortino, honest.sortino));
+        }
+        // and the two really are different numbers, so the assertion above is not
+        // satisfied by every implementation there is
+        let charged = compute(100.0, &curve, &[], 1.0, 0.02, 3);
+        assert!(!approx(charged.sharpe, honest.sharpe));
+    }
+
+    #[test]
     fn drawdown_is_capped_at_a_hundred_percent_so_calmar_stays_ordered() {
         // bad debt takes equity below zero; an uncapped drawdown gave the deeper
         // bust the larger divisor and therefore the BETTER calmar (ADR 0029)
@@ -483,6 +508,27 @@ mod tests {
         let falling = compute(100.0, &[90.0, 81.0, 72.9], &[], 1.0, 0.0, 3);
         assert_eq!(falling.sharpe, 0.0);
         assert!(approx(falling.sortino, -1.0));
+    }
+
+    #[test]
+    fn a_gain_at_no_measured_risk_ranks_at_the_top_on_sharpe_too() {
+        // ADR 0046 sends a positive reward earned against no risk to the top, and
+        // sortino's half of that is pinned by the rising fixture above. Sharpe's
+        // is not: every fixture with a positive excess has a non-zero deviation,
+        // and the only zero-deviation one is a constant LOSER, so special-casing
+        // sharpe to 0.0 when the deviation is zero passes the whole suite. The
+        // returns here double exactly, so the deviation is zero in binary rather
+        // than nearly zero (ADR 0108)
+        let steady = compute(100.0, &[200.0, 400.0, 800.0], &[], 1.0, 0.0, 3);
+        assert_eq!(steady.volatility_pct, 0.0);
+        assert!(
+            steady.sharpe.is_infinite() && steady.sharpe > 0.0,
+            "a gain at no risk scored {}",
+            steady.sharpe
+        );
+        // and the constant loser beside it is still floored rather than lifted
+        let falling = compute(100.0, &[90.0, 81.0, 72.9], &[], 1.0, 0.0, 3);
+        assert_eq!(falling.sharpe, 0.0);
     }
 
     #[test]

@@ -543,3 +543,27 @@ def test_a_trade_floor_refuses_the_thin_winner_an_unfloored_search_takes():
         thin = [t for t in search.trials if t["params"]["pulses"] < 5]
         assert thin and all(t["state"] == "FAIL" for t in thin)
         assert all(t["value"] is None and t["stats"] is None for t in thin)
+
+
+def test_a_search_over_a_frame_reads_its_annualization_from_the_candles():
+    # ADR 0048 resolves this once here, because a trial runs on the bare array and
+    # in a parallel search runs in a worker that never saw the frame. Nothing
+    # tested it: every tune and walk_forward fixture passes periods_per_year
+    # explicitly, so deleting the line leaves the whole suite green and a search
+    # over hourly candles silently scores every trial as though each bar were a
+    # day (ADR 0108)
+    pd = pytest.importorskip("pandas")
+    bars = series(300)
+    frame = pd.DataFrame(bars, columns=["open", "high", "low", "close", "volume"],
+                         index=pd.date_range("2024-01-01", periods=len(bars), freq="1h"))
+    study = emsl.tune(SmaCross, {"fast": (3, 8), "slow": (10, 20)}, frame,
+                      n_trials=4, seed=0, sampler="random", oos=0,
+                      fee_taker=0.0, fee_maker=0.0)
+    # hourly bars, so 8760, and the winner it re-ran carries the same number
+    assert study.best_result.periods_per_year == 8760.0
+    # and the sharpe it selected on is the one that annualization produces
+    daily = emsl.tune(SmaCross, {"fast": (3, 8), "slow": (10, 20)}, frame,
+                      n_trials=4, seed=0, sampler="random", oos=0,
+                      periods_per_year=365.0, fee_taker=0.0, fee_maker=0.0)
+    assert daily.best_result.periods_per_year == 365.0
+    assert study.best_value != pytest.approx(daily.best_value)
