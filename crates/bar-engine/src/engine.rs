@@ -789,6 +789,45 @@ impl Engine {
         self.book_fill(size, price.get(), fee, before, true);
     }
 
+    /// No fill closes a perp past the point the margin behind it ran out.
+    ///
+    /// `fenced` clips the whole candle, and it is read once from the position
+    /// carried INTO the bar, which is the approximation ADR 0067 accepted on the
+    /// grounds that its error runs pessimistic. It does not, in two shapes. A
+    /// position GROWN during the bar and exited on the same bar is bounded by a
+    /// fence computed for a smaller position, or by no fence at all when the
+    /// account entered the bar flat, so a market entry and a protective stop
+    /// armed in one decision booked straight through the margin and left the
+    /// account owing money. And a resting limit prices at its own limit, which
+    /// never passes through the taker clamp, so it walks out of the fenced candle
+    /// from underneath. Bounding the fill instead of the bar covers both, because
+    /// the bound is read at the moment the fill lands rather than a step earlier
+    /// (ADR 0094).
+    ///
+    /// Closing at the bankruptcy price leaves equity exactly zero AT that price,
+    /// so a partial close is bounded by the same number as a full one and no
+    /// ordering of fills within a bar can book past it.
+    fn bound_by_margin(&self, fill: &mut Fill) {
+        if self.config.market != Market::Perp {
+            return;
+        }
+        let position = self.account.position.qty.get();
+        let long = position > 0.0;
+        let reduces =
+            (long && fill.side == Side::Sell) || (position < 0.0 && fill.side == Side::Buy);
+        if !reduces {
+            return;
+        }
+        if let Some(bound) = self.account.bankruptcy_price(self.cost.fee_taker) {
+            let price = fill.price.get();
+            fill.price = Price(if long {
+                price.max(bound.get())
+            } else {
+                price.min(bound.get())
+            });
+        }
+    }
+
     /// The position fields a fill has to be compared against once it has landed.
     fn before_fill(&self) -> (f64, f64, f64) {
         (
@@ -799,10 +838,11 @@ impl Engine {
     }
 
     fn apply_fill_clamped(&mut self, reduce_only: bool, fill: Fill) -> f64 {
-        let fill = self.clamp_fill(reduce_only, &fill);
+        let mut fill = self.clamp_fill(reduce_only, &fill);
         if fill.size.get() <= 0.0 {
             return 0.0;
         }
+        self.bound_by_margin(&mut fill);
         let applied = fill.size.get();
         let fee = self.cost.fee(&fill);
         let before = self.before_fill();
@@ -2422,6 +2462,94 @@ mod tests {
         assert!((s.funding_paid + 0.25).abs() < CLOSE_EPS);
     }
 
+    /// Perp at 10x with a fee, reporting on, over `crash_series`.
+    fn perp_10x() -> EngineConfig {
+        EngineConfig {
+            market: Market::Perp,
+            quote: 100.0,
+            fee_taker: 0.001,
+            max_leverage: 10.0,
+            report: true,
+            ..cfg()
+        }
+    }
+
+    #[test]
+    fn a_stop_armed_with_the_entry_cannot_book_past_the_margin() {
+        // the fence is read from the position carried INTO the bar, and an account
+        // that entered flat carries none, so the stop reduced a position the
+        // margin no longer stood behind and booked the whole distance. Placing a
+        // stop was four times worse than placing nothing (ADR 0094)
+        let mut e = Engine::new(crash_series(), perp_10x());
+        e.reset();
+        e.market_buy(10.0);
+        e.stop(Side::Sell, 10.0, 90.0, true);
+        let s = e.step();
+        assert!(s.equity >= -CLOSE_EPS, "account owes {}", s.equity);
+
+        // and it is no worse than the same bar with nothing resting on it
+        let mut bare = Engine::new(crash_series(), perp_10x());
+        bare.reset();
+        bare.market_buy(10.0);
+        let alone = bare.step();
+        assert!((s.equity - alone.equity).abs() < CLOSE_EPS);
+    }
+
+    #[test]
+    fn a_partial_exit_that_empties_the_margin_books_no_winning_liquidation() {
+        // the residual was liquidated off a NEGATIVE quote, which solves to a price
+        // on the far side of the entry: a profit booked on a bar that never traded
+        // there, lifting win_rate and profit_factor while the return read -100
+        let mut e = Engine::new(crash_series(), perp_10x());
+        e.reset();
+        // the trigger is BELOW the bankruptcy price of 901/9.99, about 90.19, so
+        // the partial exit alone loses more than the whole margin: six units at
+        // 82 is 108 against 99 of it, which leaves the quote negative and four
+        // units still open for the forced close to price off
+        e.market_buy(10.0);
+        e.stop(Side::Sell, 6.0, 82.0, true);
+        let s = e.step();
+        assert!(s.equity >= -CLOSE_EPS, "account owes {}", s.equity);
+        for trade in e.reporter().expect("reporting is on").trades() {
+            assert!(
+                !(trade.liquidated && trade.net_pnl > 0.0),
+                "liquidated at {} for a profit of {}",
+                trade.exit_price,
+                trade.net_pnl
+            );
+        }
+    }
+
+    #[test]
+    fn a_resting_limit_cannot_price_an_exit_past_the_margin() {
+        // fill_limit returns the limit itself and never passes through the taker
+        // clamp, so it got out from under the fenced candle the trigger respected
+        let mut e = Engine::new(crash_series(), perp_10x());
+        e.reset();
+        e.market_buy(10.0);
+        e.limit_sell(10.0, 20.0);
+        let s = e.step();
+        assert!(s.equity >= -CLOSE_EPS, "account owes {}", s.equity);
+    }
+
+    #[test]
+    fn a_healthy_account_prices_its_exit_where_it_asked() {
+        // the bound must bite only where the margin has actually run out, or it
+        // would quietly improve every ordinary exit
+        let mut e = Engine::new(crash_series(), perp_10x());
+        e.reset();
+        e.market_buy(1.0); // a tenth of the cap, nowhere near the fence
+        e.limit_sell(1.0, 99.0);
+        e.step();
+        let trades = e.reporter().expect("reporting is on").trades();
+        assert_eq!(trades.len(), 1);
+        assert!(
+            (trades[0].exit_price - 99.0).abs() < 1e-9,
+            "exited at {}",
+            trades[0].exit_price
+        );
+    }
+
     #[test]
     fn a_liquidation_is_booked_like_any_other_close() {
         // the forced close ran on the account directly and reached none of the
@@ -3496,14 +3624,50 @@ mod tests {
 
     // one signed action per bar: positive buys, negative sells, and the magnitude is
     // the fraction of equity to put on
+    /// One action per bar, and the magnitude picks the ORDER KIND as well as the
+    /// size, so the same generator reaches a resting book.
+    ///
+    /// This drove market orders alone for as long as it existed, which is what
+    /// let three separate bad-debt paths live under a property test written to
+    /// say there was no fourth one: every one of them needed an order still
+    /// resting when the bar resolved, and no run this ever produced had one.
+    /// A stop armed away from the close and a limit armed through it are the two
+    /// shapes that reach the book, and the protective pair is what a reader of
+    /// the guide actually writes (ADR 0094).
     fn drive(engine: &mut Engine, actions: &[f64]) -> Vec<State> {
         let mut seen = Vec::with_capacity(actions.len());
         for action in actions {
-            let size = engine.qty_from_weight(action.abs());
-            if *action > 0.0 {
+            let weight = action.abs();
+            let size = engine.qty_from_weight(weight);
+            let close = engine.current_close();
+            let buying = *action > 0.0;
+            if buying {
                 engine.market_buy(size);
             } else if *action < 0.0 {
                 engine.market_sell(size);
+            }
+            // a protective stop armed in the SAME decision as the entry, which is
+            // what the guide teaches and what nothing here used to place. The
+            // trigger is further out than the liquidation distance at this
+            // leverage on purpose: that is the case where the account dies before
+            // the stop does, so the stop is the fill that reduces a position the
+            // margin no longer stands behind (ADR 0094)
+            if weight > 1.0 {
+                let (side, trigger) = if buying {
+                    (Side::Sell, close * 0.90)
+                } else {
+                    (Side::Buy, close * 1.10)
+                };
+                engine.stop(side, size, trigger, true);
+            }
+            // and a marketable resting exit, which prices at its own limit rather
+            // than at anything the bar clamped
+            if weight > 2.0 {
+                if buying {
+                    engine.limit_sell(size, close * 0.90);
+                } else {
+                    engine.limit_buy(size, close * 1.10);
+                }
             }
             seen.push(engine.step());
             if engine.done() {

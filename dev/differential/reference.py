@@ -331,6 +331,24 @@ class Reference:
         price = (qty * self.entry - self.quote) / denominator
         return price if math.isfinite(price) and price > 0.0 else None
 
+    def bound_by_margin(self, side, price):
+        """ADR 0094: no fill closes a perp past the point its margin ran out.
+
+        The fence below clips the bar and is read once from the position carried
+        into it, so a position grown during the bar, or a resting limit pricing
+        at its own limit, gets out from under it. This is read at the fill.
+        """
+        if self.market != "perp":
+            return price
+        reduces = ((self.position > 0.0 and side == "sell")
+                   or (self.position < 0.0 and side == "buy"))
+        if not reduces:
+            return price
+        bound = self.bankruptcy_price()
+        if bound is None:
+            return price
+        return max(price, bound) if self.position > 0.0 else min(price, bound)
+
     def step(self):
         if self.tick + 1 >= len(self.bars):
             return
@@ -371,7 +389,8 @@ class Reference:
             # it afterwards, so a FOK that could only fill in part books nothing
             if order["fok"] and size + DUST < order["size"]:
                 continue
-            self.apply(order["side"], size, price, True)
+            self.apply(order["side"], size,
+                       self.bound_by_margin(order["side"], price), True)
         self.pending = []           # ADR 0016: a market order is IOC
 
         # 2. resting orders, worst exit first among the exits (ADRs 0056, 0071)
@@ -410,7 +429,8 @@ class Reference:
             # not against a snapshot taken before the bar's earlier fills (ADR 0025)
             if order["fok"] and got + DUST < order["size"] - order["filled"]:
                 continue
-            applied = self.apply(order["side"], got, price, taker)
+            applied = self.apply(order["side"], got,
+                                 self.bound_by_margin(order["side"], price), taker)
             # ADR 0068: consumed by what it filled, and it rests until there is none left
             order["filled"] += applied
         for i, order in enumerate(self.resting):
