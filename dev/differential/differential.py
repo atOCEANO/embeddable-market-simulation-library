@@ -189,7 +189,14 @@ def place_reference(ref, action, live, reached=None):
         # no way to tell that from a real agreement
         if kind in ("close", "reduce") and ref.position != 0.0:
             reached[kind] += 1
-        elif kind in ("cancel", "replace", "cancel_all") and live:
+        elif kind in ("cancel", "replace") and live and ref.is_resting(live[0]):
+            # `live` holds every id ever placed and an expired IOC or FOK limit is
+            # never taken back out of it, so counting a non-empty list counted the
+            # cases where the id died bars ago and BOTH sides did nothing. That
+            # reads afterwards as "the case was exercised and agreed", which is
+            # the one thing a coverage guard exists to prevent (ADR 0107)
+            reached[kind] += 1
+        elif kind == "cancel_all" and any(o is not None for o in ref.resting):
             reached[kind] += 1
     if kind == "market":
         got = ref.market_order(action[1], action[2])

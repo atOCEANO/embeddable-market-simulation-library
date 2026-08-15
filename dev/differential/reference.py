@@ -113,6 +113,15 @@ class Reference:
         self.resting = [None] * self.slots
         return dropped
 
+    def is_resting(self, order_id):
+        """Whether ``order_id`` still names a live resting order.
+
+        The harness keeps the ids it has placed, and an IOC or FOK limit that
+        expired is never taken back out of that list, so the id it reaches for is
+        routinely one that died several bars ago. Only the book knows.
+        """
+        return any(o is not None and o["id"] == order_id for o in self.resting)
+
     def replace(self, order_id, size=None, price=None, trigger=None):
         """ADR 0032: cancel and re-rest, and place NOTHING when the id is gone.
 
