@@ -1025,10 +1025,40 @@ def test_a_drawdown_episode_counts_the_bars_it_actually_covers():
     episode = metrics.drawdown_table(result)[0]
     falls = metrics.drawdown(result)
     assert episode["depth_pct"] == pytest.approx(falls.min())
-    assert falls[episode["trough_bar"]] == pytest.approx(falls.min())
+    # the fall array holds one entry per equity point, so bar b is falls[b - 1]
+    # (ADR 0102). The durations either side are differences and both ends moved
+    assert falls[episode["trough_bar"] - 1] == pytest.approx(falls.min())
     assert episode["bars_under"] == episode["recovered_bar"] - episode["start_bar"]
-    assert all(falls[b] < 0.0 for b in range(episode["start_bar"],
-                                             episode["recovered_bar"]))
+    assert all(falls[b - 1] < 0.0 for b in range(episode["start_bar"],
+                                                 episode["recovered_bar"]))
+
+
+def test_a_drawdown_episode_names_the_bar_the_fall_actually_bottomed_on():
+    # an assertion indexed back into the array the answer came from cannot see an
+    # offset in that array, so this one leaves it entirely: the account is the
+    # candles, so the bar the equity bottomed on is visible in the frame (ADR 0102)
+    close = np.array([100.0, 100.0, 90.0, 80.0, 95.0, 105.0, 110.0])
+    data = np.column_stack(
+        [close, close + 1.0, close - 1.0, close, np.full(close.size, 1e6)]
+    )
+    result = Backtester(data, periods_per_year=365.0,
+                        fee_taker=0.0, fee_maker=0.0).run(Hold())
+    episode = metrics.drawdown_table(result)[0]
+    path = np.concatenate(([result.initial], result.equity_curve))
+    assert episode["trough_bar"] == int(np.argmin(path))
+    # and that bar is the one whose close is the lowest the run saw
+    assert data[episode["trough_bar"], 3] == data[:, 3].min()
+
+
+def test_a_fall_the_run_never_came_back_from_has_no_recovery_bar():
+    # the open episode carries no recovery, so the shift has nothing to add to
+    curve = np.array([100.0, 90.0, 80.0, 85.0])
+    result = BacktestResult(stats={}, equity_curve=curve, trades=[], initial=100.0,
+                            periods_per_year=365.0)
+    episode = metrics.drawdown_table(result)[0]
+    assert episode["recovered_bar"] is None
+    assert episode["start_bar"] == 2
+    assert episode["trough_bar"] == 3
 
 
 def test_the_side_split_counts_a_win_after_its_fee_like_everything_else():

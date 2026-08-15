@@ -230,6 +230,11 @@ def drawdown_table(result, top=5):
     One maximum flattens a run into a single number and hides the shape: five
     shallow falls and one long one are the same ``max_drawdown_pct`` and not
     remotely the same strategy to hold.
+
+    The three positions are BAR indices, the same numbering as a trade's
+    ``entry_tick`` and every other position this module reports, so one goes
+    straight to the candle or onto a chart. ``recovered_bar`` is ``None`` for a
+    fall the run never came back from (ADR 0102).
     """
     falls = drawdown(result)
     episodes = []
@@ -250,10 +255,14 @@ def _episode(falls, start, recovered):
     stop = len(falls) if recovered is None else recovered
     window = falls[start:stop]
     trough = start + int(np.argmin(window))
+    # the fall series holds one entry per equity point rather than one per bar, so
+    # entry i is bar i + 1 (ADR 0037) and a raw loop offset names the candle
+    # BEFORE the one that made it. The two durations below are differences of two
+    # positions and are already in bars (ADR 0102)
     return {
-        "start_bar": start,
-        "trough_bar": trough,
-        "recovered_bar": recovered,
+        "start_bar": start + 1,
+        "trough_bar": trough + 1,
+        "recovered_bar": None if recovered is None else recovered + 1,
         "depth_pct": float(window.min()),
         "bars_to_trough": trough - start,
         "bars_under": stop - start,
