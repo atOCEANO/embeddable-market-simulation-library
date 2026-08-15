@@ -525,3 +525,34 @@ def test_an_equity_panel_asked_for_as_a_percent_mounts_clean(tmp_path):
     assert seen["errors"] == []
     assert seen["canvases"] > 0
     assert max(seen["colours"]) > 20
+
+
+def test_the_room_asked_for_with_future_is_on_screen_on_first_paint(tmp_path):
+    # fitContent fits to the data, and the projected times carry whitespace, so a
+    # projection drawn by a primitive framed to the last real bar and sat off the
+    # right edge with nothing on screen saying it was there (ADR 0099). The band
+    # here exists ONLY past the last candle, so any pixel of it is proof the
+    # viewport reached that far
+    candles = frame(40)
+    ahead = 6
+    n = len(candles) + ahead
+    upper = np.full(n, np.nan)
+    lower = np.full(n, np.nan)
+    last = float(candles["close"].iloc[-1])
+    upper[len(candles):] = last + 4.0
+    lower[len(candles):] = last - 4.0
+    built = emsl.chart(
+        candles,
+        [Band(upper, lower, "projected", fill="#ff00ff")],
+        future=ahead,
+    )
+    assert drawn_colours(built, tmp_path, "future.html", [255, 0, 255]) > 50
+
+
+def test_asking_for_no_room_still_frames_on_the_data(tmp_path):
+    # the reservation is conditional, so a chart with no projection must frame
+    # exactly as it always did rather than growing a margin of empty bars
+    candles = frame(40)
+    seen = observe(emsl.chart(candles, run(candles)), tmp_path, "nofuture.html")
+    assert seen["errors"] == []
+    assert max(seen["colours"]) > 20

@@ -546,6 +546,16 @@ const mount = function (spec, root) {
   if (spec.focus) {
     chart.timeScale().setVisibleLogicalRange({ from: spec.focus[0], to: spec.focus[1] });
   } else {
+    // room reserved for the projection BEFORE fitting, because fitContent fits to
+    // the data and the projected times carry whitespace: a chart asking for
+    // `future=` whose projection is drawn by a primitive, or by markers, or by
+    // any series that does not itself carry values out there, framed to the last
+    // real bar and left the projection off the right edge with nothing on screen
+    // saying it existed. The condition is whether a NATIVE series reaches those
+    // times, not which mark drew them, so a T-long line beside a projected band
+    // reproduces it too (ADR 0099)
+    const ahead = spec.t.length - spec.n;
+    if (ahead > 0) chart.timeScale().applyOptions({ rightOffset: ahead });
     chart.timeScale().fitContent();
   }
 };
