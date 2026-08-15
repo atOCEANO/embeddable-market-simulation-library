@@ -1207,3 +1207,54 @@ def test_a_sweep_names_the_strategy_it_cannot_build():
     assert "configured instance" in said
     # and the instance form the message points at is accepted
     assert metrics.breakeven_bps(Tunable(4), series(), ceiling=20.0) is not None
+
+
+def climbed(curve, ppy):
+    # a short steep stretch, which is the only shape that puts the annualization
+    # out of the float range: the exponent is ppy over the number of advances, so
+    # few advances and a real gain is what reaches it
+    return BacktestResult(stats={}, equity_curve=np.array(curve), trades=[],
+                          initial=100.0, periods_per_year=ppy)
+
+
+def test_a_growth_rate_saturates_in_python_where_the_engine_saturates_it():
+    # a float power RAISES where the f64 it mirrors returns an infinity, so the
+    # ceiling on the next line was unreachable in the one case it exists for.
+    # 1.2 ** 8760 leaves the float range; the threshold at that exponent is a
+    # ratio of about 1.0843 (ADR 0093)
+    hourly = metrics.segment(climbed([120.0], 8760.0))
+    assert math.isfinite(hourly["cagr_pct"])
+    assert hourly["cagr_pct"] == pytest.approx(metrics._CAGR_CEILING * 100.0)
+
+    minute = metrics.segment(climbed([120.0, 130.0], 525_600.0))
+    assert math.isfinite(minute["cagr_pct"])
+    assert minute["cagr_pct"] == pytest.approx(metrics._CAGR_CEILING * 100.0)
+
+
+def test_a_growth_rate_that_fits_is_left_alone():
+    # the ceiling must not swallow an ordinary number on its way past
+    gentle = metrics.segment(climbed(list(np.linspace(100.5, 105.0, 100)), 8760.0))
+    assert gentle["cagr_pct"] < metrics._CAGR_CEILING * 100.0
+    assert gentle["cagr_pct"] == pytest.approx(7081.0, rel=1e-3)
+
+
+def test_every_calendar_period_of_hourly_candles_reports_a_growth_rate():
+    # ADR 0081 keeps a one-bar calendar period rather than dropping it, and one
+    # bar puts the whole annualization in the exponent. A year of hourly candles
+    # ending a bar into the next month is the shape that crashed period_returns
+    # the account is small enough that the one position dominates it, because the
+    # exponent only leaves the float range on a real gain: at 8760 the threshold
+    # is a ratio of about 1.0843, and a unit against ten thousand cannot reach it
+    pd = pytest.importorskip("pandas")
+    close = np.full(745, 100.0)
+    close[-1] = 130.0
+    data = np.column_stack(
+        [close, close + 1.0, close - 1.0, close, np.full(745, 1000.0)]
+    )
+    frame = pd.DataFrame(data, columns=["open", "high", "low", "close", "volume"],
+                         index=pd.date_range("2024-01-01", periods=745, freq="1h"))
+    result = Backtester(frame, quote=200.0, fee_taker=0.0, fee_maker=0.0).run(Hold())
+    rows = metrics.period_returns(result, frame)
+    assert len(rows) == 2
+    assert rows[-1]["bars"] == 1
+    assert all(math.isfinite(row["cagr_pct"]) for row in rows)

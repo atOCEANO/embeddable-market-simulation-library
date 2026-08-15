@@ -622,7 +622,14 @@ def _stats(series, trades, ppy, rate):
     n_returns = series.size - 1
     if opening > 0.0 and n_returns > 0:
         total = final / opening - 1.0
-        cagr = (final / opening) ** (ppy / n_returns) - 1.0 if final > 0.0 else -1.0
+        # a float power RAISES where the f64 this mirrors saturates, so the ceiling
+        # on the next line was unreachable in the one case it exists for and a
+        # month of hourly candles ending a bar into the next one crashed instead
+        # of reporting the number the engine already reports (ADR 0093)
+        try:
+            cagr = (final / opening) ** (ppy / n_returns) - 1.0 if final > 0.0 else -1.0
+        except OverflowError:
+            cagr = _CAGR_CEILING
         cagr = min(cagr, _CAGR_CEILING)
     else:
         total, cagr = 0.0, 0.0
