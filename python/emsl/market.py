@@ -93,9 +93,15 @@ class Market:
 
     def engine(self, candles, report=False):
         """An ``Engine`` over ``candles`` at this venue."""
+        # converted here like every sibling surface. This one handed the argument
+        # straight to the extension, so of the four a venue hands out it was the
+        # only one that refused a DataFrame, and refused it with PyO3 naming a
+        # Rust type rather than to_ohlcv naming the column that is missing. The
+        # bare Engine stays float64 only, as its own page says (ADR 0105)
+        from ._data import to_ohlcv
         from ._emsl import Engine
 
-        return Engine(candles, report=report, **self.as_dict())
+        return Engine(to_ohlcv(candles), report=report, **self.as_dict())
 
     def backtest(self, candles, periods_per_year=None, risk_free=0.0):
         """A ``Backtester`` over ``candles`` at this venue."""

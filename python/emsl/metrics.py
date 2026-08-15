@@ -299,10 +299,13 @@ def time_under_water(result):
 def decompose(result):
     """Where the money went: gross price PnL, fees, funding, and what is still open.
 
-    The four add up to the change in equity, by construction, so the identity is
-    the check. On a perp this is the first thing to look at, because a large share
-    of what looks like alpha in crypto is a funding carry wearing a costume, and a
-    larger share of dead strategies died on the fee line rather than on the idea.
+    Gross price PnL less fees less funding plus what is still open is the change
+    in equity. The two costs are reported as POSITIVE amounts paid away, the
+    convention ``funding_paid`` already uses, so they subtract rather than add
+    (ADR 0106). On a perp this is the first thing to look at, because a large
+    share of what looks like alpha in crypto is a funding carry wearing a costume,
+    and a larger share of dead strategies died on the fee line rather than on the
+    idea.
 
     ``unrealized`` is whatever the other three do not account for: a position
     still open at the end, marked, net of the entry fee it already paid. It is

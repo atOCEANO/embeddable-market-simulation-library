@@ -183,3 +183,30 @@ def test_a_run_that_ended_at_zero_says_so_on_the_result():
                        fee_maker=0.0).run(BuyThenClose())
     assert alive.bust is False
     assert alive.to_dict()["bust"] is False
+
+
+def test_editing_the_array_after_handing_it_over_cannot_change_a_run():
+    # ascontiguousarray hands back the caller's own object when it is already
+    # contiguous float64, and run() builds a fresh Engine off it every call, so a
+    # second run read bars the fingerprint no longer described (ADR 0104)
+    data = series()
+    bt = Backtester(data, market="spot", fee_taker=0.0, fee_maker=0.0)
+    first = bt.run(BuyThenClose())
+    data *= 2.0
+    second = bt.run(BuyThenClose())
+    assert first.data_hash == second.data_hash
+    assert first.stats["total_return_pct"] == second.stats["total_return_pct"]
+    assert np.array_equal(bt._candles, series())
+
+
+def test_a_frame_was_never_aliased_and_still_is_not():
+    # prepare already materialises a fresh array on the DataFrame path, so this is
+    # the control that says the copy above changed nothing for it
+    pd = pytest.importorskip("pandas")
+    close = 100.0 + np.arange(12, dtype=np.float64)
+    frame = pd.DataFrame({"open": close, "high": close + 1.0, "low": close - 1.0,
+                          "close": close, "volume": np.full(12, 1000.0)})
+    bt = Backtester(frame, market="spot", fee_taker=0.0, fee_maker=0.0)
+    before = bt.run(BuyThenClose()).stats["total_return_pct"]
+    frame.loc[:, "close"] = frame["close"] * 2.0
+    assert bt.run(BuyThenClose()).stats["total_return_pct"] == before

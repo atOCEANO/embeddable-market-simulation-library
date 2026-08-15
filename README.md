@@ -268,7 +268,7 @@ metrics.period_returns(result, candles)           # by month, quarter or year
 metrics.compare({"cheap": a, "dear": b})          # several runs, side by side
 ```
 
-The four pieces of `decompose` add up to the change in equity by construction, so the identity is the check. `breakeven_bps` matters because the shipped defaults are a frictionless venue: no slippage, no impact, one order allowed to eat a whole bar. "This dies at 8 basis points round trip and you pay 6" is worth more in the first week than any probability.
+`decompose` splits the change in equity four ways, and gross less fees less funding plus what is still open is the whole of it: the two costs are reported as positive amounts paid away, so they subtract. `breakeven_bps` matters because the shipped defaults are a frictionless venue: no slippage, no impact, one order allowed to eat a whole bar. "This dies at 8 basis points round trip and you pay 6" is worth more in the first week than any probability.
 
 Read `trade_stats` before any of the ratios. A win rate and a profit factor are the same pair for a rule that grinds out small wins and for one that is short gamma waiting for the bar that ends it, and a 70% win rate at a payoff of 0.3 is a losing rule; `summary` prints the two on adjacent lines and never one without the other. Then `period_returns`, because "the whole edge is one quarter" is the answer a single number cannot give.
 

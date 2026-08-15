@@ -112,7 +112,7 @@ binance = emsl.Market(
 result = binance.backtest(candles).run(MyStrategy())
 study = binance.tune(MyStrategy, space, candles, n_trials=200, oos=0.3)
 env = binance.env(candles, num_envs=4096, window=60)
-engine = binance.engine(candles)
+engine = binance.engine(candles)          # takes a frame like its siblings
 ```
 
 Each method takes only the arguments that are **not** the venue, so a knob cannot be passed twice and no rule about which copy wins is needed: there is only ever one copy. Passing one anyway is refused rather than merged ([ADR 0053](Decisions.md)).
@@ -582,7 +582,7 @@ metrics.probabilistic_sharpe(result)      # the chance the true sharpe beats zer
 
 ### Where the money went
 
-`decompose(result)` splits the change in equity into `gross_pnl`, `fees`, `funding`, and `unrealized`, and the four add up to `net` by construction. On a perp this is the first thing to look at: a large share of what looks like alpha in crypto is a funding carry wearing a costume, and a larger share of dead strategies died on the fee line rather than on the idea. `unrealized` is whatever a position still open at the end contributes; it is zero on a run that ends flat.
+`decompose(result)` splits the change in equity into `gross_pnl`, `fees`, `funding`, and `unrealized`: gross less fees less funding plus unrealized is `net`, by construction. The two costs are reported as **positive amounts paid away**, the convention `funding_paid` already uses, so they subtract ([ADR 0106](Decisions.md)). On a perp this is the first thing to look at: a large share of what looks like alpha in crypto is a funding carry wearing a costume, and a larger share of dead strategies died on the fee line rather than on the idea. `unrealized` is whatever a position still open at the end contributes; it is zero on a run that ends flat.
 
 `decompose` also carries `fee_share`, the costs as a fraction of the gross edge, and `turnover`, the notional both sides of every round trip moved over the opening balance. Read together they say whether you have a cost problem or an idea problem, which neither says alone.
 

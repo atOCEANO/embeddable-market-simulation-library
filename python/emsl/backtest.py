@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import hashlib
 
+import numpy as np
+
 from ._data import annualization, prepare
 from ._emsl import Engine
 
@@ -176,6 +178,14 @@ class Backtester:
         # one read: a parquet path used to be decoded twice, once for the candles
         # and once for the index
         self._candles, self._index = prepare(candles)
+        # owned rather than aliased. ascontiguousarray hands back the caller's own
+        # object when it is already contiguous float64, and run() builds a fresh
+        # Engine off this buffer every call, so editing the array in place between
+        # two runs changed the second one while the fingerprint below, taken once,
+        # went on saying they saw the same bars. That field exists to answer
+        # exactly the question it was getting wrong (ADRs 0051, 0104)
+        if isinstance(candles, np.ndarray) and np.shares_memory(self._candles, candles):
+            self._candles = self._candles.copy()
         self._config = dict(
             market=market,
             quote=quote,

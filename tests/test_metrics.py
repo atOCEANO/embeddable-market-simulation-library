@@ -1464,3 +1464,18 @@ def test_a_breakeven_search_is_not_biased_by_what_the_last_probe_left():
     rebuilt = metrics.breakeven_bps(Capped(4), series(), ceiling=50.0,
                                     periods_per_year=365.0)
     assert instance == rebuilt
+
+
+def test_a_venue_hands_out_an_engine_that_takes_what_its_siblings_take():
+    # of the four surfaces a Market hands out, this was the only one that did not
+    # convert, so it refused a frame with PyO3 naming a Rust type (ADR 0105)
+    pd = pytest.importorskip("pandas")
+    close = 100.0 + np.arange(12, dtype=np.float64)
+    frame = pd.DataFrame({"open": close, "high": close + 1.0, "low": close - 1.0,
+                          "close": close, "volume": np.full(12, 1000.0)})
+    venue = emsl.Market(kind="spot", fee_taker=0.0, fee_maker=0.0)
+    assert venue.engine(frame).reset()["equity"] > 0.0
+    # and a frame it cannot read is refused by to_ohlcv, which says which column
+    with pytest.raises(ValueError) as excinfo:
+        venue.engine(frame.drop(columns=["volume"]))
+    assert "volume" in str(excinfo.value)
