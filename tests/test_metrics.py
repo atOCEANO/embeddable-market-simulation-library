@@ -1479,3 +1479,50 @@ def test_a_venue_hands_out_an_engine_that_takes_what_its_siblings_take():
     with pytest.raises(ValueError) as excinfo:
         venue.engine(frame.drop(columns=["volume"]))
     assert "volume" in str(excinfo.value)
+
+
+def falling(n=120):
+    # a run that ends down, so calmar's LOSING branch is the one exercised: the
+    # winning branch divides by the drawdown and the losing one scales by it
+    close = 200.0 - np.arange(n, dtype=np.float64) * 0.8
+    return np.column_stack(
+        [close, close + 1.0, close - 1.0, close, np.full(n, 1e6)]
+    )
+
+
+def test_the_python_mirror_agrees_with_the_engine_on_a_losing_run():
+    # test_a_segment_of_the_whole_run_is_the_run already pins the two
+    # implementations key by key, and it reaches the losing branch of calmar only
+    # because its fixture happens to end down. This makes that explicit, so the
+    # coverage cannot leave with a fixture change nobody connects to it (ADR 0108)
+    result = Backtester(falling(), periods_per_year=365.0,
+                        fee_taker=0.0, fee_maker=0.0).run(Hold())
+    assert result.stats["total_return_pct"] < 0.0
+    assert result.stats["calmar"] < 0.0
+    mirrored = metrics.segment(result)
+    for key in ("total_return_pct", "cagr_pct", "sharpe", "sortino", "calmar",
+                "max_drawdown_pct", "volatility_pct"):
+        assert mirrored[key] == pytest.approx(result.stats[key], rel=1e-9), key
+
+
+def test_the_python_calmar_scales_a_loser_by_its_drawdown_too():
+    # the same pair the Rust test uses, through the mirror: one CAGR, two depths.
+    # An equality against the engine says the two agree, never that either is
+    # right, so a drift they made together would pass it and fail this
+    mild = np.array([1000.0, 900.0, 800.0, 820.0, 840.0, 860.0, 880.0, 890.0,
+                     895.0, 900.0])
+    deep = np.array([1000.0, 500.0, 100.0, 200.0, 400.0, 600.0, 700.0, 800.0,
+                     850.0, 900.0])
+    shallow = metrics.segment(BacktestResult(
+        stats={}, equity_curve=mild, trades=[], initial=1000.0,
+        periods_per_year=10.0,
+    ))
+    awful = metrics.segment(BacktestResult(
+        stats={}, equity_curve=deep, trades=[], initial=1000.0,
+        periods_per_year=10.0,
+    ))
+    assert shallow["cagr_pct"] == pytest.approx(-10.0)
+    assert awful["cagr_pct"] == pytest.approx(-10.0)
+    assert shallow["calmar"] == pytest.approx(-0.02)
+    assert awful["calmar"] == pytest.approx(-0.09)
+    assert shallow["calmar"] > awful["calmar"]

@@ -499,6 +499,39 @@ mod tests {
     }
 
     #[test]
+    fn calmar_separates_two_losers_that_lost_the_same_amount() {
+        // the test below varies the return and the drawdown TOGETHER, so the return
+        // alone orders its pair the same way and dropping the drawdown factor
+        // entirely still passes it. Here both runs end at 900 from 1000 over ten
+        // periods, so both have a CAGR of exactly -10%, and the ONLY thing that can
+        // separate them is the depth they went through to get there (ADR 0108)
+        let mild = [
+            1000.0, 900.0, 800.0, 820.0, 840.0, 860.0, 880.0, 890.0, 895.0, 900.0,
+        ];
+        let deep = [
+            1000.0, 500.0, 100.0, 200.0, 400.0, 600.0, 700.0, 800.0, 850.0, 900.0,
+        ];
+        // periods_per_year equal to the number of returns, so the exponent is one
+        let shallow = compute(1000.0, &mild, &[], 10.0, 0.0, 0);
+        let awful = compute(1000.0, &deep, &[], 10.0, 0.0, 0);
+
+        assert!(approx(shallow.cagr_pct, -10.0));
+        assert!(approx(awful.cagr_pct, -10.0));
+        assert!(approx(shallow.max_drawdown_pct, 20.0));
+        assert!(approx(awful.max_drawdown_pct, 90.0));
+
+        // scaled by the drawdown, not divided by it: -0.1 * 0.2 against -0.1 * 0.9
+        assert!(approx(shallow.calmar, -0.02));
+        assert!(approx(awful.calmar, -0.09));
+        assert!(
+            shallow.calmar > awful.calmar,
+            "the deeper loser outranked the shallower one at the same return: {} against {}",
+            awful.calmar,
+            shallow.calmar
+        );
+    }
+
+    #[test]
     fn calmar_orders_the_losing_runs_by_how_much_they_lost() {
         // calmar divides a return by a drawdown, and on a loser that is a loss over
         // a loss: the deeper the bust the larger the divisor, so a wipeout scored
