@@ -3,6 +3,8 @@ the best of that many random looks would have reached, and refuse every input
 that would make the number mean something other than it says.
 """
 
+import warnings
+
 import numpy as np
 import pytest
 
@@ -259,3 +261,43 @@ def test_a_maximized_search_still_carries_its_direction_and_deflates():
     study = search(sampler="random", seed=0)
     assert study.direction == "maximize"
     assert 0.0 <= metrics.deflated_sharpe(study, search(sampler="random", seed=1)) <= 1.0
+
+
+def shaped(study, null):
+    # the warning is not what is under test here, and asserting through
+    # pytest.warns would make these fail for its absence rather than for the count.
+    # min(study, null) silences the warning as a side effect, since the count it
+    # produces can never be above the null's own size, so a test that leans on the
+    # warning cannot say which of the two it caught (ADR 0108)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        return metrics._null_shape(study, null)
+
+
+def test_the_look_count_is_the_searchs_own_even_against_a_thinner_null():
+    # every fixture that asserts a look count has a study no LARGER than its null,
+    # so min(len(study.trials), len(null.trials)), a plausible defensive change,
+    # reproduces all of them. Only a search deeper than the null measuring it can
+    # separate the two
+    data = series()
+    study = search(n_trials=40, data=data)
+    thin = search(sampler="random", seed=3, n_trials=6, data=data)
+    _trials, looks, _spread = shaped(study, thin)
+    assert looks == len(study.trials) == 40
+
+
+def test_a_thin_null_does_not_lower_the_bar_the_winner_has_to_clear():
+    # the half that matters: the count feeds the threshold, so a deep search
+    # measured against a shallow null would be judged as though it had barely
+    # looked, which is the pre-0058 defect verbatim
+    data = series()
+    thin = search(sampler="random", seed=3, n_trials=6, data=data)
+    fat = search(sampler="random", seed=3, n_trials=40, data=data)
+    deep = search(n_trials=40, data=data)
+    _t, looks_thin, spread_thin = shaped(deep, thin)
+    _t, looks_fat, _s = shaped(deep, fat)
+    assert looks_thin == looks_fat == 40
+    # one search, so one bar, whatever the null measuring it was sized at
+    assert metrics.deflation_threshold(spread_thin, looks_thin) > (
+        metrics.deflation_threshold(spread_thin, 6)
+    )
