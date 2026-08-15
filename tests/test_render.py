@@ -477,3 +477,34 @@ def test_a_gap_is_drawn_as_whitespace_rather_than_bridged(tmp_path):
     # the hole is a third of the series, so anything close to that is the line
     # stopping; a bridged line leaves no empty column between its ends at all
     assert longest > 0.2 * (last - first), f"the gap was bridged: {longest} of {last - first}"
+
+
+def test_a_level_on_the_engines_own_panels_is_actually_drawn(tmp_path):
+    # ADR 0075 moved a Level onto frameFor so it could hang on the candles, and
+    # left the engine's two panels behind: the equity and drawdown curves are
+    # pushed into SERIES after the level loop ran, so a Level there found no
+    # series to scale by and painted nothing at all (ADR 0097)
+    candles = frame()
+    result = run(candles)
+    built = emsl.chart(
+        candles,
+        [Level(float(result.initial), "start", panel="equity", color="#ff00ff")],
+        result,
+    )
+    assert drawn_colours(built, tmp_path, "level-equity.html", [255, 0, 255]) > 50
+
+
+def test_a_level_on_the_drawdown_panel_is_actually_drawn(tmp_path):
+    # halfway down this run's own worst fall, so the reference is inside the panel
+    # it is drawn on: a price line off the visible range paints nothing either,
+    # and that would pass for the defect without testing it
+    candles = frame()
+    result = run(candles)
+    depth = result.stats["max_drawdown_pct"]
+    assert depth > 0.0
+    built = emsl.chart(
+        candles,
+        [Level(-depth / 2.0, "watch", panel="drawdown", color="#ff00ff")],
+        result,
+    )
+    assert drawn_colours(built, tmp_path, "level-drawdown.html", [255, 0, 255]) > 50

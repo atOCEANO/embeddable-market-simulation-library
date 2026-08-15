@@ -454,28 +454,6 @@ const mount = function (spec, root) {
     }
   });
 
-  spec.series.forEach(function (s) {
-    if (s.kind !== "level") return;
-    const index = panelIndex(s.panel);
-    // muted, not axis: the axis colour is chosen to sit almost invisibly
-    // against the plane, which is right for a gridline and wrong for a
-    // reference the reader is meant to see
-    // frameFor, not a line-or-histogram carrier. The carrier it used to keep was
-    // filled only by the line and histogram branches, so it never considered the
-    // candles: a Level on a price panel with no other series hung on the
-    // whitespace anchor, whose firstValue is null, and the renderer drew nothing
-    // at all. `emsl.chart(frame, Level(110.0))` is about the simplest call on the
-    // page and it drew no level (ADR 0075)
-    frameFor(index).createPriceLine({
-      price: s.value,
-      color: s.color || T().muted,
-      lineWidth: s.width,
-      lineStyle: STYLE[s.style],
-      axisLabelVisible: true,
-      title: s.name || "",
-    });
-  });
-
   // the engine's own two curves. They carry a `make` like any other line, because
   // the gap split in `paint` only runs for an entry that has one: both are dense
   // by construction today, so this is a guard rather than a fix, and the reason to
@@ -512,6 +490,28 @@ const mount = function (spec, root) {
       lineWidth: 1, invertFilledArea: true,
     });
   }
+
+  // after the two curves above, not before them. ADR 0075 moved this off a
+  // line-or-histogram carrier and onto frameFor so a Level could hang on the
+  // candles, and that left one hole: the engine's own panels have a series to
+  // scale by and it does not exist yet this early, so a Level on equity or on
+  // drawdown fell through to the whitespace anchor and drew nothing at all,
+  // which is the same silence ADR 0075 exists to remove (ADR 0097)
+  spec.series.forEach(function (s) {
+    if (s.kind !== "level") return;
+    const index = panelIndex(s.panel);
+    // muted, not axis: the axis colour is chosen to sit almost invisibly
+    // against the plane, which is right for a gridline and wrong for a
+    // reference the reader is meant to see
+    frameFor(index).createPriceLine({
+      price: s.value,
+      color: s.color || T().muted,
+      lineWidth: s.width,
+      lineStyle: STYLE[s.style],
+      axisLabelVisible: true,
+      title: s.name || "",
+    });
+  });
 
   chart.panes().forEach(function (pane, i) {
     if (spec.panels[i]) pane.setStretchFactor(spec.panels[i].weight);
