@@ -23,7 +23,7 @@ pd = pytest.importorskip("pandas")
 playwright = pytest.importorskip("playwright.sync_api")
 
 import emsl
-from emsl.plot import Band, Level, Line, Panel
+from emsl.plot import Background, Band, Level, Line, Panel
 
 
 # distinct colours per canvas: a canvas nothing drew on carries one, and a chart
@@ -556,3 +556,57 @@ def test_asking_for_no_room_still_frames_on_the_data(tmp_path):
     seen = observe(emsl.chart(candles, run(candles)), tmp_path, "nofuture.html")
     assert seen["errors"] == []
     assert max(seen["colours"]) > 20
+
+
+def test_a_background_span_covers_the_bars_its_mask_is_true_on(tmp_path):
+    # logicalToCoordinate returns the CENTRE of a bar and a span is half open over
+    # whole bars, so painting centre to centre put the shading half a candle right
+    # of the bars it belongs to. The width was always correct, which is why it
+    # read as right until someone looked at an edge (ADR 0101)
+    n = 40
+    candles = frame(n)
+    mask = np.zeros(n, dtype=bool)
+    mask[20:30] = True
+    built = emsl.chart(candles, [Background(mask, fill="#ff00ff")])
+    path = built.save(str(tmp_path / "span.html"))
+
+    with playwright.sync_playwright() as driver:
+        browser = driver.chromium.launch(args=["--no-sandbox"])
+        page = browser.new_page(viewport={"width": 1280, "height": 900})
+        page.goto(pathlib.Path(path).as_uri())
+        page.wait_for_selector("#chart canvas", timeout=20_000)
+        page.wait_for_timeout(500)
+        # the first and last x of the shaded band, and the pixel width of one bar,
+        # both read off the same canvas so the comparison needs no scaling
+        seen = page.evaluate(
+            """
+            () => {
+              let best = null;
+              document.querySelectorAll('#chart canvas').forEach(c => {
+                const r = c.getBoundingClientRect();
+                if (!best || r.width > best.width) best = c;
+              });
+              const ctx = best.getContext('2d');
+              const d = ctx.getImageData(0, 0, best.width, best.height).data;
+              let lo = null, hi = null;
+              for (let x = 0; x < best.width; x++) {
+                let found = false;
+                for (let y = 0; y < best.height; y++) {
+                  const i = (y * best.width + x) * 4;
+                  if (d[i] > 150 && d[i + 1] < 100 && d[i + 2] > 150) { found = true; break; }
+                }
+                if (found) { if (lo === null) lo = x; hi = x; }
+              }
+              return {lo: lo, hi: hi, width: best.width, ratio: window.devicePixelRatio};
+            }
+            """
+        )
+        browser.close()
+
+    assert seen["lo"] is not None, "the span painted nothing at all"
+    bar = seen["width"] / n
+    # the tolerance has to be tighter than the error it is looking for: the defect
+    # is exactly half a bar, so anything from a quarter of one upward cannot tell
+    # the two apart and passes either way
+    assert (seen["hi"] - seen["lo"]) / bar == pytest.approx(10.0, abs=0.2)
+    assert seen["lo"] / bar == pytest.approx(20.0, abs=0.2)

@@ -53,7 +53,11 @@ const selectTrade = function (n, opts) {
   SPEC.trades.forEach(function (tr) { if (tr.i === n) hit = tr; });
   if (!hit) return;
 
-  selection = [hit.in, hit.out, 0];
+  // half open, like every span the same primitive paints: this pair is inclusive
+  // of the exit bar, so under the shifted geometry it has to name the bar AFTER
+  // it. The highlight now covers the entry and the exit bars whole, which it did
+  // not before either (ADR 0101)
+  selection = [hit.in, hit.out + 1, 0];
   document.querySelectorAll("tr.sel").forEach(function (r) { r.classList.remove("sel"); });
   const row = document.querySelector('tr[data-n="' + n + '"]');
   if (row) row.classList.add("sel");

@@ -39,11 +39,25 @@ const spanFill = function (getSpans, getFills) {
                   return g;
                 });
 
+                // half a bar, in pixels, taken from two whole indices rather than
+                // by asking for a fractional one: logicalToCoordinate returns the
+                // CENTRE of a bar, and a span is half open over whole bars, so
+                // painting centre to centre put the shading half a candle right
+                // of the bars it belongs to. The width was unaffected, which is
+                // why it read as correct until someone looked at an edge. The
+                // converter does not take a fraction, and asking it for one drops
+                // the span rather than nudging it (ADR 0101)
+                const c0 = ts.logicalToCoordinate(0);
+                const c1 = ts.logicalToCoordinate(1);
+                const half = (c0 === null || c1 === null) ? 0 : (c1 - c0) / 2;
+
                 for (let n = 0; n < spans.length; n++) {
                   const s = spans[n];
-                  const a = ts.logicalToCoordinate(s[0]);
-                  const b = ts.logicalToCoordinate(s[1]);
-                  if (a === null || b === null) continue;
+                  const left = ts.logicalToCoordinate(s[0]);
+                  const right = ts.logicalToCoordinate(s[1]);
+                  if (left === null || right === null) continue;
+                  const a = left - half;
+                  const b = right - half;
                   ctx.fillStyle = cache[s[2]];
                   ctx.fillRect(a * scope.horizontalPixelRatio, 0,
                     Math.max(1, (b - a) * scope.horizontalPixelRatio), h);
