@@ -311,7 +311,7 @@ emsl.chart(
 Those are the arrays the rule decided on, handed over as they are. Nothing here recomputes an indicator, because a recomputed copy is a picture of a rule that was never executed.
 
 <div align="center">
-  <img src=".Documentation/imgs/charts/chart-backtest.png" alt="A backtest drawn: a channel and its basis, a regime shaded behind the candles, the fills on the bars they filled on, a MACD histogram, equity and drawdown" width="100%" />
+  <img src=".Documentation/imgs/charts/chart-backtest.png" alt="A backtest drawn: a channel and its basis, a regime shaded behind the candles, the fills on the bars they filled on, a MACD histogram, and an equity curve with its drawdown shaded onto it" width="100%" />
   <p style="margin: 0;"><i>One call, one year of hourly candles. Five panels, their order, their weights and the trade log are the library's; every mark on them is the strategy's own array</i></p>
 </div>
 
