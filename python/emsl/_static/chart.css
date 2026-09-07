@@ -109,26 +109,38 @@ body {
 .panectl button:hover { color: var(--ink); border-color: var(--muted); }
 .panectl button[aria-pressed="true"] { color: var(--s1); border-color: var(--s1); }
 
-/* the controls take a real row of layout, so nothing is overlaid on the plot */
+/* the controls take a real row of layout, so nothing is overlaid on the plot.
+   No boxes: three words, and a rule under whichever one is on. A bordered
+   control at this size is mostly border, and this one was a ghost outline at
+   16% white around a label sitting at the dimmest colour on the chart. The
+   pressed state is the same blue the pane buttons already use, because it was
+   indistinguishable from hover: both set the ink colour and the muted border,
+   so nothing said the trade table was open */
 .footer {
   flex: 0 0 auto;
   display: flex; align-items: center; flex-wrap: wrap;
-  gap: calc(3px * var(--ui));
-  padding: calc(6px * var(--ui)) calc(9px * var(--ui));
+  gap: calc(15px * var(--ui));
+  padding: calc(7px * var(--ui)) calc(11px * var(--ui));
   border-top: 1px solid var(--hairline);
 }
 .footer .grow { flex: 1 1 auto; }
 .footer .hint { color: var(--muted); font-size: calc(11px * var(--ui)); }
 .footer button {
-  padding: 0 calc(7px * var(--ui)); height: calc(21px * var(--ui));
+  /* the box is taller than the word so the target is not the glyphs themselves,
+     and the rule then sits a few pixels clear of the baseline rather than on it */
+  padding: 0 calc(3px * var(--ui)); height: calc(22px * var(--ui));
   line-height: 1; cursor: pointer;
-  font: 600 calc(11px * var(--ui))/1 system-ui, -apple-system, "Segoe UI", sans-serif;
-  letter-spacing: .02em;
-  border: 1px solid var(--hairline); border-radius: 3px;
-  background: var(--surface); color: var(--muted);
+  font: 600 calc(10.5px * var(--ui))/1 system-ui, -apple-system, "Segoe UI", sans-serif;
+  /* caps at .02em read as one clot at this size */
+  letter-spacing: .09em;
+  border: 0; border-bottom: 2px solid transparent; border-radius: 0;
+  background: transparent; color: var(--ink-2);
 }
-.footer button:hover { color: var(--ink); border-color: var(--muted); }
-.footer button[aria-pressed="true"] { color: var(--ink); border-color: var(--muted); }
+.footer button:hover { color: var(--ink); border-bottom-color: var(--muted); }
+.footer button[aria-pressed="true"] { color: var(--s1); border-bottom-color: var(--s1); }
+/* the only control set on the chart, and nothing had ever marked it for a
+   keyboard: without a box there is no default focus ring worth seeing either */
+.footer button:focus-visible { outline: 2px solid var(--s1); outline-offset: 2px; }
 
 #tablePanel {
   flex: 0 0 auto;

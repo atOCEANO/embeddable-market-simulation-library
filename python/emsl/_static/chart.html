@@ -21,9 +21,16 @@
   <div class="footer" id="tools">
     <button id="fit" title="Fit all bars">FIT</button>
     <button id="tbl" aria-pressed="false" title="Trade log">TABLE</button>
-    <button id="theme" title="Toggle theme">LIGHT</button>
     <span class="grow"></span>
     <span class="hint" id="hint"></span>
+    <!-- last, and across the gap, because it is not a third of the same thing.
+         FIT does something once and TABLE holds a state, and both say what they
+         do to the chart. This one names the mode it will switch TO rather than
+         the one it is in, which is why it never looks pressed and never could,
+         and it changes the whole document rather than the plot. Moved in the
+         markup rather than with order:, so the tab order still matches what a
+         reader sees -->
+    <button id="theme" title="Toggle theme">LIGHT</button>
   </div>
 </div>
 
