@@ -54,7 +54,7 @@ emsl.chart(frame=frame, marks=squeeze).show()
 emsl.chart(frame=frame, run=result).show()
 ```
 
-That last one is entry and exit arrows on the exact bars they filled on, an equity curve, a drawdown panel and a trade log under the chart. Click a row and the chart frames that trade; click an arrow and the row reveals itself.
+That last one is entry and exit arrows on the exact bars they filled on, an equity curve with its drawdown shaded onto it, and a trade log under the chart. Click a row and the chart frames that trade; click an arrow and the row reveals itself.
 
 All three together is the chart most people are actually after:
 
@@ -515,7 +515,7 @@ emsl.chart(
 
 ## Panels
 
-`"price"` always exists, comes first and carries the candles. `"volume"` appears when the frame has a usable volume column, `"equity"` and `"drawdown"` when a result is passed, and any other name is created the first time a `panel=` mentions it.
+`"price"` always exists, comes first and carries the candles. `"volume"` appears when the frame has a usable volume column, `"equity"` when a result is passed, and any other name is created the first time a `panel=` mentions it. `"drawdown"` is shaded onto the equity panel rather than given one of its own, unless you ask for one with `drawdown="panel"`.
 
 **A bare array overlays the candles unless doing so would cost them more than half the price panel** ([ADR 0039](Decisions.md)). Otherwise it gets its own panel. That is a guess about the picture, never about your intent: it may put a series somewhere you would not have, but it can never quietly flatten the candles to get it there. Override it with `panel=`, including `panel="price"`.
 
@@ -539,30 +539,34 @@ emsl.chart(
 
 ### Turning off what a run brings
 
-A `BacktestResult` brings four things: the arrows, the trade log, an equity panel and a drawdown panel. All four are optional.
+A `BacktestResult` brings three things: the arrows, the trade log, and an equity panel with the fall from its own running peak shaded onto it. All three are optional.
+
+The shading **is** the drawdown. The band runs from the equity curve up to the highest equity the run had seen by that bar, so it closes to nothing on every new high, is at its widest at the worst bar, and puts the trough directly beneath the peak that caused it. The legend prints the percentage beside the balance, and it is the same number the engine reports as `max_drawdown_pct`.
 
 ```python
 emsl.chart(
     frame=frame,
     run=result,
-    trades=False,                                   # no arrows, no table
+    trades=False,                               # no arrows, no table
+    drawdown="panel",                           # a pane of its own instead
     panels=[
-        Panel(name="drawdown", show=False),           # gone, and not in the file
-        Panel(name="equity", scale="percent"),      # the same curve, as a return
+        Panel(name="equity", scale="percent"),  # the same curve, as a return
     ],
 ).show()
 ```
 
+`drawdown` takes `"under"`, `"panel"` or `False`. A pane of its own is worth having on a **linear** equity axis, where the shading is drawn in quote currency and a late twenty percent therefore draws taller than an early one; on a log axis, which the **L** button gives you without re-running anything, equal percentages are equal distances and the shading is faithful. `chart_defaults(drawdown="panel")` sets it for a whole session rather than at every call. `Panel(name="equity", show=False)` removes the panel and the shading with it, and a hidden panel ships no data at all rather than merely going unpainted.
+
 One thing to know before reading a percent axis, because it is the one scale whose meaning depends on where you are looking. Percent is per series, not per panel: the renderer baselines each one at its own first **visible** point. So two series that start on different bars are measured from different anchors while the viewport sits left of the later one, and both the baseline and the numbers move as you pan. On a panel carrying one series that is exactly what you want. On a panel carrying a curve and a benchmark that begins two hundred bars in, the two percentages are not comparable until you scroll past the later start. The `%` button puts any panel into that mode, so it is reachable without ever passing `scale="percent"`.
 
-**The drawdown panel is not the equity panel as a percentage**, which is the usual reason people reach to turn it off. Percent rescales the axis and leaves the curve identical, so it tells you nothing new. Drawdown measures the fall from the running peak, so it pins to zero on every new high and only moves when you are below one. On a run that ends up 23%, the two answer different questions at the same bar:
+**The drawdown is not the equity curve as a percentage**, which is the usual reason people reach to turn it off. Percent rescales the axis and leaves the curve identical, so it tells you nothing new. Drawdown measures the fall from the running peak, so it pins to zero on every new high and only moves when you are below one. On a run that ends up 23%, the two answer different questions at the same bar:
 
 | | at the worst bar |
 | :--- | :--- |
 | equity, as a return | **+3.72%** |
 | drawdown | **-8.55%** |
 
-Up on the year and eight percent below the high, on the same bar. The equity curve cannot show you the second number, which is the whole reason the panel exists.
+Up on the year and eight percent below the high, on the same bar. The curve alone cannot show you the second number, which is what the shading is there to draw.
 
 <br>
 
@@ -834,4 +838,4 @@ A negative displacement needs nothing at all: Chikou is `close.shift(-26)`, whic
 
 ## Where it sits
 
-One module, `python/emsl/_chart.py`, the marks in `python/emsl/plot.py`, and a vendored renderer under `python/emsl/_static/`. No new dependency: everything it needs is the standard library plus numpy, pandas is duck-typed and never imported unless you pass a DataFrame, and IPython is imported only inside `show`. `BacktestResult` gained one field, `initial`, the balance the run opened with, because the drawdown panel and the reported `max_drawdown_pct` have to be the same number ([ADR 0042](Decisions.md)); nothing else that already existed was touched.
+One module, `python/emsl/_chart.py`, the marks in `python/emsl/plot.py`, and a vendored renderer under `python/emsl/_static/`. No new dependency: everything it needs is the standard library plus numpy, pandas is duck-typed and never imported unless you pass a DataFrame, and IPython is imported only inside `show`. `BacktestResult` gained one field, `initial`, the balance the run opened with, because the drawn fall and the reported `max_drawdown_pct` have to be the same number ([ADR 0042](Decisions.md)); nothing else that already existed was touched.

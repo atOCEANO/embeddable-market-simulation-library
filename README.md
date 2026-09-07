@@ -276,7 +276,7 @@ For the probabilities there are `probabilistic_sharpe`, `sharpe_interval`, `min_
 
 ### Looking at the result
 
-The five paths above produce numbers. `emsl.chart` is how you look at them: candles, the fills on the bars they happened on, an equity curve, a drawdown panel, a trade log, and any array of your own beside them.
+The five paths above produce numbers. `emsl.chart` is how you look at them: candles, the fills on the bars they happened on, an equity curve with its drawdown shaded onto it, a trade log, and any array of your own beside them.
 
 ```python
 import numpy

@@ -394,9 +394,70 @@ def test_a_pinned_range_reaches_the_panel():
     assert panel["range"] == [0.0, 100.0]
 
 
-def test_a_result_adds_an_equity_and_a_drawdown_panel():
-    names = [p["name"] for p in emsl.chart(frame(8), run()).spec()["panels"]]
-    assert "equity" in names and "drawdown" in names
+def test_a_result_adds_an_equity_panel_and_shades_the_drawdown_onto_it():
+    spec = emsl.chart(frame(8), run()).spec()
+    names = [p["name"] for p in spec["panels"]]
+    assert "equity" in names and "drawdown" not in names
+    shade = [s for s in spec["series"]
+             if s["kind"] == "band" and s["panel"] == "equity"]
+    assert len(shade) == 1
+    # the upper edge is a running maximum of the lower one, so the shape can touch
+    # but never cross. Asserted per point rather than on the extremes, because a
+    # band that inverted in the middle has the same extremes as one that does not
+    assert all(u >= v for u, v in zip(shade[0]["v"], shade[0]["v2"]))
+
+
+def test_the_drawdown_track_ships_even_with_no_panel_of_its_own():
+    # the legend reads the number off it and prints it beside the shading
+    assert "drawdown" in emsl.chart(frame(8), run()).spec()
+
+
+def test_asking_for_a_drawdown_panel_gives_one_and_stops_shading_the_equity():
+    spec = emsl.chart(frame(8), run(), drawdown="panel").spec()
+    assert "drawdown" in [p["name"] for p in spec["panels"]]
+    assert not [s for s in spec["series"] if s["kind"] == "band"]
+
+
+def test_turning_the_drawdown_off_leaves_neither_a_panel_nor_a_shade():
+    spec = emsl.chart(frame(8), run(), drawdown=False).spec()
+    assert "drawdown" not in [p["name"] for p in spec["panels"]]
+    assert "drawdown" not in spec
+    assert not [s for s in spec["series"] if s["kind"] == "band"]
+
+
+def test_hiding_the_drawdown_panel_still_removes_the_shading():
+    # the documented off switch predates the shading and has to keep working
+    spec = emsl.chart(frame(8), run(),
+                      panels=[Panel("drawdown", show=False)]).spec()
+    assert not [s for s in spec["series"] if s["kind"] == "band"]
+    assert "drawdown" not in spec
+
+
+def test_a_mark_that_creates_a_drawdown_panel_stops_the_shading():
+    # panel= creates a panel the same way any other name does, so the fall can end
+    # up with a pane without anyone asking for one; it must not then also be shaded
+    # onto the equity, which would draw the same number twice on one chart
+    spec = emsl.chart(
+        frame(8), run(), marks=[Level(-1.0, "watch", panel="drawdown")]
+    ).spec()
+    assert "drawdown" in [p["name"] for p in spec["panels"]]
+    assert not [s for s in spec["series"] if s["kind"] == "band"]
+
+
+def test_a_drawdown_mode_outside_the_three_is_told_what_they_are():
+    with pytest.raises(ValueError) as excinfo:
+        emsl.chart(frame(8), run(), drawdown="pane")
+    message = str(excinfo.value)
+    assert "'under'" in message and "'panel'" in message and "'pane'" in message
+
+
+def test_the_drawdown_mode_can_be_set_for_a_whole_session():
+    previous = emsl.chart_defaults(drawdown="panel")
+    try:
+        names = [p["name"] for p in emsl.chart(frame(8), run()).spec()["panels"]]
+        assert "drawdown" in names
+    finally:
+        emsl.chart_defaults(**{k: v for k, v in previous.items() if v is not None})
 
 
 def test_a_frame_whose_clock_is_a_column_is_told_the_line_that_fixes_it():
@@ -1021,10 +1082,16 @@ def test_a_run_can_be_drawn_without_its_trades():
 
 
 def test_hiding_a_panel_drops_its_data_and_not_just_its_pixels():
-    shown = emsl.chart(frame(8), run()).spec()
+    # drawdown="panel" so the pane is there to be hidden. Without it the default
+    # carries no drawdown pane either, and the panel-list assertion below would
+    # hold just as well against a chart that never hid anything
+    shown = emsl.chart(frame(8), run(), drawdown="panel").spec()
     hidden = emsl.chart(
-        frame(8), run(), panels=[Panel("drawdown", show=False)]
+        frame(8), run(), drawdown="panel", panels=[Panel("drawdown", show=False)]
     ).spec()
+    assert [p["name"] for p in shown["panels"]] == [
+        "price", "volume", "equity", "drawdown",
+    ]
     assert "drawdown" in shown
     assert "drawdown" not in hidden
     assert [p["name"] for p in hidden["panels"]] == ["price", "volume", "equity"]

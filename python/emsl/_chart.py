@@ -96,7 +96,26 @@ _PALETTES = {
     },
 }
 
-_DEFAULTS = {"theme": "dark", "height": 660, "palette": None}
+_DEFAULTS = {"theme": "dark", "height": 660, "palette": None, "drawdown": "under"}
+
+# How a run's drawdown is drawn. It is a fall from the running peak either way, so
+# the choice is where to put it rather than what it says. "under" shades between
+# the equity curve and its own peak on the equity panel: one axis, one pane, and
+# the trough drawn directly beneath the high that caused it. "panel" is the pane it
+# used to get, which is worth having when the equity axis is linear, because a
+# shaded fall in quote currency draws a late twenty percent taller than an early
+# one and a percentage pane does not. False draws neither.
+_DRAWDOWN = ("under", "panel", False)
+
+
+def _drawdown_mode(value):
+    if value not in _DRAWDOWN:
+        raise ValueError(
+            f"drawdown must be 'under', 'panel' or False, got {value!r}; "
+            f"'under' shades the fall on the equity panel and 'panel' gives it "
+            f"a pane of its own"
+        )
+    return value
 
 # the four that decide whether a strategy is worth keeping. Formatting lives here
 # rather than in the renderer, so the seam holds: Python says what the numbers
@@ -545,7 +564,7 @@ def _collect(args):
     return marks, result
 
 
-def chart_defaults(theme=None, height=None, palette=None):
+def chart_defaults(theme=None, height=None, palette=None, drawdown=None):
     """Set how every later chart looks, and return the previous settings.
 
     Explicit keywords rather than ``**options``, so ``chart_defaults(them="dark")``
@@ -557,6 +576,10 @@ def chart_defaults(theme=None, height=None, palette=None):
     ``height`` is the height of a notebook cell, in pixels. A saved file sizes
     itself to the window instead, so one file is right on any screen. There is no
     width anywhere: a chart fills whatever contains it.
+
+    ``drawdown`` is ``"under"``, ``"panel"`` or ``False``, and it is here as well
+    as on ``chart`` so a session that wants the separate pane back gets it in one
+    line rather than at every call site.
     """
     previous = dict(_DEFAULTS)
     pending = {}
@@ -566,6 +589,8 @@ def chart_defaults(theme=None, height=None, palette=None):
         pending["theme"] = theme
     if height is not None:
         pending["height"] = _height(height)
+    if drawdown is not None:
+        pending["drawdown"] = _drawdown_mode(drawdown)
     if palette is not None:
         merged = {}
         for mode, values in palette.items():
@@ -630,7 +655,7 @@ def _within(value, extent):
     return low - room <= value <= high + room
 
 
-def _order(names, config, has_volume, has_result):
+def _order(names, config, has_volume, has_result, drawdown="under"):
     order = ["price"]
     if has_volume:
         order.append("volume")
@@ -638,7 +663,11 @@ def _order(names, config, has_volume, has_result):
         if name not in order:
             order.append(name)
     if has_result:
-        for name in ("equity", "drawdown"):
+        # the drawdown earns a pane of its own only when it was asked for one.
+        # Shaded on the equity panel it is a band rather than a panel, so it never
+        # enters this list and nothing downstream has to know the difference
+        auto = ("equity", "drawdown") if drawdown == "panel" else ("equity",)
+        for name in auto:
             if name not in order:
                 order.append(name)
     # panels= configures and never creates: a typo would otherwise manufacture a
@@ -937,7 +966,7 @@ class Chart:
 def chart(
     frame=None, *args, marks=None, run=None, panels=None, focus=None,
     candle_color=None, theme=None, height=None, title=None, future=0, stats=None,
-    trades=True,
+    trades=True, drawdown=None,
 ):
     """Draw ``frame`` as candles, with your arrays and a run on top of it.
 
@@ -959,12 +988,20 @@ def chart(
     numbers on the right. ``stats`` names the keys, defaulting to the four that
     decide whether a strategy is worth keeping, and ``stats=[]`` shows none.
 
+    ``drawdown`` says where the fall from the running peak is drawn. ``"under"``,
+    the default, shades between the equity curve and its own peak on the equity
+    panel, so the trough sits directly beneath the high that caused it and the
+    reading costs one pane rather than two. ``"panel"`` gives it a pane of its
+    own, which is worth having on a linear equity axis, where a shaded fall is in
+    quote currency and draws a late twenty percent taller than an early one.
+    ``False`` draws neither. It is on ``chart_defaults`` too.
+
     Everything a run brings can be turned off. ``trades=False`` drops the arrows
-    and the table under the chart. The equity and drawdown panels are ordinary
-    panels, so ``Panel(name="drawdown", show=False)`` removes one, and a hidden
-    panel ships no data at all rather than merely going unpainted. Equity as a
-    percentage is ``Panel(name="equity", scale="percent")``, which is a different
-    question from the drawdown panel: percent rescales the same curve, while
+    and the table under the chart. The equity panel is an ordinary panel, so
+    ``Panel(name="equity", show=False)`` removes it and the shading with it, and a
+    hidden panel ships no data at all rather than merely going unpainted. Equity
+    as a percentage is ``Panel(name="equity", scale="percent")``, which is a
+    different question from the drawdown: percent rescales the same curve, while
     drawdown measures the fall from the running peak and sits at zero on every
     new high.
 
@@ -1091,8 +1128,12 @@ def chart(
         )
         volume = None
 
+    dd_mode = _drawdown_mode(
+        drawdown if drawdown is not None else _DEFAULTS["drawdown"]
+    )
     equity = None
-    drawdown = None
+    dd = None
+    peak = None
     if result is not None and len(result.equity_curve):
         equity = np.asarray(result.equity_curve, dtype=np.float64)
         # the curve holds a point per advance, so the balance the run opened with is
@@ -1106,7 +1147,7 @@ def chart(
         peak = np.maximum.accumulate(opened)[-len(equity):]
         with np.errstate(divide="ignore", invalid="ignore"):
             fallen = np.maximum((equity / peak - 1.0) * 100.0, -100.0)
-            drawdown = np.where(peak > 0, fallen, np.nan)
+            dd = np.where(peak > 0, fallen, np.nan)
         # and the panels start from that balance too, rather than from the first
         # advance. Two returns were read off the track's own first value: the one
         # the legend prints on hover, and the axis a Panel(scale="percent") asks
@@ -1118,16 +1159,21 @@ def chart(
         # already seeds the drawdown peak from it (ADR 0098)
         if start is not None:
             equity = np.concatenate(([float(start)], equity))
-            drawdown = np.concatenate(([0.0], drawdown))
+            dd = np.concatenate(([0.0], dd))
+        # the same running maximum the fall above is measured against, seeded the
+        # same way, so a shaded fall and a reported percentage cannot disagree.
+        # Taken from the seeded curve rather than padded onto the earlier one,
+        # because the peak at bar zero IS the balance the run opened with
+        peak = np.maximum.accumulate(equity)
 
     names = _assign(marks, ohlc)
-    order = _order(names, config, volume is not None, result is not None)
+    order = _order(names, config, volume is not None, result is not None, dd_mode)
     panels_out, hidden = _build_panels(
-        order, config, marks, names, num_bars, ohlc, volume, equity, drawdown,
+        order, config, marks, names, num_bars, ohlc, volume, equity, dd,
         future,
     )
     _check_log(panels_out, marks, names, ohlc, {
-        "equity": equity, "drawdown": drawdown, "volume": volume,
+        "equity": equity, "drawdown": dd, "volume": volume,
     }, future)
 
     shown = {p["name"]: p["digits"] for p in panels_out}
@@ -1252,6 +1298,34 @@ def chart(
         entry = {k: v for k, v in entry.items() if v is not None}
         series.append(entry)
 
+    # the fall from the peak, shaded on the equity panel between the curve and its
+    # own running maximum. A band rather than a second pane, so the two readings
+    # share one axis and one set of units and the trough is drawn directly beneath
+    # the high that caused it. The band never inverts, because a running maximum is
+    # never below the series it is taken from
+    # not when a drawdown panel exists anyway: a mark carrying panel="drawdown"
+    # creates one the same way any other name does, and the fall would then be
+    # drawn twice, once in its own pane and once shaded onto the equity
+    has_dd_panel = any(p["name"] == "drawdown" for p in panels_out)
+    if (dd_mode == "under" and not has_dd_panel
+            and equity is not None and peak is not None
+            and "equity" not in hidden and "drawdown" not in hidden):
+        upper = _track(peak, num_bars, "drawdown peak", places("equity"))
+        lower = _track(equity, num_bars, "equity_curve", places("equity"))
+        at = max(upper["i0"], lower["i0"])
+        series.append({
+            "kind": "band", "panel": "equity", "name": "drawdown",
+            "i0": at,
+            "v": upper["v"][at - upper["i0"]:],
+            "v2": lower["v"][at - lower["i0"]:],
+            # translucent rather than a theme key, for the same reason the default
+            # band fill is one: a band's colours are baked into the document and a
+            # theme toggle repaints series rather than primitives. Denser at the
+            # curve, where the fall is measured to, fading toward the peak it fell
+            # from
+            "fill": ["rgba(255,84,112,0.22)", "rgba(255,84,112,0.03)"],
+        })
+
     mode = theme if theme is not None else _DEFAULTS["theme"]
     if mode not in _PALETTES:
         raise ValueError(f"theme must be 'dark' or 'light', got {mode!r}")
@@ -1303,8 +1377,10 @@ def chart(
         )
     if equity is not None and "equity" not in hidden:
         spec["equity"] = _track(equity, num_bars, "equity_curve", places("equity"))
-    if drawdown is not None and "drawdown" not in hidden:
-        spec["drawdown"] = _track(drawdown, num_bars, "drawdown", places("drawdown"))
+    # the track ships whether the fall has a pane or a band, because the legend
+    # reads the number off it either way; only drawdown=False drops it
+    if dd is not None and dd_mode is not False and "drawdown" not in hidden:
+        spec["drawdown"] = _track(dd, num_bars, "drawdown", places("drawdown"))
     if result is not None and result.stats:
         # a stat is legitimately infinite (profit_factor with no losing trade) or
         # NaN (sharpe over a flat curve), and JSON carries neither, so those

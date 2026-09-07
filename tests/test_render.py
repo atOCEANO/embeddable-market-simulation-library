@@ -453,7 +453,13 @@ def test_a_gap_is_drawn_as_whitespace_rather_than_bridged(tmp_path):
                 if (!ctx || !c.width || !c.height) return;
                 const d = ctx.getImageData(0, 0, c.width, c.height).data;
                 const hit = new Array(c.width).fill(0);
-                for (let y = 0; y < c.height; y++) {
+                // below the legend band, because the legend paints a swatch in
+                // the series' own colour and this scan cannot tell a swatch from
+                // the line. It went unnoticed while the legend was narrow enough
+                // to sit left of the hole; a wider type scale slid that swatch
+                // into the hole's own columns and split the empty run in two,
+                // failing a chart that draws the gap perfectly
+                for (let y = Math.floor(c.height * 0.25); y < c.height; y++) {
                   for (let x = 0; x < c.width; x++) {
                     const i = (y * c.width + x) * 4;
                     if (d[i] > 180 && d[i + 1] < 90 && d[i + 2] > 180) hit[x] += 1;

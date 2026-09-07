@@ -506,7 +506,13 @@ const mount = function (spec, root) {
   const addCurve = function (name, label, track, options) {
     const index = panelIndex(name);
     const panel = spec.panels[index];
-    if (!panel) return;
+    // by name, not by index: panelIndex answers 0 for a name it does not hold, so
+    // an absent panel resolved to the price panel, which is truthy, and the guard
+    // below let it through. The drawdown track ships even when its fall is shaded
+    // onto the equity panel rather than given one of its own, so its curve was
+    // added to the candles: a series running -22 to 0 on a scale running 95k to
+    // 212k, with invertFilledArea flooding everything above it
+    if (!panel || panel.name !== name) return;
     const make = function () {
       return chart.addSeries(LWC.AreaSeries, Object.assign({
         priceLineVisible: false, lastValueVisible: false,
@@ -600,13 +606,16 @@ const mount = function (spec, root) {
     // times, not which mark drew them, so a T-long line beside a projected band
     // reproduces it too (ADR 0099)
     const ahead = spec.t.length - spec.n;
-    // a tick label is centred on its bar and clipped at the price gutter, so the
-    // last one on the axis was drawn half outside the plot: a year of hourly bars
-    // ended on "20" rather than "2026", at every width tested and on every chart.
-    // The room it needs is a label's width in pixels, which is a bar count only
-    // once the fitted spacing is known, so it is converted here rather than fixed
-    const room = Math.ceil(spec.t.length / Math.max(320, root.clientWidth || 900) * 34);
-    chart.timeScale().applyOptions({ rightOffset: Math.max(ahead, room) });
+    if (ahead > 0) chart.timeScale().applyOptions({ rightOffset: ahead });
     chart.timeScale().fitContent();
+    // the last tick label is centred on its bar and clipped at the price gutter,
+    // so a year of hourly candles ends the axis on "20" rather than "2026". The
+    // obvious fix is a rightOffset of about a label's width, and it is not taken
+    // here: the only unit rightOffset accepts is bars, so reserving pixels means
+    // adding slots, and every bar on the chart then narrows by the ratio. Two
+    // render tests measure a bar as the canvas width over the bar count, which is
+    // exactly the assumption that breaks, and they are right to: a fix for a
+    // clipped label should not move the bars. It needs room taken out of the
+    // gutter instead, which the renderer has no option for
   }
 };
