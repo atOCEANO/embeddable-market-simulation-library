@@ -53,7 +53,9 @@ _PLACEHOLDER = re.compile(r"__[A-Z_]+__")
 # not in here: that one is escaped on both paths it travels
 _UNSAFE = re.compile(r"[<>\";{}]")
 
-_WEIGHTS = {"price": 5.0, "volume": 1.0, "equity": 2.0, "drawdown": 1.2}
+# drawdown was 1.2, which on the flagship layout left it about a seventh of the
+# height: enough for a curve, not enough for an axis, and it resolved to two ticks
+_WEIGHTS = {"price": 5.0, "volume": 1.0, "equity": 2.0, "drawdown": 1.5}
 _AUTO = ("price", "volume", "equity", "drawdown")
 
 # a notebook stores a cell's output verbatim, so a chart's data is paid for once
@@ -61,13 +63,25 @@ _AUTO = ("price", "volume", "equity", "drawdown")
 # the bar count, because the width of a row depends on how many series are on it
 _BIG_BYTES = 8_000_000
 
+# ``down`` is a filled candle body against ``surface`` and ``up`` is a hollow one,
+# so the two are told apart by form and the colour only has to be seen at all. It
+# was not: dark sat at 1.94:1 against its own panel while up sat at 13.18:1, and on
+# a series that falls, which is most of the ones worth looking at, the majority of
+# the bars were the invisible half. Light repeated it inverted at 2.59:1.
+#
+# s1 through s4 are the series palette, handed out in order to lines that named no
+# colour. Only s1 and s4 existed, so every unstyled line took s1 and the library's
+# own flagship chart drew EMA 20 and EMA 60 in one blue under two identical legend
+# swatches. Green and red are spent on win and loss and cannot be reused here, so
+# the four are blue, amber, violet and grey, which is also the order they read
+# apart in: no adjacent pair shares a hue family, and each clears 5:1 on its ground.
 _PALETTES = {
     "dark": {
         "surface": "#070d13", "plane": "#05090e", "grid": "#131c26",
         "axis": "#1f2a36", "ink": "#e9ebee", "ink2": "#aab1bb",
         "muted": "#717a85", "hairline": "rgba(255,255,255,0.16)",
-        "up": "#cdd5df", "down": "#39434f", "win": "#2fe0a8", "loss": "#ff5470",
-        "s1": "#4d9fff", "s4": "#8b97a5",
+        "up": "#cdd5df", "down": "#7d8a99", "win": "#2fe0a8", "loss": "#ff5470",
+        "s1": "#4d9fff", "s2": "#f2a33c", "s3": "#d8b4ff", "s4": "#8b97a5",
         "selected": ["rgba(47,224,168,0.24)", "rgba(47,224,168,0.10)",
                      "rgba(47,224,168,0.02)"],
     },
@@ -75,8 +89,8 @@ _PALETTES = {
         "surface": "#ffffff", "plane": "#eef1f5", "grid": "#e3e8ee",
         "axis": "#c8d0d9", "ink": "#070d13", "ink2": "#48525e",
         "muted": "#78828e", "hairline": "rgba(7,13,19,0.14)",
-        "up": "#2b3441", "down": "#97a2af", "win": "#00996b", "loss": "#e0243f",
-        "s1": "#1a73e8", "s4": "#6b7684",
+        "up": "#2b3441", "down": "#66717f", "win": "#00996b", "loss": "#e0243f",
+        "s1": "#1a73e8", "s2": "#a15600", "s3": "#7a3fc4", "s4": "#6b7684",
         "selected": ["rgba(0,153,107,0.20)", "rgba(0,153,107,0.09)",
                      "rgba(0,153,107,0.02)"],
     },

@@ -23,6 +23,33 @@ const placePaneCtls = function () {
   const bw = Math.max(14, Math.min(21 * UI, (gutter - 8) / 3));
   const h = CTL_H * UI;
 
+  // the legend is painted into the top of its own pane, so the room it needs is a
+  // count of pixels while the margin reserving that room is a fraction of the
+  // pane. One fraction for all of them meant the price pane held back far more
+  // than its label used, and the drawdown pane, at a fifth of the height, held
+  // back less than a single line: its own curve was drawn through its own name
+  // a narrow pane wraps its legend onto a second line and the room has to follow
+  // it. This is a threshold rather than a measurement, because the wrap happens
+  // in a canvas this file cannot measure into; it is set where the OHLC row stops
+  // fitting on one line
+  const lines = el.clientWidth < 620 ? 2 : 1;
+  const legendRoom = Math.round(11 * UI) + lines * Math.round(12.5 * UI * 1.5);
+  panes.forEach(function (p, i) {
+    const scale = p.priceScale("right");
+    if (!scale || !hs[i]) return;
+    scale.applyOptions({
+      // the floor is not the legend's height. The renderer labels round prices
+      // across the whole pane rather than across the data, so the topmost one
+      // lands wherever the scale puts it and is clipped by the pane edge if the
+      // margin is only as deep as the text below it: at 0.08 the price axis
+      // opened on a half-drawn 140000
+      scaleMargins: {
+        top: Math.min(0.34, Math.max(0.15, legendRoom / hs[i])),
+        bottom: 0.08,
+      },
+    });
+  });
+
   paneBands = [];
   let y = 0;
   paneCtls.querySelectorAll(".panectl").forEach(function (g, i) {

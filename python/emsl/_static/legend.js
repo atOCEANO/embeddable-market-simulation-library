@@ -49,7 +49,7 @@ const legendRows = function (index) {
   SERIES.forEach(function (entry) {
     const spec = entry.spec;
     if (spec.panel !== panel.name) return;
-    const swatch = isRamp(spec.color) ? colorAt(spec.color, i) : (spec.color || T().s1);
+    const swatch = isRamp(spec.color) ? colorAt(spec.color, i) : slotColor(spec);
     rows.push({
       swatch: swatch || T().muted,
       label: spec.name || "",
@@ -84,14 +84,21 @@ const legendPrimitive = function (index) {
             draw: function (target) {
               target.useMediaCoordinateSpace(function (scope) {
                 const ctx = scope.context, t = T();
-                // a pane too short to hold a label without covering its own data
-                // shows none; the value is still on the crosshair axis label
-                if (scope.mediaSize.height < 26 * UI) return;
 
                 const fs = Math.round(12.5 * UI);
                 const pad = Math.round(11 * UI), gap = Math.round(6 * UI);
                 const swS = Math.round(fs * 0.6), swGap = Math.round(5 * UI);
                 const sepW = Math.round(15 * UI), lineH = Math.round(fs * 1.5);
+
+                // a pane too short to hold a label without covering its own data
+                // shows none; the value is still on the crosshair axis label.
+                // The threshold was a flat 26 UI units, which is smaller than the
+                // label it was deciding about: at 400px the equity and drawdown
+                // panes cleared it by twice over and still had their own curves
+                // drawn through their own names, because the room a pane can
+                // reserve is capped. Measured against the label instead, a pane
+                // keeps its legend only where the legend costs it under half
+                if (scope.mediaSize.height < (pad + lineH) * 2.2) return;
                 const maxX = scope.mediaSize.width - Math.round(6 * UI);
                 // canvas text does not wrap, so it is done by hand: an entry that
                 // does not fit moves to a second line, and if the pane is too

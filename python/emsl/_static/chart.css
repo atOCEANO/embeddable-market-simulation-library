@@ -24,25 +24,33 @@ body {
   margin: 0; padding: 10px;
   display: flex; flex-direction: column;
   background: var(--plane); color: var(--ink);
+  overflow-x: hidden;
   font: calc(13px * var(--ui))/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 
 /* what the chart is, and the handful of numbers that decide whether to keep it.
    A file arrives in an inbox with only its filename, so a chart that cannot say
    which strategy over which period is an untitled squiggle. */
+/* a flex item will not shrink below its own content unless it is told it may, and
+   both of these carry one long run: a sentence, and a stats row that must not
+   break between a label and its number. At 400px the pair held the body wider
+   than the window and carried the frame's right edge, price axis and all, off the
+   screen, so the chart lost its y scale entirely at the narrowest size the gate
+   says is supported. min-width lets them wrap instead of pushing */
 .head {
-  flex: 0 0 auto;
+  flex: 0 0 auto; min-width: 0;
   display: flex; align-items: baseline; flex-wrap: wrap;
   gap: calc(3px * var(--ui)) calc(14px * var(--ui));
   padding: 0 calc(2px * var(--ui)) calc(8px * var(--ui));
 }
 .head[hidden] { display: none; }
 #title {
+  min-width: 0;
   font: 600 calc(13px * var(--ui))/1.3 system-ui, -apple-system, "Segoe UI", sans-serif;
   color: var(--ink);
 }
 #stats {
-  display: flex; flex-wrap: wrap;
+  display: flex; flex-wrap: wrap; min-width: 0;
   gap: calc(4px * var(--ui)) calc(13px * var(--ui));
   margin-left: auto;
 }
@@ -56,7 +64,7 @@ body {
 }
 
 #frame {
-  flex: 1 1 auto; min-height: 260px;
+  flex: 1 1 auto; min-height: 260px; min-width: 0;
   display: flex; flex-direction: column;
   background: var(--surface);
   border: 1px solid var(--hairline);

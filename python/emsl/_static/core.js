@@ -39,11 +39,31 @@ const invalidate = function () {
 // one sub-linear scale factor for everything: a chart three times wider does not
 // want three times bigger type. Both dimensions feed it and the tighter one wins,
 // since a notebook cell is wide and short and several panes stacked into 400px
-// leave the labels eating the plot
+// leave the labels eating the plot.
+//
+// Sub-linear is right and the old curve was not sub-linear, it was nearly flat:
+// gaining 1.0 of scale took 4600px of width, so a chart could grow eight times in
+// area while its labels grew a quarter, and the legend ended up 2.6 times smaller
+// against the chart at 2560 than at 760. The floor is 1.0 because nothing should
+// ever render below the size it was authored at, least of all in the cramped cell
+// where legibility is already worst.
 const scaleFor = function (w, h) {
-  const byW = 0.82 + w / 4600;
-  const byH = 0.76 + h / 2300;
-  return Math.max(0.82, Math.min(1.30, Math.min(byW, byH)));
+  const byW = 0.92 + w / 3400;
+  const byH = 0.88 + h / 1700;
+  return Math.max(1.0, Math.min(1.5, Math.min(byW, byH)));
+};
+
+// an unstyled line takes the next slot in the theme's series palette. Every one
+// of them used to fall through to s1, so the flagship chart drew EMA 20 and EMA
+// 60 in one blue with two identical legend swatches, and a third line would have
+// been the same blue again. The slot is stored rather than the colour it resolves
+// to, so a theme toggle re-reads it.
+const SERIES_SLOTS = 4;
+
+const slotColor = function (spec) {
+  if (spec.color) return spec.color;
+  if (spec.slot === undefined) return T().s1;
+  return T()["s" + (spec.slot + 1)] || T().s1;
 };
 
 const fmt = function (v, d) {
@@ -151,7 +171,7 @@ const addLine = function (spec, panel, index) {
   if (spec.fill) {
     const stops = spec.fill;
     return chart.addSeries(LWC.AreaSeries, Object.assign({
-      lineColor: spec.color || T().s1,
+      lineColor: slotColor(spec),
       bottomColor: stops[0],
       topColor: stops[stops.length - 1],
     }, shared), index);
@@ -164,7 +184,7 @@ const addLine = function (spec, panel, index) {
   // asset grep cannot see, since the literal lives in the vendored bundle rather
   // than in ours (ADR 0076)
   return chart.addSeries(LWC.LineSeries, Object.assign({
-    color: isRamp(spec.color) ? T().muted : (spec.color || T().s1),
+    color: isRamp(spec.color) ? T().muted : slotColor(spec),
   }, shared), index);
 };
 
@@ -419,7 +439,16 @@ const mount = function (spec, root) {
     // their own pane and drew straight through their own label. Reserving the
     // room is what actually keeps it readable
     rightPriceScale: { borderColor: t.axis, scaleMargins: { top: 0.2, bottom: 0.08 } },
-    timeScale: { borderColor: t.axis, timeVisible: true, secondsVisible: false },
+    // the renderer will not draw a bar narrower than half a pixel, and it does not
+    // say so: fitContent on a year of hourly candles asks for 8760 bars, hits the
+    // floor at 4380px of width, and quietly frames the last 2256 instead. The chart
+    // then showed a different slice of history at every window size, and a walk
+    // forward whose whole subject is five fitted stretches opened on the last two.
+    // Refusing to fit is worse than a crowded bar, because the crowding is visible
+    timeScale: {
+      borderColor: t.axis, timeVisible: true, secondsVisible: false,
+      minBarSpacing: 0.04,
+    },
   });
 
   // panes come into being in panel order, because the anchor for panel k is the
@@ -436,6 +465,22 @@ const mount = function (spec, root) {
   });
 
   SERIES = [];
+
+  // slots are handed out per panel, in argument order, over the lines that named
+  // no colour. Per panel rather than per chart because two colours only have to
+  // tell each other apart inside the pane a reader is looking at, and counting
+  // across the whole chart makes a panel's only series depend on how many other
+  // panels came before it: the raw engine notebook draws its equity as an
+  // ordinary Line on a panel it names equity, and a chart-wide count handed that
+  // one curve the third colour while the same curve on the search notebook, where
+  // it arrives as the engine's own track, stayed the first
+  const taken = {};
+  spec.series.forEach(function (s) {
+    if (s.kind !== "line" || s.color) return;
+    const n = taken[s.panel] || 0;
+    s.slot = n % SERIES_SLOTS;
+    taken[s.panel] = n + 1;
+  });
 
   // the drawn series first, so a level can hang on one. A price line attached
   // to a series carrying only whitespace does not render, and the anchor is
@@ -555,7 +600,13 @@ const mount = function (spec, root) {
     // times, not which mark drew them, so a T-long line beside a projected band
     // reproduces it too (ADR 0099)
     const ahead = spec.t.length - spec.n;
-    if (ahead > 0) chart.timeScale().applyOptions({ rightOffset: ahead });
+    // a tick label is centred on its bar and clipped at the price gutter, so the
+    // last one on the axis was drawn half outside the plot: a year of hourly bars
+    // ended on "20" rather than "2026", at every width tested and on every chart.
+    // The room it needs is a label's width in pixels, which is a bar count only
+    // once the fitted spacing is known, so it is converted here rather than fixed
+    const room = Math.ceil(spec.t.length / Math.max(320, root.clientWidth || 900) * 34);
+    chart.timeScale().applyOptions({ rightOffset: Math.max(ahead, room) });
     chart.timeScale().fitContent();
   }
 };

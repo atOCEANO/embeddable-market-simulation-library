@@ -8,26 +8,52 @@
 let markerApi = null;
 let tradeByTime = null;
 
-// the most trades that can carry a caption before the captions carry nothing.
-// A year of hourly bars holds fifty-odd fills, and every one labelled with its
+// a year of hourly bars holds fifty-odd fills, and every one labelled with its
 // size and its pnl turns the price panel into a wall of overlapping grey text
 // that hides the candles it is annotating. The arrows always draw; the words
-// arrive when you have zoomed in far enough to read them
-const LABEL_AT_MOST = 12;
+// arrive when you have zoomed in far enough to read them.
+//
+// Far enough is a question about pixels. Counting the trades was the first answer
+// and a count cannot tell twelve fills spread over five months, which read fine,
+// from twelve inside one month, which are a pile: every collision this guard
+// exists to prevent was happening at or under the old ceiling of twelve. What
+// decides it is the gap between neighbouring labels. Entries and exits are
+// measured apart, because one caption sits below its bar and the other above, so
+// each only ever collides inside its own band.
+const CAPTION_GAP = 80;
+const CAPTION_CEILING = 60;
 
-const visibleTrades = function () {
-  const range = chart.timeScale().getVisibleLogicalRange();
-  if (!range) return SPEC.trades.length;
-  let seen = 0;
+const captionsFit = function () {
+  const ts = chart.timeScale();
+  const range = ts.getVisibleLogicalRange();
+  if (!range) return false;
+
+  const entries = [], exits = [];
   SPEC.trades.forEach(function (tr) {
-    if (tr.out >= range.from && tr.in <= range.to) seen += 1;
+    if (tr.in >= range.from && tr.in <= range.to) entries.push(tr.in);
+    if (tr.out >= range.from && tr.out <= range.to) exits.push(tr.out);
   });
-  return seen;
+  // no amount of spacing rescues this many, and the coordinate lookups below are
+  // a call into the renderer apiece
+  if (entries.length + exits.length > CAPTION_CEILING) return false;
+
+  const gap = CAPTION_GAP * UI;
+  const crowded = function (bars) {
+    let last = null;
+    for (let k = 0; k < bars.length; k++) {
+      const x = ts.logicalToCoordinate(bars[k]);
+      if (x === null) continue;
+      if (last !== null && x - last < gap) return true;
+      last = x;
+    }
+    return false;
+  };
+  return !crowded(entries) && !crowded(exits);
 };
 
 const tradeMarkers = function () {
   const t = T();
-  const words = visibleTrades() <= LABEL_AT_MOST;
+  const words = captionsFit();
   const out = [];
   SPEC.trades.forEach(function (tr) {
     out.push({
@@ -103,7 +129,7 @@ const mountTrades = function () {
   // actually changed, or every pan repaints every marker
   let labelled = null;
   chart.timeScale().subscribeVisibleLogicalRangeChange(function () {
-    const now = visibleTrades() <= LABEL_AT_MOST;
+    const now = captionsFit();
     if (now !== labelled) {
       labelled = now;
       repaintTrades();
