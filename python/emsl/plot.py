@@ -468,12 +468,16 @@ class Background(_Mark):
     as you like. ``fill`` takes a colour, a ``(bottom, top)`` pair, or a
     ``{label: colour}`` map in which an absent label shades nothing, which is how
     a three-state background stays readable.
+
+    ``name`` puts the shading in the legend, where it reports the region the
+    crosshair is over. Without one it draws and says nothing, which is right for a
+    shading that is scene rather than subject (ADR 0110).
     """
 
     kind = "background"
 
-    def __init__(self, values, *, panel=None, fill=None):
-        super().__init__(None, panel)
+    def __init__(self, values, name=None, *, panel=None, fill=None):
+        super().__init__(name, panel)
         if type(values).__module__.split(".")[0] == "pandas":
             values = values.to_numpy()
         arr = np.asarray(values, dtype=object)

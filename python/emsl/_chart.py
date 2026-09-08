@@ -98,6 +98,33 @@ _PALETTES = {
 
 _DEFAULTS = {"theme": "dark", "height": 660, "palette": None, "drawdown": "under"}
 
+# "auto" is not a third palette, it is a deferral: both of them ship in every
+# document already, so the only thing missing was asking the machine the file is
+# opened on which one it wants. The answer is read in the browser, because Python
+# is not there when a saved chart is double clicked a month later (ADR 0109)
+_THEMES = ("dark", "light", "auto")
+
+
+def _theme_mode(value):
+    if value not in _THEMES:
+        raise ValueError(
+            f"theme must be 'dark', 'light' or 'auto', got {value!r}; 'auto' "
+            f"opens on whichever the reader's system asks for"
+        )
+    return value
+
+
+def _palette(palette):
+    # one validator for chart(palette=) and chart_defaults(palette=), because the
+    # two are the same setting and one refusing what the other accepts is a
+    # difference no caller can see
+    merged = {}
+    for mode, values in palette.items():
+        if mode not in _PALETTES:
+            raise ValueError(f"palette keys must be 'dark' or 'light', got {mode!r}")
+        merged[mode] = {k: _safe_value(v, "palette") for k, v in values.items()}
+    return merged
+
 # How a run's drawdown is drawn. It is a fall from the running peak either way, so
 # the choice is where to put it rather than what it says. "under" shades between
 # the equity curve and its own peak on the equity panel: one axis, one pane, and
@@ -396,6 +423,10 @@ def _spans(values, fill, num_bars, label, ahead=0):
     if isinstance(fill, dict):
         table = {}
         fills = []
+        # the names, in the order the fills are in, so a named background can say
+        # which region the crosshair is over. A mask has no names to send, and
+        # sends none rather than a list of nulls (ADR 0110)
+        keys = []
         for key, stops in fill.items():
             # a label mapped to nothing shades nothing, which is what an absent
             # key already means. It must not reach fills: the renderer builds its
@@ -404,6 +435,7 @@ def _spans(values, fill, num_bars, label, ahead=0):
                 continue
             table[key] = len(fills)
             fills.append(stops)
+            keys.append(str(key))
 
         def at(value):
             try:
@@ -412,6 +444,7 @@ def _spans(values, fill, num_bars, label, ahead=0):
                 return None
     else:
         fills = [fill if fill else ["rgba(139,151,165,0.14)"]]
+        keys = None
 
         def at(value):
             return 0 if _truthy(value) else None
@@ -426,7 +459,7 @@ def _spans(values, fill, num_bars, label, ahead=0):
                 spans.append([start + open_at, start + offset, key])
             key = here
             open_at = offset if here is not None else -1
-    return spans, fills
+    return spans, fills, keys
 
 
 def _extent(values):
@@ -577,6 +610,11 @@ def chart_defaults(theme=None, height=None, palette=None, drawdown=None):
     itself to the window instead, so one file is right on any screen. There is no
     width anywhere: a chart fills whatever contains it.
 
+    ``theme`` and ``palette`` are both here and on ``chart``, and mean the same
+    thing in either place. ``theme="auto"`` opens each chart on whichever of the
+    two palettes the reader's system asks for, which is worth setting once for a
+    notebook that will be read by someone else on a machine you have never seen.
+
     ``drawdown`` is ``"under"``, ``"panel"`` or ``False``, and it is here as well
     as on ``chart`` so a session that wants the separate pane back gets it in one
     line rather than at every call site.
@@ -584,22 +622,13 @@ def chart_defaults(theme=None, height=None, palette=None, drawdown=None):
     previous = dict(_DEFAULTS)
     pending = {}
     if theme is not None:
-        if theme not in _PALETTES:
-            raise ValueError(f"theme must be 'dark' or 'light', got {theme!r}")
-        pending["theme"] = theme
+        pending["theme"] = _theme_mode(theme)
     if height is not None:
         pending["height"] = _height(height)
     if drawdown is not None:
         pending["drawdown"] = _drawdown_mode(drawdown)
     if palette is not None:
-        merged = {}
-        for mode, values in palette.items():
-            if mode not in _PALETTES:
-                raise ValueError(
-                    f"palette keys must be 'dark' or 'light', got {mode!r}"
-                )
-            merged[mode] = {k: _safe_value(v, "palette") for k, v in values.items()}
-        pending["palette"] = merged
+        pending["palette"] = _palette(palette)
     # applied only once every argument has passed. A call that raised halfway
     # through used to leave the theme set and the height not, and the caller never
     # got the previous values back to restore from
@@ -965,8 +994,8 @@ class Chart:
 
 def chart(
     frame=None, *args, marks=None, run=None, panels=None, focus=None,
-    candle_color=None, theme=None, height=None, title=None, future=0, stats=None,
-    trades=True, drawdown=None,
+    candle_color=None, theme=None, palette=None, height=None, title=None, future=0,
+    stats=None, trades=True, drawdown=None,
 ):
     """Draw ``frame`` as candles, with your arrays and a run on top of it.
 
@@ -987,6 +1016,15 @@ def chart(
     file into a document rather than a picture: the title on the left and a few
     numbers on the right. ``stats`` names the keys, defaulting to the four that
     decide whether a strategy is worth keeping, and ``stats=[]`` shows none.
+
+    ``theme`` is ``"dark"``, ``"light"`` or ``"auto"``, and ``palette`` overrides
+    colours inside whichever of the two is showing, as ``{"dark": {"s1": ...}}``.
+    Both palettes ship in every document, so ``theme`` names the one a chart opens
+    on rather than the only one it holds, and the footer button switches between
+    them in a saved file with nothing running behind it. ``"auto"`` opens on
+    whichever the reader's system asks for, which is the setting the author of the
+    chart cannot know. A ``palette`` given here replaces the one
+    ``chart_defaults`` holds rather than merging with it.
 
     ``drawdown`` says where the fall from the running peak is drawn. ``"under"``,
     the default, shades between the equity curve and its own peak on the equity
@@ -1292,9 +1330,15 @@ def chart(
             if mark.color:
                 entry["color"] = mark.color
         elif mark.kind == "background":
-            spans, fills = _spans(mark.values, mark.fill, num_bars, label, future)
+            spans, fills, keys = _spans(
+                mark.values, mark.fill, num_bars, label, future
+            )
             entry["spans"] = spans
             entry["fills"] = fills
+            # the names ride along only for a background that asked to be read.
+            # An unnamed one draws exactly as it did and costs the same bytes
+            if keys is not None and mark.name is not None:
+                entry["keys"] = keys
         entry = {k: v for k, v in entry.items() if v is not None}
         series.append(entry)
 
@@ -1326,14 +1370,18 @@ def chart(
             "fill": ["rgba(255,84,112,0.22)", "rgba(255,84,112,0.03)"],
         })
 
-    mode = theme if theme is not None else _DEFAULTS["theme"]
-    if mode not in _PALETTES:
-        raise ValueError(f"theme must be 'dark' or 'light', got {mode!r}")
+    mode = _theme_mode(theme) if theme is not None else _DEFAULTS["theme"]
+    # the call's palette replaces the session's rather than merging into it, the
+    # same way its theme does, so one call site reads as one appearance instead of
+    # as the difference between two (ADR 0109)
+    tint = _palette(palette) if palette is not None else _DEFAULTS["palette"]
 
     spec = {
         # 2 adds stats.funding_paid, which arrives because the spec mirrors the
-        # whole stats dict and the engine now reports the funding a perp run paid
-        "schema": 3,
+        # whole stats dict and the engine now reports the funding a perp run paid.
+        # 4 adds series.keys on a named background, the region names its legend
+        # row reads back (ADR 0110)
+        "schema": 4,
         "n": num_bars,
         # both built by numpy rather than by a comprehension. The candles are the
         # largest thing in the document by far, and rounding each of the four
@@ -1358,7 +1406,7 @@ def chart(
         # an empty list is what the renderer already reads as nothing to draw, so
         # trades=False costs no branch there and no bytes here
         "trades": _trades(result, num_bars) if trades else [],
-        "theme": _theme(mode, _DEFAULTS["palette"]),
+        "theme": _theme(mode, tint),
         "height": _height(height) if height is not None else _DEFAULTS["height"],
     }
     if title is not None:

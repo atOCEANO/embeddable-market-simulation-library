@@ -24,6 +24,30 @@ const legendValue = function (v, digits) {
   return (v === null || v === undefined || Number.isNaN(v)) ? undefined : fmt(v, digits);
 };
 
+// a background is the only mark that says what a stretch of bars IS, and it had
+// no way of saying which stretch: three shaded regimes and no key, so the reader
+// got calm, normal and wild as three washes and a guess. Only a named one draws a
+// row, because shading used as scene should not be made to explain itself.
+//
+// The swatch takes the bottom stop, which is the strongest, since a fill runs
+// bottom to top. Outlined, because a wash at a seventh of full alpha is a smudge
+// against the plane rather than a colour (ADR 0110)
+const backgroundRow = function (spec, i) {
+  for (let k = 0; k < spec.spans.length; k++) {
+    const span = spec.spans[k];
+    if (i >= span[0] && i < span[1]) {
+      const stops = spec.fills[span[2]];
+      return {
+        swatch: stops[0], outline: true, label: spec.name,
+        value: spec.keys ? spec.keys[span[2]] : undefined,
+      };
+    }
+  }
+  // outside every region, and saying so by having nothing to show rather than by
+  // naming the absence
+  return { label: spec.name };
+};
+
 const legendRows = function (index) {
   const panel = SPEC.panels[index];
   const i = cursor;
@@ -55,6 +79,13 @@ const legendRows = function (index) {
       label: "Volume", value: legendValue(legendValueAt(SPEC.vol, i), panel.digits),
     });
   }
+
+  // before the drawn series, because a regime is the ground everything else on
+  // the panel is standing on
+  SPEC.series.forEach(function (s) {
+    if (s.kind !== "background" || s.panel !== panel.name || !s.name) return;
+    rows.push(backgroundRow(s, i));
+  });
 
   SERIES.forEach(function (entry) {
     const spec = entry.spec;
@@ -152,6 +183,14 @@ const legendPrimitive = function (index) {
                     } else {
                       ctx.fillStyle = r.swatch;
                       ctx.fillRect(x, y - swS, swS, swS);
+                      // a background's fill is a wash, so its square needs an
+                      // edge to be findable without the edge lying about what is
+                      // inside it
+                      if (r.outline) {
+                        ctx.strokeStyle = t.muted;
+                        ctx.lineWidth = 1;
+                        ctx.strokeRect(x + 0.5, y - swS + 0.5, swS - 1, swS - 1);
+                      }
                     }
                     x += swS + swGap;
                   }

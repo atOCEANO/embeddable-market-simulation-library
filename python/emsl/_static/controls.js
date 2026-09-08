@@ -173,9 +173,9 @@ const mountControls = function () {
       p.hidden = !p.hidden;
       btn.setAttribute("aria-pressed", String(!p.hidden));
     } else if (btn.id === "theme") {
-      const next = MODE === "dark" ? "light" : "dark";
-      document.getElementById("theme").textContent = next === "dark" ? "LIGHT" : "DARK";
-      applyTheme(next);
+      // the label follows the mode inside applyTheme, because mount changes it
+      // too and setting it here left a chart opened light saying LIGHT
+      applyTheme(MODE === "dark" ? "light" : "dark");
     }
   });
 

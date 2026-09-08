@@ -31,6 +31,7 @@
   "series[].fill[]",
   "series[].fills[][]",
   "series[].i0",
+  "series[].keys[]",
   "series[].kind",
   "series[].level",
   "series[].name",

@@ -319,6 +319,73 @@ def test_a_gap_in_a_series_leaves_the_legend_quiet_rather_than_reporting_a_fault
     assert "n/a" not in drawn, "the legend reported a gap as a missing value"
 
 
+def test_auto_opens_on_the_scheme_the_reader_asked_for(tmp_path):
+    # one saved file, opened twice by readers whose machines disagree. The palette
+    # for both has always been in the document; nothing was asking (ADR 0109).
+    #
+    # The button is checked in the same breath because it names the mode it will
+    # switch TO, and it was named once in the markup and then only on a click, so
+    # a chart that opened light announced LIGHT and went on announcing it
+    path = emsl.chart(frame(), theme="auto").save(str(tmp_path / "auto.html"))
+    seen = {}
+    with playwright.sync_playwright() as driver:
+        browser = driver.chromium.launch(args=["--no-sandbox"])
+        for scheme in ("dark", "light"):
+            page = browser.new_page(
+                viewport={"width": 900, "height": 600}, color_scheme=scheme
+            )
+            page.goto(pathlib.Path(path).as_uri())
+            page.wait_for_selector("#chart canvas", timeout=20_000)
+            page.wait_for_timeout(400)
+            seen[scheme] = (
+                page.evaluate("document.documentElement.getAttribute('data-theme')"),
+                page.locator("#theme").text_content(),
+            )
+            page.close()
+        browser.close()
+
+    assert seen["dark"] == ("dark", "LIGHT")
+    assert seen["light"] == ("light", "DARK")
+
+
+def test_a_named_background_names_the_region_under_the_crosshair(tmp_path):
+    # a three-regime shading was three washes and a guess, and the workaround in
+    # the wild was stacked Level calls, which draws a horizontal line to label a
+    # vertical region (ADR 0110)
+    candles = frame()
+    labels = np.where(np.arange(len(candles)) % 20 < 10, "calm", "wild")
+    built = emsl.chart(
+        candles,
+        Background(labels, "regime",
+                   fill={"calm": "#2fe0a822", "wild": "#ff547022"}),
+    )
+    path = built.save(str(tmp_path / "regime.html"))
+    with playwright.sync_playwright() as driver:
+        browser = driver.chromium.launch(args=["--no-sandbox"])
+        page = browser.new_page(viewport={"width": 1280, "height": 700})
+        page.add_init_script(
+            """
+            window.__text = [];
+            const real = CanvasRenderingContext2D.prototype.fillText;
+            CanvasRenderingContext2D.prototype.fillText = function (s, x, y) {
+              window.__text.push(String(s));
+              return real.apply(this, arguments);
+            };
+            """
+        )
+        page.goto(pathlib.Path(path).as_uri())
+        page.wait_for_selector("#chart canvas", timeout=20_000)
+        page.wait_for_timeout(600)
+        drawn = page.evaluate("window.__text")
+        browser.close()
+
+    # the cursor sits on the last bar until something moves it, and bar 59 is 19
+    # into its window of twenty, which is the second region
+    assert "regime" in drawn, f"the row is not there at all; drew {drawn[:20]}"
+    assert "wild" in drawn
+    assert "calm" not in drawn
+
+
 def test_the_log_button_toggles_its_panel_and_says_so(tmp_path):
     # the controls are invisible until the pointer is inside their pane's band, so
     # a plain click fails the actionability check: the hover is part of the feature

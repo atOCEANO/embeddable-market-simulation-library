@@ -102,6 +102,10 @@ def everything():
                    color="#ff5470"),
             Markers(mask=held, shape="arrow_down", offset=-16, value=fast),
             Background(held, fill="#11223344"),
+            # named and labelled, which is the only shape that ships `keys`: the
+            # mask above covers the unnamed one, and "out" maps to nothing so the
+            # absent-label path is in here too (ADR 0110)
+            Background(np.where(held, "in", "out"), "regime", fill={"in": "#2fe0a822"}),
         ],
         result,
         candle_color=np.where(held, "#4d9fff", None),
@@ -713,6 +717,37 @@ def test_a_background_label_with_no_fill_shades_nothing():
     assert entry["spans"] == [[1, 2, 0], [3, 4, 0]]
 
 
+def test_a_named_background_ships_the_names_of_the_regions_it_shaded():
+    labels = np.array(["calm", "wild", "calm", "wild",
+                       "calm", "calm", "calm", "calm"], dtype=object)
+    spec = emsl.chart(frame(8),
+                      Background(labels, "regime", fill={"wild": "#ff0000"})).spec()
+    entry = [s for s in spec["series"] if s["kind"] == "background"][0]
+    assert entry["name"] == "regime"
+    # in fill order and only the ones that shade, because the index in a span
+    # points into `fills` and the two lists have to stay parallel (ADR 0110)
+    assert entry["keys"] == ["wild"]
+
+
+def test_an_unnamed_background_spends_no_bytes_saying_so():
+    labels = np.array(["calm", "wild"] * 4, dtype=object)
+    spec = emsl.chart(frame(8), Background(labels, fill={"wild": "#ff0000"})).spec()
+    entry = [s for s in spec["series"] if s["kind"] == "background"][0]
+    assert "keys" not in entry
+    assert "name" not in entry
+
+
+def test_a_named_mask_background_sends_no_names_because_it_has_none():
+    # a mask says where, never what, so its legend row is the swatch and the name
+    # the caller gave the whole shading
+    mask = np.array([False, True, True, False, False, False, False, False])
+    spec = emsl.chart(frame(8),
+                      Background(mask, "in a trade", fill="#112233")).spec()
+    entry = [s for s in spec["series"] if s["kind"] == "background"][0]
+    assert entry["name"] == "in a trade"
+    assert "keys" not in entry
+
+
 def test_a_nan_in_a_background_mask_shades_nothing():
     # numpy.array([nan]).astype(bool) is True, so a mask padded with NaN would
     # otherwise report the condition it was looking for on its last bar
@@ -883,6 +918,55 @@ def test_both_palettes_travel_so_the_theme_toggle_works_offline():
     theme = emsl.chart(frame(8)).spec()["theme"]
     assert set(theme["dark"]) == set(theme["light"])
     assert theme["mode"] == "dark"
+
+
+def test_auto_reaches_the_document_undecided():
+    # the choice is made in the browser, because the author of a chart is not its
+    # reader and Python is not there when a saved file is opened (ADR 0109)
+    theme = emsl.chart(frame(8), theme="auto").spec()["theme"]
+    assert theme["mode"] == "auto"
+    assert set(theme["dark"]) == set(theme["light"])
+
+
+def test_a_theme_outside_the_three_is_refused_by_both_entry_points():
+    for call in (lambda: emsl.chart(frame(8), theme="midnight"),
+                 lambda: emsl.chart_defaults(theme="midnight")):
+        with pytest.raises(ValueError):
+            call()
+
+
+def test_a_palette_on_the_call_tints_that_chart_and_leaves_the_next_one_alone():
+    tinted = emsl.chart(frame(8), palette={"dark": {"s1": "#abcdef"}}).spec()
+    plain = emsl.chart(frame(8)).spec()
+    assert tinted["theme"]["dark"]["s1"] == "#abcdef"
+    assert plain["theme"]["dark"]["s1"] != "#abcdef"
+    # an override merges into the base palette rather than replacing it, so
+    # branding one colour keeps the other thirteen
+    assert tinted["theme"]["dark"]["s2"] == plain["theme"]["dark"]["s2"]
+    assert tinted["theme"]["light"] == plain["theme"]["light"]
+
+
+def test_a_palette_on_the_call_replaces_the_session_one_rather_than_merging():
+    previous = emsl.chart_defaults()
+    try:
+        emsl.chart_defaults(palette={"dark": {"s1": "#111111", "s2": "#222222"}})
+        theme = emsl.chart(frame(8), palette={"dark": {"s1": "#333333"}}).spec()["theme"]
+        # s1 is the call's and s2 is the base rather than the session's, because
+        # one call site has to read as one appearance and not as the difference
+        # between two of them (ADR 0109)
+        assert theme["dark"]["s1"] == "#333333"
+        assert theme["dark"]["s2"] != "#222222"
+    finally:
+        emsl._chart._DEFAULTS["palette"] = previous["palette"]
+
+
+def test_a_palette_is_validated_the_same_way_on_the_call_as_on_the_session():
+    for call in (lambda: emsl.chart(frame(8), palette={"midnight": {"s1": "#fff"}}),
+                 lambda: emsl.chart_defaults(palette={"midnight": {"s1": "#fff"}})):
+        with pytest.raises(ValueError):
+            call()
+    with pytest.raises(ValueError):
+        emsl.chart(frame(8), palette={"dark": {"s1": "</style>"}})
 
 
 # ------------------------------------------------- packaging and the js bundle

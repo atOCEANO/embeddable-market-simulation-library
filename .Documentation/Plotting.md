@@ -586,7 +586,7 @@ from emsl.plot import (
 | `Level(value, name, ...)` | a horizontal line across the panel. |
 | `Marker(bar, ...)` | one annotation at one bar. |
 | `Markers(mask, ...)` | a glyph on every bar a condition holds, which is what `plotshape` does. |
-| `Background(values, ...)` | shading behind the bars, on a condition of your choosing. |
+| `Background(values, name, ...)` | shading behind the bars, on a condition of your choosing. A `name` puts the region under the crosshair in the legend. |
 | `ramp(values, *stops, domain=)` | numbers to colours, one per value. |
 | `Recorder(engine)` | collect values inside `Strategy.next` with their alignment declared. |
 | `at_bar(values)`, `at_next(values)` | the same two rules as plain functions, for a list you already have. |
@@ -620,9 +620,12 @@ emsl.chart(
 ```python
 Background(
     values=regime,
+    name="volatility",
     fill={"elevated": "#4d9fff29", "extreme": "#ff547033"},
 )
 ```
+
+Give it a `name` and it takes a legend row reading the region under the crosshair, so three shaded stretches stop being three washes and a guess. Leave the name out and it draws exactly as before and stays out of the legend, which is right for shading that is scene rather than subject. A mask has no region names to report, so its row is the swatch and the name you gave the whole shading.
 
 `Marker`'s **`offset` is a signed distance in pixels**, positive upward, so the glyph holds its distance from the bar at every zoom level instead of drifting as the scale changes. That is the one thing the engine's own trade arrows cannot express, which is why they are drawn by a different mechanism. Its `shape` is one of `"circle"`, `"square"`, `"arrow_up"` or `"arrow_down"`, and anything else raises. To anchor on the panel's own scale rather than in pixels, pass `value=`, which is a price only on a price panel; leave it out and the marker sits at the bar's own extreme.
 
@@ -788,7 +791,16 @@ Set the look once and forget it:
 emsl.chart_defaults(theme="dark", height=560)
 ```
 
-The theme is baked in at render time and both palettes travel, so a saved file keeps its look and still toggles light and dark offline. `palette` overrides individual colours in either mode.
+Both palettes travel in every document, so a saved file toggles light and dark offline and `theme` names the one it opens on rather than the only one it holds. `palette` overrides individual colours inside either.
+
+`theme` and `palette` are on `chart` as well, and mean the same thing there, so one report can be branded without a global that then applies to every chart drawn after it. A palette given on the call replaces the session's rather than merging with it, the same way its theme does.
+
+```python
+emsl.chart(frame=frame, run=result, theme="auto",
+           palette={"light": {"s1": "#00695c"}}).save("report.html")
+```
+
+`theme="auto"` opens on whichever the reader's system asks for, which is the one appearance setting the author of a chart cannot know: a chart drawn on a light machine otherwise opens light inside a dark JupyterLab, with the right palette already sitting in the file. It reads the operating system rather than the notebook, so it is a good proxy and not the truth.
 
 Nothing is painted over the plot. There is no watermark and no way to add one: a chart is somebody's evidence about their own strategy, and a mark across it serves the library rather than the reader.
 

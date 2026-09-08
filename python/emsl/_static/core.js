@@ -32,6 +32,19 @@ const T = function () {
   return THEME[MODE];
 };
 
+// "auto" is answered here and not in Python, and that is not a hole in ADR 0043:
+// the choice is between two palettes Python already shipped, on an input Python
+// was not in the room to see. A file is opened on a machine, months later, by
+// someone who never ran the notebook.
+//
+// It reads the operating system and not JupyterLab, which is the honest limit of
+// it: a light machine running a dark notebook still opens light (ADR 0109)
+const resolveMode = function (mode) {
+  if (mode !== "auto") return mode;
+  const ask = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)");
+  return ask && ask.matches ? "dark" : "light";
+};
+
 const invalidate = function () {
   redraws.forEach(function (f) { f(); });
 };
@@ -291,6 +304,12 @@ const applyTheme = function (mode) {
   const root = document.documentElement;
   root.setAttribute("data-theme", mode);
   root.style.setProperty("color-scheme", mode);
+  // the button names the mode it will switch TO, and it was named once in the
+  // markup and then only ever on a click, so it opened saying LIGHT on a chart
+  // that was already light and went on saying it. Everything that has to follow
+  // the mode follows it here, which is the only place that knows the mode moved
+  const button = document.getElementById("theme");
+  if (button) button.textContent = mode === "dark" ? "LIGHT" : "DARK";
   Object.keys(CSS_VARS).forEach(function (key) {
     if (t[key] !== undefined) root.style.setProperty(CSS_VARS[key], t[key]);
   });
@@ -416,7 +435,7 @@ const mountPrimitives = function () {
 const mount = function (spec, root) {
   SPEC = spec;
   THEME = spec.theme;
-  MODE = spec.theme.mode;
+  MODE = resolveMode(spec.theme.mode);
   cursor = spec.n - 1;
 
   const t = T();
