@@ -104,6 +104,19 @@ _DEFAULTS = {"theme": "dark", "height": 660, "palette": None, "drawdown": "under
 # is not there when a saved chart is double clicked a month later (ADR 0109)
 _THEMES = ("dark", "light", "auto")
 
+# A background with no fill of its own. Full height at one flat alpha, with a hard
+# edge either side, is the recipe for banding: a run of shaded stretches read as a
+# rendering artifact rather than as regions that mean something, which is what the
+# held-bar shading on the engine notebook looked like. Stops run bottom to top, so
+# this is ground under the candles rather than a tinted pane they sit inside,
+# which is what background.js has said in a comment since it was written while the
+# default went on not using it.
+#
+# The edges stay hard. A soft one would read better and would put the boundary
+# somewhere other than where it is, and a span covering exactly the bars it names
+# is the whole of ADR 0101. A fill the caller named is left flat (ADR 0112).
+_BACKGROUND_FILL = ["rgba(139,151,165,0.20)", "rgba(139,151,165,0.02)"]
+
 
 def _theme_mode(value):
     if value not in _THEMES:
@@ -443,7 +456,7 @@ def _spans(values, fill, num_bars, label, ahead=0):
             except TypeError:
                 return None
     else:
-        fills = [fill if fill else ["rgba(139,151,165,0.14)"]]
+        fills = [fill if fill else list(_BACKGROUND_FILL)]
         keys = None
 
         def at(value):

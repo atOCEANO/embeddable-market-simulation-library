@@ -7,6 +7,10 @@
 const CTL_H = 46;                      // backdrop height in UI units
 let paneBands = [];                    // vertical extent of each pane, for hover
 let paneState = [];
+// the band at the top of every pane the legend has reserved, in css pixels.
+// Published rather than local because callout.js places a caption from a price
+// and has no other way of knowing the room is spoken for
+let legendRoom = 0;
 
 const placePaneCtls = function () {
   const el = document.getElementById("chart");
@@ -33,7 +37,7 @@ const placePaneCtls = function () {
   // in a canvas this file cannot measure into; it is set where the OHLC row stops
   // fitting on one line
   const lines = el.clientWidth < 620 ? 2 : 1;
-  const legendRoom = Math.round(11 * UI) + lines * Math.round(12.5 * UI * 1.5);
+  legendRoom = Math.round(11 * UI) + lines * Math.round(12.5 * UI * 1.5);
   panes.forEach(function (p, i) {
     const scale = p.priceScale("right");
     if (!scale || !hs[i]) return;

@@ -23,7 +23,7 @@ pd = pytest.importorskip("pandas")
 playwright = pytest.importorskip("playwright.sync_api")
 
 import emsl
-from emsl.plot import Background, Band, Level, Line, Panel
+from emsl.plot import Background, Band, Level, Line, Marker, Panel
 
 
 # distinct colours per canvas: a canvas nothing drew on carries one, and a chart
@@ -384,6 +384,94 @@ def test_a_dense_chart_is_aggregated_without_moving_what_the_crosshair_reads(tmp
         assert abs(landed - at * n) < n * 0.02, (
             f"the pointer was {at:.0%} across and the legend said bar {landed} of {n}"
         )
+
+
+def test_the_candles_put_no_badge_on_the_price_axis(tmp_path):
+    # every other series in the file turned its last value badge off and the
+    # candles were the one that did not, which read as the omission it was. It
+    # takes the candle's own colour, so in the light theme it is a near black
+    # block covering an axis label rather than replacing one, and it says nothing
+    # new: at rest the cursor is the last bar, so the legend's own C is the same
+    # number, and while the pointer moves the crosshair labels the axis itself.
+    #
+    # Prices are scaled up because the two formats only differ above a thousand:
+    # the badge goes through the series price format and carries no separator,
+    # while the legend's C is a locale string and does
+    candles = frame() * 1000.0
+    built = emsl.chart(candles)
+    digits = built.spec()["panels"][0]["digits"]
+    last = float(candles["close"].to_numpy()[-1])
+    badge = f"{last:.{digits}f}"
+    legend = f"{last:,.{digits}f}"
+    assert badge != legend, "the fixture cannot tell the two formats apart"
+
+    path = built.save(str(tmp_path / "badge.html"))
+    with playwright.sync_playwright() as driver:
+        browser = driver.chromium.launch(args=["--no-sandbox"])
+        page = browser.new_page(viewport={"width": 1000, "height": 600})
+        page.add_init_script(
+            """
+            window.__text = [];
+            const real = CanvasRenderingContext2D.prototype.fillText;
+            CanvasRenderingContext2D.prototype.fillText = function (s, x, y) {
+              window.__text.push(String(s));
+              return real.apply(this, arguments);
+            };
+            """
+        )
+        page.goto(pathlib.Path(path).as_uri())
+        page.wait_for_selector("#chart canvas", timeout=20_000)
+        page.wait_for_timeout(600)
+        drawn = page.evaluate("window.__text")
+        browser.close()
+
+    assert legend in drawn, "the legend stopped reporting the close as well"
+    assert badge not in drawn, "the badge is still stamped on the axis"
+
+
+def test_a_caption_near_the_top_moves_rather_than_printing_through_the_legend(tmp_path):
+    # the legend owns the top of every pane and reserves it through the price
+    # scale's top margin. A caption is placed from a price and knew nothing about
+    # that reservation, so a Marker with a large offset anchored near the high
+    # printed its words straight across the OHLC row
+    candles = frame()
+    high = candles["high"].to_numpy()
+    peak = int(np.argmax(high))
+    built = emsl.chart(
+        candles,
+        Marker(peak, value=float(high[peak]), text="the high", shape="arrow_down",
+               offset=30),
+    )
+    path = built.save(str(tmp_path / "caption.html"))
+    with playwright.sync_playwright() as driver:
+        browser = driver.chromium.launch(args=["--no-sandbox"])
+        page = browser.new_page(viewport={"width": 1000, "height": 600})
+        page.add_init_script(
+            """
+            window.__at = [];
+            const real = CanvasRenderingContext2D.prototype.fillText;
+            CanvasRenderingContext2D.prototype.fillText = function (s, x, y) {
+              window.__at.push([String(s), y]);
+              return real.apply(this, arguments);
+            };
+            """
+        )
+        page.goto(pathlib.Path(path).as_uri())
+        page.wait_for_selector("#chart canvas", timeout=20_000)
+        page.wait_for_timeout(600)
+        at = page.evaluate("window.__at")
+        browser.close()
+
+    ys = {}
+    for text, y in at:
+        ys.setdefault(text, y)
+    assert "the high" in ys, f"the caption was not drawn; drew {list(ys)[:12]}"
+    # the panel's own name is the first thing the legend paints, so its baseline
+    # is where the band the legend owns is
+    assert "price" in ys
+    assert ys["the high"] > ys["price"], (
+        "the caption landed at or above the legend it is supposed to clear"
+    )
 
 
 def test_the_axis_drops_a_grain_the_span_does_not_deserve_and_keeps_one_it_does(tmp_path):

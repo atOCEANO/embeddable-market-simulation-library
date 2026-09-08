@@ -230,7 +230,15 @@ const addAnchor = function (panel, index) {
 
 const addCandles = function (panel, index) {
   const s = chart.addSeries(LWC.CandlestickSeries, Object.assign({
-    borderVisible: true, priceLineVisible: false,
+    // the one series in the file that did not turn its last value badge off, and
+    // it looked like the omission it was: the renderer defaults it on, the badge
+    // takes the candle's own colour, and in the light theme that is a near black
+    // block sitting over an axis label as the highest contrast object on the
+    // page. It does not replace a label, it covers one, because the last price
+    // does not land on a gridline. It also says nothing new. At rest the cursor
+    // is the last bar, so the legend's own C is the same number, and while the
+    // pointer moves the crosshair labels the axis itself (ADR 0112)
+    borderVisible: true, priceLineVisible: false, lastValueVisible: false,
     priceFormat: priceFormat(panel.digits),
   }, pinned(panel)), index);
   return s;

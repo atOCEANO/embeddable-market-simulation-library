@@ -717,6 +717,27 @@ def test_a_background_label_with_no_fill_shades_nothing():
     assert entry["spans"] == [[1, 2, 0], [3, 4, 0]]
 
 
+def test_a_background_with_no_fill_of_its_own_is_ground_rather_than_a_band():
+    # full height at one flat alpha with a hard edge either side is the banding
+    # recipe, and a run of shaded stretches then reads as a rendering artifact
+    # rather than as regions that mean something. Stops run bottom to top, so the
+    # default is strongest at the floor and gone before the ceiling (ADR 0112)
+    mask = np.array([False, True, True, True, False, False, True, False])
+    spec = emsl.chart(frame(8), Background(mask)).spec()
+    entry = [s for s in spec["series"] if s["kind"] == "background"][0]
+    assert len(entry["fills"][0]) == 2
+    assert entry["fills"][0][0] != entry["fills"][0][1]
+
+
+def test_a_background_given_one_colour_is_left_flat():
+    # the default has an opinion about what a background is; a caller who named a
+    # colour asked for that colour, and one stop means flat on every other mark
+    mask = np.array([False, True, True, True, False, False, True, False])
+    spec = emsl.chart(frame(8), Background(mask, fill="#112233")).spec()
+    entry = [s for s in spec["series"] if s["kind"] == "background"][0]
+    assert entry["fills"] == [["#112233"]]
+
+
 def test_a_named_background_ships_the_names_of_the_regions_it_shaded():
     labels = np.array(["calm", "wild", "calm", "wild",
                        "calm", "calm", "calm", "calm"], dtype=object)

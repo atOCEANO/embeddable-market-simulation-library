@@ -94,7 +94,19 @@ const calloutPrimitive = function (anchor, spec) {
                     ctx.font = "600 " + fs + "px " + FONT;
                     const w = ctx.measureText(spec.text).width + padX * 2;
                     const h = fs + padY * 2;
-                    const ty = cy - Math.sign(spec.offset || 1) * (size + h / 2 + Math.round(3 * UI));
+                    const away = size + h / 2 + Math.round(3 * UI);
+                    const side = Math.sign(spec.offset || 1);
+                    let ty = cy - side * away;
+
+                    // the legend owns the top of every pane and reserves it
+                    // through the price scale's top margin, which is a fraction
+                    // of the pane; a caption is placed from a price and never
+                    // consulted that reservation, so a Marker with a large offset
+                    // near the top of the data printed straight through the OHLC
+                    // row. Flipped to the other side of its own glyph rather than
+                    // clamped down to the line, because a clamped caption lands
+                    // on the arrow it is there to label (ADR 0112)
+                    if (ty - h / 2 < legendRoom) ty = cy + side * away;
 
                     ctx.beginPath();
                     if (ctx.roundRect) ctx.roundRect(x - w / 2, ty - h / 2, w, h, Math.round(3 * UI));
