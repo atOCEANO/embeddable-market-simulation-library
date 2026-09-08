@@ -34,11 +34,9 @@ const T = function () {
 
 // "auto" is answered here and not in Python, and that is not a hole in ADR 0043:
 // the choice is between two palettes Python already shipped, on an input Python
-// was not in the room to see. A file is opened on a machine, months later, by
-// someone who never ran the notebook.
-//
-// It reads the operating system and not JupyterLab, which is the honest limit of
-// it: a light machine running a dark notebook still opens light (ADR 0109)
+// was not in the room to see. The limit is worth knowing, because it reads the
+// operating system and not JupyterLab: a light machine running a dark notebook
+// still opens light (ADR 0109)
 const resolveMode = function (mode) {
   if (mode !== "auto") return mode;
   const ask = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)");
@@ -89,23 +87,21 @@ const stamp = function (i) {
 };
 
 
-// ------------------------------------------------------------------- the axis
-
+// -------------------------------------------------------------------- the axis
+//
 // The renderer weighs every tick on its own and will straddle two of its own
 // thresholds, so a strip 1920 wide read 9, 17, 12:00, Sept, 9, 17, Oct: one
-// intraday tick between two day numbers, which is noise rather than detail. A
-// grain finer than the span deserves is suppressed instead. Its own labels are
-// kept for everything else, by answering null, which is what the renderer reads
-// as "you decide" (ADR 0111).
+// intraday tick between two day numbers, which is noise rather than detail. What
+// is drawn here is only which ticks to drop; answering null keeps the renderer's
+// own label, and it holds every one this file has no argument with (ADR 0111).
+
 const DAY = 86400;
 
 // Generous on purpose. What reads as noise is a LONE fine tick among coarse ones,
-// and a fine grain that appears between every pair of coarse ones is a sub-grid
-// that reads fine. Telling those apart needs the whole tick set, which a
-// formatter called once per tick does not have, so the thresholds are set where
-// the mix is certainly ragged rather than where it might be: three days of
-// candles keep their hours, two months lose the one stray 12:00, a year loses the
-// day numbers between its month names
+// and a fine grain appearing between every pair of coarse ones is a sub-grid that
+// reads fine. Telling those apart needs the whole tick set, which a formatter
+// called once per tick does not have, so the line is drawn where the mix is
+// certainly ragged rather than where it might be.
 const coarsestTick = function (seconds) {
   if (seconds > DAY * 100) return 1;       // months and years
   if (seconds > DAY * 21) return 2;        // and days
@@ -116,22 +112,14 @@ let axisSpan = 0;                      // seconds on screen
 let axisFrom = null;                   // and no label before this one
 let axisEdge = null;                   // no label past this time; it would be cut
 
-const tickMark = function (time) {
-  // arguments rather than a named second parameter: the renderer passes
-  // (time, tickMarkType, locale) and only the first two are read here
-  if (arguments[1] > coarsestTick(axisSpan)) return "";
-  // a label is centred on its bar and clipped by the edge of the plot, so a year
-  // of hourly candles ended the axis on "20" rather than "2026" and opened it on
-  // "25" rather than "2025". The room has to come out of the gutter and the
-  // renderer carries no option for that; rightOffset buys it in bars, which
-  // narrows every candle on the chart to pay for one label, and two render tests
-  // were right to refuse it. Dropping the label that cannot fit is the honest
-  // trade: a truncated year is worse than no year, and the date is on the
-  // crosshair and in the legend whichever way this goes.
-  //
-  // Both ends, because they are one defect seen twice. The right one is the one
-  // anybody notices, and fixing only it left the left end reading "25" beside a
-  // clean right end, which is worse than the symmetry it replaced
+const tickMark = function (time, kind) {
+  if (kind > coarsestTick(axisSpan)) return "";
+  // a label is centred on its bar and cut by the edge of the plot, so a year of
+  // hourly candles ended the axis on "20" and opened it on "25". The room has to
+  // come out of the gutter and nothing here can buy it: rightOffset is priced in
+  // bars, which narrows every candle to pay for one label. Dropping it is the
+  // trade, since the date is on the crosshair and in the legend either way, and
+  // both ends because they are one defect seen twice (ADR 0111)
   if (axisEdge !== null && time > axisEdge) return "";
   if (axisFrom !== null && time < axisFrom) return "";
   return null;
@@ -247,14 +235,11 @@ const addAnchor = function (panel, index) {
 
 const addCandles = function (panel, index) {
   const s = chart.addSeries(LWC.CandlestickSeries, Object.assign({
-    // the one series in the file that did not turn its last value badge off, and
-    // it looked like the omission it was: the renderer defaults it on, the badge
-    // takes the candle's own colour, and in the light theme that is a near black
-    // block sitting over an axis label as the highest contrast object on the
-    // page. It does not replace a label, it covers one, because the last price
-    // does not land on a gridline. It also says nothing new. At rest the cursor
-    // is the last bar, so the legend's own C is the same number, and while the
-    // pointer moves the crosshair labels the axis itself (ADR 0112)
+    // the one series in the file that did not turn its badge off, and it read as
+    // the omission it was. It covers an axis label rather than replacing one,
+    // because the last price does not land on a gridline, and it says nothing
+    // new: at rest the cursor is the last bar, so the legend's own C is that
+    // number already (ADR 0112)
     borderVisible: true, priceLineVisible: false, lastValueVisible: false,
     priceFormat: priceFormat(panel.digits),
   }, pinned(panel)), index);
