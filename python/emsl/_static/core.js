@@ -113,21 +113,27 @@ const coarsestTick = function (seconds) {
 };
 
 let axisSpan = 0;                      // seconds on screen
+let axisFrom = null;                   // and no label before this one
 let axisEdge = null;                   // no label past this time; it would be cut
 
 const tickMark = function (time) {
   // arguments rather than a named second parameter: the renderer passes
   // (time, tickMarkType, locale) and only the first two are read here
   if (arguments[1] > coarsestTick(axisSpan)) return "";
-  // the last label is centred on its bar and clipped where the price gutter
-  // begins, so a year of hourly candles ended the axis on "20" rather than
-  // "2026". The room has to come out of the gutter and the renderer carries no
-  // option for that; rightOffset buys it in bars, which narrows every candle on
-  // the chart to pay for one label, and two render tests were right to refuse
-  // it. Dropping the label that cannot fit is the honest trade: a truncated year
-  // is worse than no year, and the date is on the crosshair and in the legend
-  // whichever way this goes
+  // a label is centred on its bar and clipped by the edge of the plot, so a year
+  // of hourly candles ended the axis on "20" rather than "2026" and opened it on
+  // "25" rather than "2025". The room has to come out of the gutter and the
+  // renderer carries no option for that; rightOffset buys it in bars, which
+  // narrows every candle on the chart to pay for one label, and two render tests
+  // were right to refuse it. Dropping the label that cannot fit is the honest
+  // trade: a truncated year is worse than no year, and the date is on the
+  // crosshair and in the legend whichever way this goes.
+  //
+  // Both ends, because they are one defect seen twice. The right one is the one
+  // anybody notices, and fixing only it left the left end reading "25" beside a
+  // clean right end, which is worse than the symmetry it replaced
   if (axisEdge !== null && time > axisEdge) return "";
+  if (axisFrom !== null && time < axisFrom) return "";
   return null;
 };
 
@@ -149,12 +155,16 @@ const measureAxis = function (range) {
   // puts a clipped one back, and the whole point here is not to clip
   const room = Math.ceil((16 * UI) / Math.max(spacing, 0.0001));
   const edge = SPEC.t[clamp(Math.ceil(range.to) - room)];
+  // clamped, so a chart panned to leave slack on the left suppresses nothing:
+  // the label only clips when bar zero is against the edge
+  const from = SPEC.t[clamp(Math.floor(range.from) + room)];
 
   // guarded rather than unconditional: re-applying marks the axis dirty, and an
   // unguarded write would repaint on every frame of a drag forever
-  if (span === axisSpan && edge === axisEdge) return;
+  if (span === axisSpan && edge === axisEdge && from === axisFrom) return;
   axisSpan = span;
   axisEdge = edge;
+  axisFrom = from;
   chart.timeScale().applyOptions({ tickMarkFormatter: tickMark });
 };
 
