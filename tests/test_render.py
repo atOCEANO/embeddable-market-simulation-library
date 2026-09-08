@@ -98,6 +98,12 @@ def observe(built, tmp_path, name="chart.html", act=None):
             "rows": page.locator("#tbody tr").evaluate_all(
                 "rs => rs.map(r => Array.from(r.cells).map(c => c.textContent))"
             ),
+            # the bar index moved out of the cell and into its title when the
+            # column started carrying a timestamp, and it is what focus= and every
+            # guard message are phrased in, so it is worth holding on to
+            "titles": page.locator("#tbody tr").evaluate_all(
+                "rs => rs.map(r => Array.from(r.cells).map(c => c.getAttribute('title')))"
+            ),
             "title": page.locator("#title").text_content(),
             "hint": page.locator("#hint").text_content(),
             "theme": page.evaluate("document.documentElement.getAttribute('data-theme')"),
@@ -155,10 +161,15 @@ def test_every_closed_trade_becomes_a_row_carrying_its_numbers(tmp_path):
     assert seen["errors"] == []
     assert len(seen["rows"]) == len(result.trades)
     assert len(result.trades) > 0
-    for row, trade in zip(seen["rows"], result.trades):
+    # the two bar columns read as a time, because the axis over them does and a
+    # row saying 4856 under an axis saying November has to be counted back by
+    # hand. The tick is still reachable, in the cell's title
+    for row, title, trade in zip(seen["rows"], seen["titles"], result.trades):
         assert row[1] == ("buy" if trade["side"] == "buy" else "sell")
-        assert row[2] == str(trade["entry_tick"])
-        assert row[3] == str(trade["exit_tick"])
+        assert row[2] == candles.index[trade["entry_tick"]].strftime("%Y-%m-%d %H:%M")
+        assert row[3] == candles.index[trade["exit_tick"]].strftime("%Y-%m-%d %H:%M")
+        assert title[2] == "bar " + str(trade["entry_tick"])
+        assert title[3] == "bar " + str(trade["exit_tick"])
         assert row[9] == str(trade["bars_held"])
 
 
@@ -269,6 +280,43 @@ def test_a_legend_too_wide_for_its_panel_counts_what_it_dropped(tmp_path):
     assert counters, f"nothing was counted as dropped; drew {drawn[:20]}"
     named = sum(1 for s in drawn if "long series name" in s)
     assert named + int(counters[0][1:]) >= 8
+
+
+def test_a_gap_in_a_series_leaves_the_legend_quiet_rather_than_reporting_a_fault(tmp_path):
+    # the legend and the trade table share one formatter and it answers "n/a" for a
+    # value that is not there. That is right in a table cell, where a column has to
+    # line up and a blank one reads as data that went missing on the way. Over the
+    # candles the same three characters read as a broken chart, on the bars where
+    # the honest answer is that there was no stop.
+    #
+    # The cursor sits on the last bar until something moves it, so a series whose
+    # tail is a gap is in that state the moment it mounts and needs no gesture
+    candles = frame()
+    stop = candles["close"].to_numpy() - 5.0
+    stop[30:] = np.nan
+    built = emsl.chart(candles, Line(stop, "trailing stop"))
+    path = built.save(str(tmp_path / "gap.html"))
+    with playwright.sync_playwright() as driver:
+        browser = driver.chromium.launch(args=["--no-sandbox"])
+        page = browser.new_page(viewport={"width": 1280, "height": 700})
+        page.add_init_script(
+            """
+            window.__text = [];
+            const real = CanvasRenderingContext2D.prototype.fillText;
+            CanvasRenderingContext2D.prototype.fillText = function (s, x, y) {
+              window.__text.push(String(s));
+              return real.apply(this, arguments);
+            };
+            """
+        )
+        page.goto(pathlib.Path(path).as_uri())
+        page.wait_for_selector("#chart canvas", timeout=20_000)
+        page.wait_for_timeout(600)
+        drawn = page.evaluate("window.__text")
+        browser.close()
+
+    assert "trailing stop" in drawn, f"the row is not there at all; drew {drawn[:20]}"
+    assert "n/a" not in drawn, "the legend reported a gap as a missing value"
 
 
 def test_the_log_button_toggles_its_panel_and_says_so(tmp_path):

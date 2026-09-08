@@ -37,7 +37,9 @@
 <div id="tablePanel" hidden>
   <table>
     <thead><tr>
-      <th>#</th><th>Side</th><th>Entry bar</th><th>Exit bar</th><th>Size</th>
+      <!-- Opened and Closed rather than Entry bar and Exit bar: those two now
+           carry a timestamp, and Entry and Exit four columns along are prices -->
+      <th>#</th><th>Side</th><th>Opened</th><th>Closed</th><th>Size</th>
       <th>Entry</th><th>Exit</th><th>Fees</th><th>Net PnL</th><th>Bars</th>
     </tr></thead>
     <tbody id="tbody"></tbody>

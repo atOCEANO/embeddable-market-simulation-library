@@ -160,6 +160,10 @@ th {
 }
 th:first-child, td:first-child { text-align: left; }
 td { text-align: right; padding: calc(3px * var(--ui)) calc(8px * var(--ui)); color: var(--ink-2); }
+/* a timestamp holds a space and wraps on it, which turned two columns into two
+   lines apiece on a narrow chart. The panel already scrolls, so overflowing it
+   sideways is the behaviour a table wants */
+th, td { white-space: nowrap; }
 tbody tr { cursor: pointer; }
 tbody tr:hover { background: var(--hairline); }
 tbody tr.sel { background: color-mix(in srgb, var(--s1) 18%, transparent); }

@@ -14,6 +14,16 @@ const legendValueAt = function (spec, i) {
   return spec.v[j];
 };
 
+// a gap is an absence, and the shared formatter calls it "n/a". That is right in
+// a table cell, where a column has to line up and a blank one reads as data that
+// went missing, and it is wrong hovering over the plot: `trailing stop  n/a`
+// reads as a fault in the chart rather than as the bars where there was no stop.
+// The row keeps its swatch and its name and stops quoting a number, which is what
+// the line beside it is doing
+const legendValue = function (v, digits) {
+  return (v === null || v === undefined || Number.isNaN(v)) ? undefined : fmt(v, digits);
+};
+
 const legendRows = function (index) {
   const panel = SPEC.panels[index];
   const i = cursor;
@@ -42,7 +52,7 @@ const legendRows = function (index) {
     const bar = SPEC.ohlc[i];
     rows.push({
       swatch: (bar[3] >= bar[0] ? T().up : T().down) + "66",
-      label: "Volume", value: fmt(legendValueAt(SPEC.vol, i), panel.digits),
+      label: "Volume", value: legendValue(legendValueAt(SPEC.vol, i), panel.digits),
     });
   }
 
@@ -53,7 +63,8 @@ const legendRows = function (index) {
     rows.push({
       swatch: swatch || T().muted,
       label: spec.name || "",
-      value: fmt(legendValueAt(spec, i), spec.digits === undefined ? panel.digits : spec.digits),
+      value: legendValue(legendValueAt(spec, i),
+        spec.digits === undefined ? panel.digits : spec.digits),
     });
   });
 

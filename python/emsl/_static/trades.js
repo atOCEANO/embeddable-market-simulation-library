@@ -23,6 +23,14 @@ let tradeByTime = null;
 const CAPTION_GAP = 80;
 const CAPTION_CEILING = 60;
 
+// the caption over a bar and the row in the table are one number seen twice, so
+// the two precisions are declared together and the short one abbreviates the long
+// one instead of being a second opinion about it. They were four scattered
+// literals, half toFixed and half toLocaleString, so a caption read -246 beside a
+// row reading -245.54 and a five-figure pnl lost its separator on the way up
+const TABLE_DP = { size: 4, money: 2 };
+const CAPTION_DP = { size: 3, money: 0 };
+
 const captionsFit = function () {
   const ts = chart.timeScale();
   const range = ts.getVisibleLogicalRange();
@@ -56,15 +64,20 @@ const tradeMarkers = function () {
   const words = captionsFit();
   const out = [];
   SPEC.trades.forEach(function (tr) {
+    // an entry stays neutral while the exits are green and red, because it does
+    // not know its outcome yet and colouring it by the exit paints hindsight onto
+    // the bar. Neutral is not the same as faint though: muted is the colour
+    // chosen to sit almost out of sight against the plane, which is right for a
+    // gridline and wrong for the mark that says a position opened here
     out.push({
       time: SPEC.t[tr.in], position: "belowBar", shape: "arrowUp",
-      color: t.muted, size: 1,
-      text: words ? tr.side + " " + tr.size.toFixed(3) : "",
+      color: t.s4, size: 1,
+      text: words ? tr.side + " " + fmt(tr.size, CAPTION_DP.size) : "",
     });
     out.push({
       time: SPEC.t[tr.out], position: "aboveBar", shape: "arrowDown",
       color: tr.net >= 0 ? t.win : t.loss, size: 1,
-      text: words ? (tr.net >= 0 ? "+" : "") + tr.net.toFixed(0) : "",
+      text: words ? (tr.net >= 0 ? "+" : "") + fmt(tr.net, CAPTION_DP.money) : "",
     });
   });
   return out;
@@ -100,7 +113,8 @@ const selectTrade = function (n, opts) {
     chart.timeScale().setVisibleLogicalRange({ from: hit.in - pad, to: hit.out + pad });
   }
   document.getElementById("hint").textContent =
-    "trade " + hit.i + "  ·  " + hit.bars + " bars  ·  net " + fmt(hit.net, 2);
+    "trade " + hit.i + "  ·  " + hit.bars + " bars  ·  net " +
+    fmt(hit.net, TABLE_DP.money);
   invalidate();
 };
 
@@ -153,11 +167,18 @@ const mountTrades = function () {
     // a forced close reads as an ordinary exit otherwise, so the side says which
     // it was: the account ended this one, not the strategy
     const side = tr.liq ? tr.side + ' <span class="liq">liq</span>' : tr.side;
+    // the axis over the plot says November and the row under it used to say 4856,
+    // so reading a row back to the candle it happened on meant counting bars. Both
+    // numbers were already here: the click map two blocks up indexes SPEC.t twice
+    // and the legend has stamped its own bar since it was written. The tick keeps
+    // a title, because it is what focus= and every guard message are phrased in
     return '<tr data-n="' + tr.i + '"><td>' + tr.i + '</td><td>' + side +
-      '</td><td>' + tr.in + '</td><td>' + tr.out +
-      '</td><td>' + fmt(tr.size, 4) + '</td><td>' + fmt(tr.px_in, digits) +
-      '</td><td>' + fmt(tr.px_out, digits) + '</td><td>' + fmt(tr.fees, 2) +
-      '</td><td class="' + (tr.net >= 0 ? "win" : "loss") + '">' + fmt(tr.net, 2) +
+      '</td><td title="bar ' + tr.in + '">' + stamp(tr.in) +
+      '</td><td title="bar ' + tr.out + '">' + stamp(tr.out) +
+      '</td><td>' + fmt(tr.size, TABLE_DP.size) + '</td><td>' + fmt(tr.px_in, digits) +
+      '</td><td>' + fmt(tr.px_out, digits) + '</td><td>' + fmt(tr.fees, TABLE_DP.money) +
+      '</td><td class="' + (tr.net >= 0 ? "win" : "loss") + '">' +
+      fmt(tr.net, TABLE_DP.money) +
       '</td><td>' + tr.bars + '</td></tr>';
   }).join("");
 
