@@ -384,6 +384,24 @@ def test_a_dense_chart_is_aggregated_without_moving_what_the_crosshair_reads(tmp
         )
 
 
+def test_a_resize_leaves_the_chart_drawing_and_the_axis_measured(tmp_path):
+    # the axis rule is in pixels and a resize moves no bars, so it fires no range
+    # change of its own: remeasureAxis is what tells it the width moved, and it
+    # runs from inside a size-change callback, which is the time scale calling
+    # back into itself and the place this would throw if it were going to
+    candles = frame(3000)
+    seen = observe(
+        emsl.chart(candles),
+        tmp_path,
+        act=lambda page: (
+            page.set_viewport_size({"width": 620, "height": 520}),
+            page.wait_for_timeout(600),
+        ),
+    )
+    assert seen["errors"] == []
+    assert max(seen["colours"]) > 20
+
+
 def test_notes_reach_the_panel_under_the_plot_and_survive_angle_brackets(tmp_path):
     # what stops a saved file carrying a claim and not the evidence for it. Every
     # cell is written with textContent, so the second row here is a cell rather

@@ -222,7 +222,12 @@ const mountControls = function () {
   // three things move these: the axis widening when the number format changes,
   // the chart resizing, and a pane separator being dragged. Only the first two
   // fire an event, so the drag is caught on mouseup
-  chart.timeScale().subscribeSizeChange(placePaneCtls);
+  chart.timeScale().subscribeSizeChange(function () {
+    placePaneCtls();
+    // the axis rule is in pixels and a resize changes them without moving a bar,
+    // so this is the only thing that tells it the width moved
+    remeasureAxis();
+  });
   el.addEventListener("mouseup", function () { requestAnimationFrame(placePaneCtls); });
   // a notebook cell dragged wider fires no window resize, so this observes the
   // element instead

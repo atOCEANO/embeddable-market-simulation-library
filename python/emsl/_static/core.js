@@ -168,6 +168,13 @@ const measureAxis = function (range) {
   chart.timeScale().applyOptions({ tickMarkFormatter: tickMark });
 };
 
+// a resize moves no bars, so it fires no range change, and the rule above is in
+// pixels: a chart dragged narrower would keep suppressing for the width it used
+// to have. The guard inside measureAxis is what makes asking again cheap
+const remeasureAxis = function () {
+  measureAxis(chart.timeScale().getVisibleLogicalRange());
+};
+
 // a Track carries i0 and a value array, so the alignment contract arrives as an
 // integer and this file never learns the rule. A null becomes whitespace, {time}
 // with no value, rather than a dropped row, because dropping would make the
