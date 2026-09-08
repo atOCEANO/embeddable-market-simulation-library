@@ -46,10 +46,16 @@ const placePaneCtls = function () {
       // across the whole pane rather than across the data, so the topmost one
       // lands wherever the scale puts it and is clipped by the pane edge if the
       // margin is only as deep as the text below it: at 0.08 the price axis
-      // opened on a half-drawn 140000
+      // opened on a half-drawn 140000.
+      //
+      // The same argument at the other end, which went unmade the first time and
+      // left the equity panel of the held-bars documentation image ending on a
+      // 6000 cut through the middle. A pane is bounded below by the next pane or
+      // by the time axis, so there is nowhere for a low label to overhang into,
+      // and half a number is worse than a slightly shorter plot
       scaleMargins: {
         top: Math.min(0.34, Math.max(0.15, legendRoom / hs[i])),
-        bottom: 0.08,
+        bottom: 0.12,
       },
     });
   });

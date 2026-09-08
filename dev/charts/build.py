@@ -79,7 +79,7 @@ def midpoint(frame, n):
     return (frame.high.rolling(n).max() + frame.low.rolling(n).min()) / 2
 
 
-def keep(name, chart, width, caption):
+def keep(name, chart, width, caption, below=0, open_table=False):
     # the height is recorded here and read by the shooter rather than written out
     # in both, because it drifted the first time either was edited. A chart sizes
     # itself to its window, so a shot taken at a height the chart was not built
@@ -91,6 +91,14 @@ def keep(name, chart, width, caption):
         "width": width,
         "caption": caption,
     }
+    # the table panel opens under the plot and is not part of the chart's own
+    # height, so a shot that has to include it asks for the room rather than
+    # overstating how tall the chart was built. Absent unless asked for, so the
+    # manifest stays a description of the ordinary shots
+    if below:
+        SHOTS[name]["below"] = below
+    if open_table:
+        SHOTS[name]["open"] = True
 
 
 # ------------------------------------------------------------------ the data
@@ -400,9 +408,9 @@ def documented_examples(raw):
 
     keep("ex-background", emsl.chart(
         frame=frame,
-        marks=Background(values=risk_off, fill="#ff547026"),
+        marks=Background(values=risk_off, name="risk off", fill="#ff547026"),
         height=520,
-    ), NARROW, "a shaded regime behind the candles")
+    ), NARROW, "a shaded regime behind the candles, named in the legend")
 
     keep("ex-markers", emsl.chart(
         frame=frame,
@@ -478,6 +486,30 @@ def documented_examples(raw):
         title=f"worst trade, net {worst['net_pnl']:,.0f}",
         height=660,
     ), NARROW, "the worst trade framed")
+
+    # trades=False so the picture is about the table rather than about a trade
+    # log the reader has already seen twice above. It also exercises the case the
+    # feature was built for, which is a chart whose button exists because of the
+    # notes and not because of a run. Volume is off for room: three panels inside
+    # the height left over once the table has its share are three squeezed panels
+    keep("ex-notes", emsl.chart(
+        frame=frame,
+        marks=strategy.marks(),
+        run=result,
+        trades=False,
+        panels=[Panel(name="volume", show=False)],
+        title="what produced this picture, carried by the file itself",
+        notes=[
+            ["setting", "value"],
+            ["fast", strategy.fast_n],
+            ["slow", strategy.slow_n],
+            ["market", "spot, 5 bp taker"],
+            ["bars", f"{len(frame):,} at 1h"],
+            ["window", f"{frame.index[0]:%Y-%m-%d} to {frame.index[-1]:%Y-%m-%d}"],
+        ],
+        height=440,
+    ), NARROW, "the settings behind the chart, in the document rather than the cell",
+        below=300, open_table=True)
 
 
 def main():

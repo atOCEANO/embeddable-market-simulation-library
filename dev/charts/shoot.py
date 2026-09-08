@@ -49,13 +49,24 @@ def main():
         browser = play.chromium.launch()
         for name in sorted(shots):
             shot = shots[name]
-            width, height = shot["width"], shot["height"]
+            width = shot["width"]
+            # the table panel opens under the plot and is no part of the chart's
+            # own height, so a shot that has to show it says how much room to
+            # leave rather than the manifest overstating how tall the chart is
+            height = shot["height"] + shot.get("below", 0)
             page = browser.new_page(
                 viewport={"width": width, "height": height},
                 device_scale_factor=SCALE,
             )
             page.goto((CHARTS / f"{name}.html").as_uri())
             page.wait_for_timeout(SETTLE_MS)
+            if shot.get("open"):
+                page.click("#tbl")
+                # opening the panel shrinks the plot above it, so the row that
+                # slides up under the cursor comes out of the shot wearing its
+                # hover colour. Nothing here retouches, so the pointer moves
+                page.mouse.move(0, 0)
+                page.wait_for_timeout(500)
             page.screenshot(path=str(IMAGES / f"{name}.png"))
             page.close()
             size = (IMAGES / f"{name}.png").stat().st_size

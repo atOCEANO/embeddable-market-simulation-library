@@ -155,7 +155,7 @@ emsl.chart(frame=frame, marks=Background(values=risk_off, fill="#ff547026")).sho
 
 <div align="center">
   <img src="imgs/charts/ex-background.png" alt="bars shaded where a volatility filter says risk-off" width="100%" />
-  <p style="margin: 0;"><i>A boolean array painted behind the bars, which keep their own colours on top of it</i></p>
+  <p style="margin: 0;"><i>A boolean array painted behind the bars, which keep their own colours on top of it, and a name so the legend says which region the crosshair is over</i></p>
 </div>
 
 <br>
@@ -742,6 +742,11 @@ emsl.chart(
 ```
 
 A DataFrame goes in the same place, which is usually what you already have: `notes=walk.summary`.
+
+<div align="center">
+  <img src="imgs/charts/ex-notes.png" alt="the settings behind the chart, carried in the document" width="100%" />
+  <p style="margin: 0;"><i>What produced the picture, under the picture, in the file rather than in the cell that made it</i></p>
+</div>
 
 This is what stops a saved file carrying a claim and not the evidence for it. A walk-forward chart asserts that each stretch traded on parameters fitted only on the bars before it, and the windows that say so were printed by the cell rather than by the chart, so `save` dropped them and the first person to forward the file is looking at an assertion ([ADR 0113](Decisions.md)).
 
