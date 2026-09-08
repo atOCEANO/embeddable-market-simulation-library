@@ -726,7 +726,7 @@ Passing a run gives you four by default: return, sharpe, max drawdown and trade 
 
 ### The evidence, not just the claim
 
-`notes=` puts a table of your own in the panel under the plot, below the trade log and behind the same button. It takes a DataFrame, or a list of rows whose first row is the header.
+`notes=` puts a table of your own in the panel under the plot, above the trade log and behind the same button. It takes a DataFrame, or a list of rows whose first row is the header.
 
 ```python
 emsl.chart(

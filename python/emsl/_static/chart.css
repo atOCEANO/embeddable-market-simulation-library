@@ -153,8 +153,10 @@ body {
 #tablePanel[hidden] { display: none; }
 /* a table sets its own display, so the hidden attribute needs saying out loud */
 #trades[hidden], #notes[hidden] { display: none; }
-/* enough air that the two read as two tables and not as one with a strange row */
-#notes { margin-top: calc(16px * var(--ui)); }
+/* enough air that the two read as two tables and not as one with a strange row.
+   On the second one, and only when the first is actually showing, so a chart
+   with no notes does not open its trade log on a stray gap */
+#notes:not([hidden]) + #trades { margin-top: calc(16px * var(--ui)); }
 table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; font-size: calc(12px * var(--ui)); }
 th {
   text-align: right; color: var(--muted); font-weight: 500;

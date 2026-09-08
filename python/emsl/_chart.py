@@ -1071,7 +1071,7 @@ def chart(
     numbers on the right. ``stats`` names the keys, defaulting to the four that
     decide whether a strategy is worth keeping, and ``stats=[]`` shows none.
 
-    ``notes`` puts a table of your own in the panel under the plot, under the
+    ``notes`` puts a table of your own in the panel under the plot, above the
     trade log and behind the same button. It takes a DataFrame, or a list of rows
     whose first row is the header. This is what stops a saved file carrying a
     claim and not the evidence for it: a walk-forward chart says each stretch

@@ -432,6 +432,13 @@ def test_notes_reach_the_panel_under_the_plot_and_survive_angle_brackets(tmp_pat
             # both tables are open together, behind the one button
             "trades_shown": page.evaluate("!document.getElementById('trades').hidden"),
             "notes_shown": page.evaluate("!document.getElementById('notes').hidden"),
+            "notes_first": page.evaluate(
+                """() => {
+                  const n = document.getElementById('notes').getBoundingClientRect();
+                  const t = document.getElementById('trades').getBoundingClientRect();
+                  return n.top < t.top;
+                }"""
+            ),
         }
         browser.close()
 
@@ -441,6 +448,10 @@ def test_notes_reach_the_panel_under_the_plot_and_survive_angle_brackets(tmp_pat
     assert seen["rows"][1][2] == "-0.31"
     assert seen["scripts"] == 0
     assert seen["trades_shown"] and seen["notes_shown"]
+    # the caller's table first. 1.3.0 had it second, and a walk forward with 22
+    # fills then hid the windows its own title was about inside a panel that
+    # scrolls; a year of fills would have put them out of reach entirely
+    assert seen["notes_first"]
 
 
 def test_notes_keep_the_table_button_on_a_chart_that_never_traded(tmp_path):
