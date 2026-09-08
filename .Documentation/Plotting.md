@@ -724,6 +724,31 @@ Passing a run gives you four by default: return, sharpe, max drawdown and trade 
 
 <br>
 
+### The evidence, not just the claim
+
+`notes=` puts a table of your own in the panel under the plot, below the trade log and behind the same button. It takes a DataFrame, or a list of rows whose first row is the header.
+
+```python
+emsl.chart(
+    frame=frame,
+    run=result,
+    title="each stretch traded on parameters fitted only on the bars before it",
+    notes=[
+        ["window", "fitted on", "traded", "sharpe"],
+        [1, "2025-01-01 to 2025-06-30", "2025-07-01 to 2025-09-30", 1.94],
+        [2, "2025-04-01 to 2025-09-30", "2025-10-01 to 2025-12-31", 0.71],
+    ],
+).save(path="reports/walk-2025.html")
+```
+
+A DataFrame goes in the same place, which is usually what you already have: `notes=walk.summary`.
+
+This is what stops a saved file carrying a claim and not the evidence for it. A walk-forward chart asserts that each stretch traded on parameters fitted only on the bars before it, and the windows that say so were printed by the cell rather than by the chart, so `save` dropped them and the first person to forward the file is looking at an assertion ([ADR 0113](Decisions.md)).
+
+A DataFrame's index is **not** drawn, so `reset_index()` if you want it as a column. Nothing caps the length, the same as the trade log, and this is meant for context rather than for data: a few rows saying what produced the picture, not a second copy of the picture's inputs. Cells are written as text, so one carrying angle brackets is a cell.
+
+<br>
+
 ### Comparing runs
 
 One run is rich and the others are curves, and that asymmetry is on purpose: two sets of trade arrows on one chart is unreadable. So pass the run you are studying, and the rest as equity lines.

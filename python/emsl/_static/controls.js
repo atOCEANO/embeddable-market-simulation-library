@@ -109,6 +109,35 @@ const mountHead = function () {
   head.hidden = !SPEC.title && !rows.length;
 };
 
+// the caller's own table, under the fills. Built with textContent rather than
+// markup for the same reason the head row is: a cell carrying angle brackets is
+// a cell, and not a decision anybody has to think about (ADR 0113)
+const mountNotes = function () {
+  if (!SPEC.notes) return;
+  const head = document.getElementById("nhead");
+  const body = document.getElementById("nbody");
+
+  SPEC.notes.head.forEach(function (label) {
+    const th = document.createElement("th");
+    th.textContent = label;
+    head.appendChild(th);
+  });
+  SPEC.notes.rows.forEach(function (row) {
+    const tr = document.createElement("tr");
+    row.forEach(function (value) {
+      const td = document.createElement("td");
+      td.textContent = value;
+      tr.appendChild(td);
+    });
+    body.appendChild(tr);
+  });
+
+  document.getElementById("notes").hidden = false;
+  // a run is not required to have notes, and mountTrades hides the button when
+  // there are no fills, so this puts it back
+  document.getElementById("tbl").hidden = false;
+};
+
 const mountControls = function () {
   mountHead();
   const el = document.getElementById("chart");
@@ -182,6 +211,9 @@ const mountControls = function () {
       applyTheme(MODE === "dark" ? "light" : "dark");
     }
   });
+
+  // after mountTrades, which is what hides the button on a chart with no fills
+  mountNotes();
 
   applyScale();
   placePaneCtls();

@@ -130,8 +130,10 @@ const mountTrades = function () {
 
   // no run, a run that never traded, or trades=False. The button is in the
   // template unconditionally, so leaving it would open an empty table with
-  // headings and no rows, which reads as a chart that lost its data
+  // headings and no rows, which reads as a chart that lost its data. mountNotes
+  // runs after this and puts the button back when there is a table for it
   if (!SPEC.trades.length) {
+    document.getElementById("trades").hidden = true;
     document.getElementById("tbl").hidden = true;
     return;
   }

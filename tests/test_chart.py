@@ -112,6 +112,7 @@ def everything():
         panels=[Panel("flow", weight=1.5, range=(-5, 50))],
         title="everything",
         focus=(2, 30),
+        notes=[["window", "sharpe"], ["1", 1.94], ["2", -0.31]],
     )
 
 
@@ -715,6 +716,40 @@ def test_a_background_label_with_no_fill_shades_nothing():
                       Background(labels, fill={"wild": "#ff0000"})).spec()
     entry = [s for s in spec["series"] if s["kind"] == "background"][0]
     assert entry["spans"] == [[1, 2, 0], [3, 4, 0]]
+
+
+def test_notes_take_a_frame_and_leave_its_index_where_it_was():
+    # drawing the index whenever it looked meaningful would be a rule nobody
+    # could predict from outside; reset_index() says so at the call site instead
+    table = pd.DataFrame({"window": [1, 2], "sharpe": [1.94, -0.31]},
+                         index=["first", "second"])
+    spec = emsl.chart(frame(8), notes=table).spec()
+    assert spec["notes"]["head"] == ["window", "sharpe"]
+    assert spec["notes"]["rows"] == [["1", "1.94"], ["2", "-0.31"]]
+
+
+def test_notes_take_rows_with_the_first_naming_the_columns():
+    spec = emsl.chart(frame(8), notes=[["a", "b"], [1, 2], [3, 4]]).spec()
+    assert spec["notes"] == {"head": ["a", "b"], "rows": [["1", "2"], ["3", "4"]]}
+
+
+def test_a_note_row_that_does_not_match_its_header_names_both_counts():
+    with pytest.raises(ValueError):
+        emsl.chart(frame(8), notes=[["a", "b"], [1, 2, 3]]).spec()
+
+
+def test_notes_with_no_rows_draw_no_table_rather_than_a_header_over_nothing():
+    assert "notes" not in emsl.chart(frame(8), notes=[["a", "b"]]).spec()
+    assert "notes" not in emsl.chart(frame(8), notes=[]).spec()
+
+
+def test_a_float_in_a_note_is_read_rather_than_reproduced():
+    # str(1.94) is fine and str(0.1 + 0.2) is 0.30000000000000004, and this table
+    # is looked at rather than computed with. Six significant digits keeps a
+    # sharpe short and a basis point off zero, which fixed decimals cannot do both
+    spec = emsl.chart(frame(8),
+                      notes=[["x"], [0.1 + 0.2], [0.000123456], [float("nan")]]).spec()
+    assert spec["notes"]["rows"] == [["0.3"], ["0.000123456"], ["n/a"]]
 
 
 def test_a_background_with_no_fill_of_its_own_is_ground_rather_than_a_band():

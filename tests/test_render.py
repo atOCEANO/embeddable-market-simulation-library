@@ -384,6 +384,73 @@ def test_a_dense_chart_is_aggregated_without_moving_what_the_crosshair_reads(tmp
         )
 
 
+def test_notes_reach_the_panel_under_the_plot_and_survive_angle_brackets(tmp_path):
+    # what stops a saved file carrying a claim and not the evidence for it. Every
+    # cell is written with textContent, so the second row here is a cell rather
+    # than a decision anybody has to think about (ADR 0113)
+    candles = frame()
+    built = emsl.chart(candles, run(candles), notes=[
+        ["window", "traded", "sharpe"],
+        ["1", "<script>alert(1)</script>", 1.94],
+        ["2", "2024-01-02 to 2024-01-03", -0.31],
+    ])
+    path = built.save(str(tmp_path / "notes.html"))
+    errors = []
+    with playwright.sync_playwright() as driver:
+        browser = driver.chromium.launch(args=["--no-sandbox"])
+        page = browser.new_page(viewport={"width": 1100, "height": 800})
+        page.on("pageerror", lambda e: errors.append(str(e)))
+        page.goto(pathlib.Path(path).as_uri())
+        page.wait_for_selector("#chart canvas", timeout=20_000)
+        page.wait_for_timeout(400)
+        page.click("#tbl")
+        page.wait_for_timeout(300)
+        seen = {
+            "head": page.locator("#nhead th").all_text_contents(),
+            "rows": page.locator("#nbody tr").evaluate_all(
+                "rs => rs.map(r => Array.from(r.cells).map(c => c.textContent))"
+            ),
+            "scripts": page.locator("#nbody script").count(),
+            # both tables are open together, behind the one button
+            "trades_shown": page.evaluate("!document.getElementById('trades').hidden"),
+            "notes_shown": page.evaluate("!document.getElementById('notes').hidden"),
+        }
+        browser.close()
+
+    assert errors == []
+    assert seen["head"] == ["window", "traded", "sharpe"]
+    assert seen["rows"][0][1] == "<script>alert(1)</script>"
+    assert seen["rows"][1][2] == "-0.31"
+    assert seen["scripts"] == 0
+    assert seen["trades_shown"] and seen["notes_shown"]
+
+
+def test_notes_keep_the_table_button_on_a_chart_that_never_traded(tmp_path):
+    # the button is hidden when there are no fills, because opening an empty
+    # trade log reads as a chart that lost its data. A chart with notes and no
+    # run has something to show and had no way to show it
+    built = emsl.chart(frame(), notes=[["what", "value"], ["bars", 60]])
+    path = built.save(str(tmp_path / "onlynotes.html"))
+    with playwright.sync_playwright() as driver:
+        browser = driver.chromium.launch(args=["--no-sandbox"])
+        page = browser.new_page(viewport={"width": 1100, "height": 800})
+        page.goto(pathlib.Path(path).as_uri())
+        page.wait_for_selector("#chart canvas", timeout=20_000)
+        page.wait_for_timeout(400)
+        hidden = page.evaluate("document.getElementById('tbl').hidden")
+        page.click("#tbl")
+        page.wait_for_timeout(300)
+        seen = {
+            "rows": page.locator("#nbody tr").count(),
+            "trades_shown": page.evaluate("!document.getElementById('trades').hidden"),
+        }
+        browser.close()
+
+    assert not hidden, "the button stayed hidden, so the notes were unreachable"
+    assert seen["rows"] == 1
+    assert not seen["trades_shown"], "an empty trade log opened alongside them"
+
+
 def test_fit_puts_the_whole_series_back_after_a_row_framed_one_trade(tmp_path):
     # FIT had never been pressed by anything. It is the one control that undoes
     # every other gesture, so a chart whose FIT is broken is a chart a reader can

@@ -875,6 +875,53 @@ def _headline(stats, chosen):
     return out
 
 
+def _cell(value):
+    # str() on a float is 1.9400000000000002, and this table is read rather than
+    # computed with. Six significant digits keeps a sharpe short and a basis point
+    # from rounding to zero, which a fixed number of decimal places cannot do both
+    if isinstance(value, float):
+        return f"{value:.6g}" if math.isfinite(value) else "n/a"
+    if value is None:
+        return ""
+    return str(value)
+
+
+def _notes(notes):
+    """Turn ``notes`` into the header and rows the panel under the plot draws.
+
+    A pandas DataFrame, or a list of rows whose first row is the header. A
+    DataFrame's index is not drawn: drawing it whenever it looked meaningful
+    would be a rule nobody could predict, and ``reset_index()`` says so at the
+    call site instead (ADR 0113).
+    """
+    if type(notes).__module__.split(".")[0] == "pandas":
+        head = [_cell(c) for c in notes.columns]
+        rows = [[_cell(v) for v in row] for row in notes.itertuples(index=False)]
+    else:
+        table = [list(row) for row in notes]
+        if not table:
+            return None
+        head = [_cell(c) for c in table[0]]
+        rows = [[_cell(v) for v in row] for row in table[1:]]
+
+    if not head:
+        raise ValueError(
+            "notes has no columns to draw; pass a DataFrame with columns, or a "
+            "list of rows whose first row names them"
+        )
+    for index, row in enumerate(rows):
+        if len(row) != len(head):
+            raise ValueError(
+                f"notes row {index} has {len(row)} cells and the header names "
+                f"{len(head)}; every row has to match the header"
+            )
+    # an empty table draws a header over nothing, which reads as a table that
+    # lost its rows. Nothing to say is said by saying nothing
+    if not rows:
+        return None
+    return {"head": head, "rows": rows}
+
+
 def _theme(mode, palette):
     out = {"mode": mode, "font": _FONT}
     for key in ("dark", "light"):
@@ -1008,7 +1055,7 @@ class Chart:
 def chart(
     frame=None, *args, marks=None, run=None, panels=None, focus=None,
     candle_color=None, theme=None, palette=None, height=None, title=None, future=0,
-    stats=None, trades=True, drawdown=None,
+    stats=None, trades=True, drawdown=None, notes=None,
 ):
     """Draw ``frame`` as candles, with your arrays and a run on top of it.
 
@@ -1029,6 +1076,15 @@ def chart(
     file into a document rather than a picture: the title on the left and a few
     numbers on the right. ``stats`` names the keys, defaulting to the four that
     decide whether a strategy is worth keeping, and ``stats=[]`` shows none.
+
+    ``notes`` puts a table of your own in the panel under the plot, under the
+    trade log and behind the same button. It takes a DataFrame, or a list of rows
+    whose first row is the header. This is what stops a saved file carrying a
+    claim and not the evidence for it: a walk-forward chart says each stretch
+    traded on parameters fitted only on the bars before it, and the windows that
+    say so were printed by the cell rather than by the chart. A DataFrame's index
+    is not drawn, so ``reset_index()`` if you want it as a column. It is for
+    context rather than for data, and nothing caps its length.
 
     ``theme`` is ``"dark"``, ``"light"`` or ``"auto"``, and ``palette`` overrides
     colours inside whichever of the two is showing, as ``{"dark": {"s1": ...}}``.
@@ -1393,8 +1449,9 @@ def chart(
         # 2 adds stats.funding_paid, which arrives because the spec mirrors the
         # whole stats dict and the engine now reports the funding a perp run paid.
         # 4 adds series.keys on a named background, the region names its legend
-        # row reads back (ADR 0110)
-        "schema": 4,
+        # row reads back (ADR 0110). 5 adds notes, the caller's own table under
+        # the plot (ADR 0113)
+        "schema": 5,
         "n": num_bars,
         # both built by numpy rather than by a comprehension. The candles are the
         # largest thing in the document by far, and rounding each of the four
@@ -1424,6 +1481,10 @@ def chart(
     }
     if title is not None:
         spec["title"] = str(title)
+    if notes is not None:
+        table = _notes(notes)
+        if table is not None:
+            spec["notes"] = table
     if num_bars > 1:
         gap = int(np.median(np.diff(times)))
         spec["interval"] = _interval(gap)

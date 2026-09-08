@@ -35,7 +35,7 @@
 </div>
 
 <div id="tablePanel" hidden>
-  <table>
+  <table id="trades">
     <thead><tr>
       <!-- Opened and Closed rather than Entry bar and Exit bar: those two now
            carry a timestamp, and Entry and Exit four columns along are prices -->
@@ -43,6 +43,13 @@
       <th>Entry</th><th>Exit</th><th>Fees</th><th>Net PnL</th><th>Bars</th>
     </tr></thead>
     <tbody id="tbody"></tbody>
+  </table>
+  <!-- whatever the caller put under the chart, below the fills rather than in a
+       panel of its own: both tables answer the question of what is under this
+       chart, so they share the one button (ADR 0113) -->
+  <table id="notes" hidden>
+    <thead><tr id="nhead"></tr></thead>
+    <tbody id="nbody"></tbody>
   </table>
 </div>
 

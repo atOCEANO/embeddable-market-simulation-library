@@ -12,6 +12,8 @@
   "height",
   "interval",
   "n",
+  "notes.head[]",
+  "notes.rows[][]",
   "ohlc[][]",
   "panels[].candles",
   "panels[].digits",
