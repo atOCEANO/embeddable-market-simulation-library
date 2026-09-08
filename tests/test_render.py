@@ -40,6 +40,50 @@ _COLOURS = """
 """
 
 
+# the legend and every caption are painted on canvas, so there is no text to
+# read: the drawing calls are recorded instead. Installed before the document
+# runs, because the first paint happens on mount
+_RECORDER = """
+window.__text = [];
+window.__at = [];
+const real = CanvasRenderingContext2D.prototype.fillText;
+CanvasRenderingContext2D.prototype.fillText = function (s, x, y) {
+  window.__text.push(String(s));
+  window.__at.push([String(s), y]);
+  return real.apply(this, arguments);
+};
+"""
+
+# the widest canvas is a pane's plot area; the price axis has its own, narrower
+_WIDEST = """
+() => {
+  let best = null;
+  document.querySelectorAll('#chart canvas').forEach(c => {
+    const r = c.getBoundingClientRect();
+    if (!best || r.width > best.width) best = {
+      left: r.left, top: r.top, width: r.width, height: r.height };
+  });
+  return best;
+}
+"""
+
+_STAMP = re.compile(r"\d{4}-\d\d-\d\d \d\d:\d\d")
+
+
+def stamp_under(page, at):
+    """The bar the legend reports with the pointer ``at`` across the plot.
+
+    Reading the chart the way a person does, which is the only way to ask it what
+    it is showing: the bundle runs inside an IIFE and nothing in it is reachable.
+    """
+    box = page.evaluate(_WIDEST)
+    page.evaluate("window.__text = []")
+    page.mouse.move(box["left"] + box["width"] * at, box["top"] + box["height"] * 0.5)
+    page.wait_for_timeout(250)
+    found = [s for s in page.evaluate("window.__text") if _STAMP.fullmatch(s)]
+    return found[0] if found else None
+
+
 def frame(n=60):
     step = np.sin(np.arange(n, dtype=np.float64) / 4.0) * 5.0
     close = 100.0 + np.arange(n, dtype=np.float64) * 0.4 + step
@@ -256,16 +300,7 @@ def test_a_legend_too_wide_for_its_panel_counts_what_it_dropped(tmp_path):
     with playwright.sync_playwright() as driver:
         browser = driver.chromium.launch(args=["--no-sandbox"])
         page = browser.new_page(viewport={"width": 620, "height": 700})
-        page.add_init_script(
-            """
-            window.__text = [];
-            const real = CanvasRenderingContext2D.prototype.fillText;
-            CanvasRenderingContext2D.prototype.fillText = function (s, x, y) {
-              window.__text.push(String(s));
-              return real.apply(this, arguments);
-            };
-            """
-        )
+        page.add_init_script(_RECORDER)
         page.goto(pathlib.Path(path).as_uri())
         page.wait_for_selector("#chart canvas", timeout=20_000)
         page.wait_for_timeout(500)
@@ -299,16 +334,7 @@ def test_a_gap_in_a_series_leaves_the_legend_quiet_rather_than_reporting_a_fault
     with playwright.sync_playwright() as driver:
         browser = driver.chromium.launch(args=["--no-sandbox"])
         page = browser.new_page(viewport={"width": 1280, "height": 700})
-        page.add_init_script(
-            """
-            window.__text = [];
-            const real = CanvasRenderingContext2D.prototype.fillText;
-            CanvasRenderingContext2D.prototype.fillText = function (s, x, y) {
-              window.__text.push(String(s));
-              return real.apply(this, arguments);
-            };
-            """
-        )
+        page.add_init_script(_RECORDER)
         page.goto(pathlib.Path(path).as_uri())
         page.wait_for_selector("#chart canvas", timeout=20_000)
         page.wait_for_timeout(600)
@@ -339,40 +365,12 @@ def test_a_dense_chart_is_aggregated_without_moving_what_the_crosshair_reads(tmp
     with playwright.sync_playwright() as driver:
         browser = driver.chromium.launch(args=["--no-sandbox"])
         page = browser.new_page(viewport={"width": 900, "height": 600})
-        page.add_init_script(
-            """
-            window.__text = [];
-            const real = CanvasRenderingContext2D.prototype.fillText;
-            CanvasRenderingContext2D.prototype.fillText = function (s, x, y) {
-              window.__text.push(String(s));
-              return real.apply(this, arguments);
-            };
-            """
-        )
+        page.add_init_script(_RECORDER)
         page.goto(pathlib.Path(path).as_uri())
         page.wait_for_selector("#chart canvas", timeout=20_000)
         page.wait_for_timeout(700)
-        box = page.evaluate(
-            """
-            () => {
-              let best = null;
-              document.querySelectorAll('#chart canvas').forEach(c => {
-                const r = c.getBoundingClientRect();
-                if (!best || r.width > best.width) best = {
-                  left: r.left, top: r.top, width: r.width, height: r.height };
-              });
-              return best;
-            }
-            """
-        )
         for at in (0.1, 0.5, 0.9):
-            page.evaluate("window.__text = []")
-            page.mouse.move(box["left"] + box["width"] * at,
-                            box["top"] + box["height"] * 0.5)
-            page.wait_for_timeout(250)
-            drawn = page.evaluate("window.__text")
-            read[at] = [s for s in drawn
-                        if re.fullmatch(r"\d{4}-\d\d-\d\d \d\d:\d\d", s)]
+            read[at] = stamp_under(page, at)
         browser.close()
 
     # the whole series is fitted, so the fraction across the plot is the fraction
@@ -380,10 +378,121 @@ def test_a_dense_chart_is_aggregated_without_moving_what_the_crosshair_reads(tmp
     # tighter than the aggregation and far looser than a rounding
     for at, printed in read.items():
         assert printed, f"no bar was stamped at {at}; nothing reached the legend"
-        landed = stamps.index(printed[0])
+        landed = stamps.index(printed)
         assert abs(landed - at * n) < n * 0.02, (
             f"the pointer was {at:.0%} across and the legend said bar {landed} of {n}"
         )
+
+
+def test_fit_puts_the_whole_series_back_after_a_row_framed_one_trade(tmp_path):
+    # FIT had never been pressed by anything. It is the one control that undoes
+    # every other gesture, so a chart whose FIT is broken is a chart a reader can
+    # get lost in with no way back
+    candles = frame(400)
+    result = run(candles)
+    assert len(result.trades) > 4
+    stamps = [t.strftime("%Y-%m-%d %H:%M") for t in candles.index]
+
+    path = emsl.chart(candles, result).save(str(tmp_path / "fit.html"))
+    with playwright.sync_playwright() as driver:
+        browser = driver.chromium.launch(args=["--no-sandbox"])
+        page = browser.new_page(viewport={"width": 1100, "height": 700})
+        page.add_init_script(_RECORDER)
+        page.goto(pathlib.Path(path).as_uri())
+        page.wait_for_selector("#chart canvas", timeout=20_000)
+        page.wait_for_timeout(500)
+        whole = stamp_under(page, 0.02)
+
+        # clicking a row frames that trade, which is the zoom being undone
+        page.click("#tbl")
+        page.click('#tbody tr[data-n="4"]')
+        page.wait_for_timeout(500)
+        framed = stamp_under(page, 0.02)
+
+        page.click("#fit")
+        page.wait_for_timeout(500)
+        back = stamp_under(page, 0.02)
+        browser.close()
+
+    # two percent across a fitted 400 bar chart is bar 8, not bar 0, so this is
+    # about where the viewport sits rather than about an exact bar
+    assert stamps.index(whole) < len(stamps) * 0.05, "the chart did not open fitted"
+    assert framed != whole, "clicking the row framed nothing, so FIT is untested"
+    assert back == whole, "FIT left the chart where the row had put it"
+
+
+def test_the_wheel_zooms_the_time_axis(tmp_path):
+    # the renderer's own handler, which a synthetic event never reaches and no
+    # test had ever driven with a real one
+    candles = frame(400)
+    path = emsl.chart(candles).save(str(tmp_path / "wheel.html"))
+    with playwright.sync_playwright() as driver:
+        browser = driver.chromium.launch(args=["--no-sandbox"])
+        page = browser.new_page(viewport={"width": 1100, "height": 700})
+        page.add_init_script(_RECORDER)
+        page.goto(pathlib.Path(path).as_uri())
+        page.wait_for_selector("#chart canvas", timeout=20_000)
+        page.wait_for_timeout(500)
+        before = stamp_under(page, 0.02)
+
+        box = page.evaluate(_WIDEST)
+        page.mouse.move(box["left"] + box["width"] * 0.5,
+                        box["top"] + box["height"] * 0.5)
+        for _ in range(6):
+            page.mouse.wheel(0, -240)
+            page.wait_for_timeout(80)
+        page.wait_for_timeout(400)
+        after = stamp_under(page, 0.02)
+        browser.close()
+
+    stamps = [t.strftime("%Y-%m-%d %H:%M") for t in candles.index]
+    assert before is not None and after is not None, "the legend stopped reporting"
+    # zooming in at the middle walks the left edge forward through the series, so
+    # the bar two percent across the plot is a later one than it was
+    assert stamps.index(after) > stamps.index(before), "the wheel moved nothing"
+
+
+def test_dragging_a_pane_separator_resizes_the_panes_and_moves_their_controls(tmp_path):
+    # the separator drag fires no event of its own, which is why controls.js
+    # catches it on mouseup; that arrangement had never been exercised, so a
+    # dragged chart could have left its per-pane buttons behind
+    candles = frame(200)
+    built = emsl.chart(candles, run(candles))
+    path = built.save(str(tmp_path / "drag.html"))
+    tops = "gs => gs.map(g => g.style.top)"
+    with playwright.sync_playwright() as driver:
+        browser = driver.chromium.launch(args=["--no-sandbox"])
+        page = browser.new_page(viewport={"width": 1100, "height": 800})
+        page.goto(pathlib.Path(path).as_uri())
+        page.wait_for_selector("#paneCtls .panectl", timeout=20_000)
+        page.wait_for_timeout(600)
+        before = page.locator("#paneCtls .panectl").evaluate_all(tops)
+
+        # the separator sits in the gap between two pane canvases
+        gap = page.evaluate(
+            """
+            () => {
+              const rs = Array.from(document.querySelectorAll('#chart canvas'))
+                .map(c => c.getBoundingClientRect())
+                .filter(r => r.width > 200)
+                .sort((a, b) => a.top - b.top);
+              if (rs.length < 2) return null;
+              return { x: rs[0].left + rs[0].width / 2,
+                       y: (rs[0].bottom + rs[1].top) / 2 };
+            }
+            """
+        )
+        assert gap is not None, "the fixture has only one pane to drag between"
+        page.mouse.move(gap["x"], gap["y"])
+        page.mouse.down()
+        page.mouse.move(gap["x"], gap["y"] - 90, steps=12)
+        page.mouse.up()
+        page.wait_for_timeout(600)
+        after = page.locator("#paneCtls .panectl").evaluate_all(tops)
+        browser.close()
+
+    assert len(before) == len(after) > 1
+    assert before != after, "the drag changed nothing, or the controls did not follow"
 
 
 def test_the_candles_put_no_badge_on_the_price_axis(tmp_path):
@@ -409,16 +518,7 @@ def test_the_candles_put_no_badge_on_the_price_axis(tmp_path):
     with playwright.sync_playwright() as driver:
         browser = driver.chromium.launch(args=["--no-sandbox"])
         page = browser.new_page(viewport={"width": 1000, "height": 600})
-        page.add_init_script(
-            """
-            window.__text = [];
-            const real = CanvasRenderingContext2D.prototype.fillText;
-            CanvasRenderingContext2D.prototype.fillText = function (s, x, y) {
-              window.__text.push(String(s));
-              return real.apply(this, arguments);
-            };
-            """
-        )
+        page.add_init_script(_RECORDER)
         page.goto(pathlib.Path(path).as_uri())
         page.wait_for_selector("#chart canvas", timeout=20_000)
         page.wait_for_timeout(600)
@@ -446,16 +546,7 @@ def test_a_caption_near_the_top_moves_rather_than_printing_through_the_legend(tm
     with playwright.sync_playwright() as driver:
         browser = driver.chromium.launch(args=["--no-sandbox"])
         page = browser.new_page(viewport={"width": 1000, "height": 600})
-        page.add_init_script(
-            """
-            window.__at = [];
-            const real = CanvasRenderingContext2D.prototype.fillText;
-            CanvasRenderingContext2D.prototype.fillText = function (s, x, y) {
-              window.__at.push([String(s), y]);
-              return real.apply(this, arguments);
-            };
-            """
-        )
+        page.add_init_script(_RECORDER)
         page.goto(pathlib.Path(path).as_uri())
         page.wait_for_selector("#chart canvas", timeout=20_000)
         page.wait_for_timeout(600)
@@ -486,16 +577,7 @@ def test_the_axis_drops_a_grain_the_span_does_not_deserve_and_keeps_one_it_does(
     def labels(candles, name):
         path = emsl.chart(candles).save(str(tmp_path / name))
         page = browser.new_page(viewport={"width": 1280, "height": 700})
-        page.add_init_script(
-            """
-            window.__text = [];
-            const real = CanvasRenderingContext2D.prototype.fillText;
-            CanvasRenderingContext2D.prototype.fillText = function (s, x, y) {
-              window.__text.push(String(s));
-              return real.apply(this, arguments);
-            };
-            """
-        )
+        page.add_init_script(_RECORDER)
         page.goto(pathlib.Path(path).as_uri())
         page.wait_for_selector("#chart canvas", timeout=20_000)
         page.wait_for_timeout(600)
@@ -564,16 +646,7 @@ def test_a_named_background_names_the_region_under_the_crosshair(tmp_path):
     with playwright.sync_playwright() as driver:
         browser = driver.chromium.launch(args=["--no-sandbox"])
         page = browser.new_page(viewport={"width": 1280, "height": 700})
-        page.add_init_script(
-            """
-            window.__text = [];
-            const real = CanvasRenderingContext2D.prototype.fillText;
-            CanvasRenderingContext2D.prototype.fillText = function (s, x, y) {
-              window.__text.push(String(s));
-              return real.apply(this, arguments);
-            };
-            """
-        )
+        page.add_init_script(_RECORDER)
         page.goto(pathlib.Path(path).as_uri())
         page.wait_for_selector("#chart canvas", timeout=20_000)
         page.wait_for_timeout(600)
