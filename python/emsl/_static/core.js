@@ -88,6 +88,76 @@ const stamp = function (i) {
   return new Date(SPEC.t[i] * 1000).toISOString().slice(0, 16).replace("T", " ");
 };
 
+
+// ------------------------------------------------------------------- the axis
+
+// The renderer weighs every tick on its own and will straddle two of its own
+// thresholds, so a strip 1920 wide read 9, 17, 12:00, Sept, 9, 17, Oct: one
+// intraday tick between two day numbers, which is noise rather than detail. A
+// grain finer than the span deserves is suppressed instead. Its own labels are
+// kept for everything else, by answering null, which is what the renderer reads
+// as "you decide" (ADR 0111).
+const DAY = 86400;
+
+// Generous on purpose. What reads as noise is a LONE fine tick among coarse ones,
+// and a fine grain that appears between every pair of coarse ones is a sub-grid
+// that reads fine. Telling those apart needs the whole tick set, which a
+// formatter called once per tick does not have, so the thresholds are set where
+// the mix is certainly ragged rather than where it might be: three days of
+// candles keep their hours, two months lose the one stray 12:00, a year loses the
+// day numbers between its month names
+const coarsestTick = function (seconds) {
+  if (seconds > DAY * 100) return 1;       // months and years
+  if (seconds > DAY * 21) return 2;        // and days
+  return 4;                                // and times, down to seconds
+};
+
+let axisSpan = 0;                      // seconds on screen
+let axisEdge = null;                   // no label past this time; it would be cut
+
+const tickMark = function (time) {
+  // arguments rather than a named second parameter: the renderer passes
+  // (time, tickMarkType, locale) and only the first two are read here
+  if (arguments[1] > coarsestTick(axisSpan)) return "";
+  // the last label is centred on its bar and clipped where the price gutter
+  // begins, so a year of hourly candles ended the axis on "20" rather than
+  // "2026". The room has to come out of the gutter and the renderer carries no
+  // option for that; rightOffset buys it in bars, which narrows every candle on
+  // the chart to pay for one label, and two render tests were right to refuse
+  // it. Dropping the label that cannot fit is the honest trade: a truncated year
+  // is worse than no year, and the date is on the crosshair and in the legend
+  // whichever way this goes
+  if (axisEdge !== null && time > axisEdge) return "";
+  return null;
+};
+
+// measured on a range change rather than inside the formatter, because the
+// formatter is called from the middle of the axis layout and asking the time
+// scale for its own geometry from in there is a re-entry waiting to happen
+const measureAxis = function (range) {
+  if (!range || !SPEC.t.length) return;
+  const last = SPEC.t.length - 1;
+  const clamp = function (v) { return Math.max(0, Math.min(last, v)); };
+  const span = SPEC.t[clamp(Math.ceil(range.to))] - SPEC.t[clamp(Math.floor(range.from))];
+
+  const plot = document.getElementById("chart").clientWidth -
+    chart.priceScale("right").width();
+  const spacing = plot / Math.max(1, range.to - range.from);
+  // half a four digit year at the axis font, plus air, expressed in bars. The
+  // axis is set at 12 * UI, where "2026" measures about 26 * UI wide, so half of
+  // it is 13. Erring wide costs a label that would have fitted and erring narrow
+  // puts a clipped one back, and the whole point here is not to clip
+  const room = Math.ceil((16 * UI) / Math.max(spacing, 0.0001));
+  const edge = SPEC.t[clamp(Math.ceil(range.to) - room)];
+
+  // guarded rather than unconditional: re-applying marks the axis dirty, and an
+  // unguarded write would repaint on every frame of a drag forever
+  if (span === axisSpan && edge === axisEdge) return;
+  axisSpan = span;
+  axisEdge = edge;
+  chart.timeScale().applyOptions({ tickMarkFormatter: tickMark });
+};
+
 // a Track carries i0 and a value array, so the alignment contract arrives as an
 // integer and this file never learns the rule. A null becomes whitespace, {time}
 // with no value, rather than a dropped row, because dropping would make the
@@ -463,10 +533,21 @@ const mount = function (spec, root) {
     // floor at 4380px of width, and quietly frames the last 2256 instead. The chart
     // then showed a different slice of history at every window size, and a walk
     // forward whose whole subject is five fitted stretches opened on the last two.
-    // Refusing to fit is worse than a crowded bar, because the crowding is visible
+    // Refusing to fit is worse than a crowded bar, because the crowding is visible.
+    //
+    // And then the crowding is answered rather than lived with. Conflation is the
+    // renderer's own and was off: below one device pixel of bar spacing it
+    // aggregates to the column, which took a year of hourly candles from 105,186
+    // fillRect calls to 13,206 and from a grey smear to a readable year. The
+    // hazard is worth naming, because it is not visible from here: legend.js
+    // reads SPEC by logical index while the candle under the pointer is now a
+    // group of bars, so a render test walks the pointer across a 4000 bar chart
+    // and holds the two to each other (ADR 0111)
     timeScale: {
       borderColor: t.axis, timeVisible: true, secondsVisible: false,
       minBarSpacing: 0.04,
+      enableConflation: true,
+      tickMarkFormatter: tickMark,
     },
   });
 
@@ -602,6 +683,10 @@ const mount = function (spec, root) {
       ? Math.max(0, Math.min(last, p.logical)) : spec.n - 1;
     if (i !== cursor) { cursor = i; invalidate(); }
   });
+
+  // before anything frames the chart, so the first paint is already measured
+  // rather than corrected a frame later
+  chart.timeScale().subscribeVisibleLogicalRangeChange(measureAxis);
 
   // before the primitives, because each of them converts through a series and
   // this is what gives a primitive-only panel one that carries values

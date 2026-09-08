@@ -319,6 +319,119 @@ def test_a_gap_in_a_series_leaves_the_legend_quiet_rather_than_reporting_a_fault
     assert "n/a" not in drawn, "the legend reported a gap as a missing value"
 
 
+def test_a_dense_chart_is_aggregated_without_moving_what_the_crosshair_reads(tmp_path):
+    # a year of hourly candles into a notebook cell is a fifth of a pixel a bar,
+    # and drawing every one of them is a smear with no OHLC left in it. The
+    # renderer aggregates to the pixel below one device pixel of bar spacing,
+    # which cut the canvas work on the flagship chart from 105,186 fillRect calls
+    # to 13,206 and made the year legible.
+    #
+    # The hazard it brings is this test's subject. legend.js reads SPEC by logical
+    # index while the candle beside it is now a group of bars, so if the renderer
+    # started answering with a conflated index the legend would report a bar
+    # nowhere near the one under the pointer, quietly and on every dense chart
+    n = 4000
+    candles = frame(n)
+    stamps = [t.strftime("%Y-%m-%d %H:%M") for t in candles.index]
+    path = emsl.chart(candles).save(str(tmp_path / "dense.html"))
+
+    read = {}
+    with playwright.sync_playwright() as driver:
+        browser = driver.chromium.launch(args=["--no-sandbox"])
+        page = browser.new_page(viewport={"width": 900, "height": 600})
+        page.add_init_script(
+            """
+            window.__text = [];
+            const real = CanvasRenderingContext2D.prototype.fillText;
+            CanvasRenderingContext2D.prototype.fillText = function (s, x, y) {
+              window.__text.push(String(s));
+              return real.apply(this, arguments);
+            };
+            """
+        )
+        page.goto(pathlib.Path(path).as_uri())
+        page.wait_for_selector("#chart canvas", timeout=20_000)
+        page.wait_for_timeout(700)
+        box = page.evaluate(
+            """
+            () => {
+              let best = null;
+              document.querySelectorAll('#chart canvas').forEach(c => {
+                const r = c.getBoundingClientRect();
+                if (!best || r.width > best.width) best = {
+                  left: r.left, top: r.top, width: r.width, height: r.height };
+              });
+              return best;
+            }
+            """
+        )
+        for at in (0.1, 0.5, 0.9):
+            page.evaluate("window.__text = []")
+            page.mouse.move(box["left"] + box["width"] * at,
+                            box["top"] + box["height"] * 0.5)
+            page.wait_for_timeout(250)
+            drawn = page.evaluate("window.__text")
+            read[at] = [s for s in drawn
+                        if re.fullmatch(r"\d{4}-\d\d-\d\d \d\d:\d\d", s)]
+        browser.close()
+
+    # the whole series is fitted, so the fraction across the plot is the fraction
+    # through the bars. Two percent of the span is the tolerance, which is far
+    # tighter than the aggregation and far looser than a rounding
+    for at, printed in read.items():
+        assert printed, f"no bar was stamped at {at}; nothing reached the legend"
+        landed = stamps.index(printed[0])
+        assert abs(landed - at * n) < n * 0.02, (
+            f"the pointer was {at:.0%} across and the legend said bar {landed} of {n}"
+        )
+
+
+def test_the_axis_drops_a_grain_the_span_does_not_deserve_and_keeps_one_it_does(tmp_path):
+    # the renderer weighs every tick on its own and will straddle two of its own
+    # thresholds, so 1920 pixels of a two month chart read 9, 17, 12:00, Sept, 9,
+    # 17, Oct: one intraday tick between two day numbers, which is noise.
+    #
+    # Both directions, because suppressing is the easy half and the expensive
+    # mistake is taking away detail that was doing its job. Three days of hourly
+    # candles want their hours, and an empty label is how a tick is dropped, so
+    # its presence is what says the formatter is engaged at all (ADR 0111)
+    def labels(candles, name):
+        path = emsl.chart(candles).save(str(tmp_path / name))
+        page = browser.new_page(viewport={"width": 1280, "height": 700})
+        page.add_init_script(
+            """
+            window.__text = [];
+            const real = CanvasRenderingContext2D.prototype.fillText;
+            CanvasRenderingContext2D.prototype.fillText = function (s, x, y) {
+              window.__text.push(String(s));
+              return real.apply(this, arguments);
+            };
+            """
+        )
+        page.goto(pathlib.Path(path).as_uri())
+        page.wait_for_selector("#chart canvas", timeout=20_000)
+        page.wait_for_timeout(600)
+        drawn = page.evaluate("window.__text")
+        page.close()
+        return drawn
+
+    with playwright.sync_playwright() as driver:
+        browser = driver.chromium.launch(args=["--no-sandbox"])
+        # 3000 hourly bars is four months, past every threshold in the rule
+        wide = labels(frame(3000), "wide.html")
+        near = labels(frame(72), "near.html")
+        browser.close()
+
+    clock = re.compile(r"\d\d:\d\d")
+    assert not [s for s in wide if clock.fullmatch(s)], (
+        "a time of day survived on a four month axis"
+    )
+    assert "" in wide, "nothing was suppressed, so the formatter never ran"
+    assert [s for s in near if clock.fullmatch(s)], (
+        "three days of hourly candles lost the hours they are about"
+    )
+
+
 def test_auto_opens_on_the_scheme_the_reader_asked_for(tmp_path):
     # one saved file, opened twice by readers whose machines disagree. The palette
     # for both has always been in the document; nothing was asking (ADR 0109).

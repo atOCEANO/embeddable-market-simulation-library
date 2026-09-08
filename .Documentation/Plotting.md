@@ -777,6 +777,8 @@ chart.save(path="run.html")       # fills whatever window opens it
 
 There is no width, anywhere. A chart fills whatever contains it. A notebook cell is a container of unknown size, so a pinned width is how a chart ends up cut off on one screen and short of the edge on another, and it is the one place the layout would stop holding at any size. Panels are sized with `weight`, a stretch factor, for the same reason.
 
+A year of hourly candles is 8760 bars, and a notebook cell gives each of them about a fifth of a pixel. Every bar is still fitted, because framing a quarter of the data and saying nothing is worse than a crowded one, and below one device pixel of bar spacing the candles are **aggregated to the column**: one drawn candle per pixel, opening at the first of its group and closing at the last, reaching the extremes of all of them ([ADR 0111](Decisions.md)). Zooming in un-aggregates as the spacing grows, and the crosshair reads the real bar throughout, so nothing you can hover is a summary. The time axis holds one grain at a time for the same reason: at a year it names months, and a lone day number between two of them is noise rather than detail.
+
 <br>
 
 ### What it costs
