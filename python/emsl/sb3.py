@@ -9,15 +9,13 @@ episode's first observation, the true final in ``infos``) is exactly the SB3
 ``VecEnv`` contract, so a done env's final observation becomes SB3's
 ``terminal_observation`` (ADR 0022).
 
-```python
-from stable_baselines3 import PPO
-from emsl.rl import VectorEnv
-from emsl.sb3 import EmslVecEnv
+    from stable_baselines3 import PPO
+    from emsl.rl import VectorEnv
+    from emsl.sb3 import EmslVecEnv
 
-venv = EmslVecEnv(VectorEnv(ohlcv, num_envs=8, window=32, market="perp", seed=0))
-model = PPO("MlpPolicy", venv)
-model.learn(total_timesteps=100_000)
-```
+    venv = EmslVecEnv(VectorEnv(ohlcv, num_envs=8, window=32, market="perp", seed=0))
+    model = PPO("MlpPolicy", venv)
+    model.learn(total_timesteps=100_000)
 
 Needs stable-baselines3: ``pip install 'emsl[sb3]'``.
 """

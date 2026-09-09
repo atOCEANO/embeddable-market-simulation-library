@@ -7,8 +7,6 @@
   color-scheme: dark;
   --plane:    #05090e;
   --surface:  #070d13;
-  --grid:     #131c26;
-  --axis:     #1f2a36;
   --ink:      #e9ebee;
   --ink-2:    #aab1bb;
   --muted:    #717a85;
@@ -28,9 +26,6 @@ body {
   font: calc(13px * var(--ui))/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 
-/* what the chart is, and the handful of numbers that decide whether to keep it.
-   A file arrives in an inbox with only its filename, so a chart that cannot say
-   which strategy over which period is an untitled squiggle. */
 /* a flex item will not shrink below its own content unless it is told it may, and
    both of these carry one long run: a sentence, and a stats row that must not
    break between a label and its number. At 400px the pair held the body wider
@@ -78,10 +73,11 @@ body {
 #chart { position: absolute; inset: 0; }
 
 /* one A / L / % group per pane, at the bottom right of that pane's gutter.
-   Button width comes from the live gutter width so the group cannot bleed
-   over the plot on a narrow axis. The backdrop is solid at the bottom and
-   fades out upward so the price labels above it keep no hard edge. Hidden
-   until the pane is hovered, and not clickable while hidden. */
+   Button width follows the live gutter, but controls.js clamps a button to 14px
+   and the group to 48px, so a gutter narrower than that is overhung rather than
+   fitted. The backdrop is solid at the bottom and fades out upward so the price
+   labels above it keep no hard edge. Hidden until the pane is hovered, and not
+   clickable while hidden. */
 .panectl {
   /* above the renderer's own pane separator, which is a draggable strip at
      z-index 50 sitting exactly where these buttons sit, at the bottom of a
@@ -138,9 +134,11 @@ body {
 }
 .footer button:hover { color: var(--ink); border-bottom-color: var(--muted); }
 .footer button[aria-pressed="true"] { color: var(--s1); border-bottom-color: var(--s1); }
-/* the only control set on the chart, and nothing had ever marked it for a
-   keyboard: without a box there is no default focus ring worth seeing either */
-.footer button:focus-visible { outline: 2px solid var(--s1); outline-offset: 2px; }
+/* the chart carries two control sets, this one and the per-pane A / L / %, and
+   neither had ever been marked for a keyboard: a footer button has no box at all
+   and a pane button's is a hairline, so neither shows a default ring */
+.footer button:focus-visible,
+.panectl button:focus-visible { outline: 2px solid var(--s1); outline-offset: 2px; }
 
 #tablePanel {
   flex: 0 0 auto;
@@ -150,14 +148,16 @@ body {
   padding: calc(8px * var(--ui)) calc(10px * var(--ui));
   max-height: 34vh; overflow: auto;
 }
-#tablePanel[hidden] { display: none; }
 /* a table sets its own display, so the hidden attribute needs saying out loud */
 #trades[hidden], #notes[hidden] { display: none; }
 /* enough air that the two read as two tables and not as one with a strange row.
    On the second one, and only when the first is actually showing, so a chart
    with no notes does not open its trade log on a stray gap */
 #notes:not([hidden]) + #trades { margin-top: calc(16px * var(--ui)); }
-table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; font-size: calc(12px * var(--ui)); }
+table {
+  border-collapse: collapse; width: 100%;
+  font-variant-numeric: tabular-nums; font-size: calc(12px * var(--ui));
+}
 th {
   text-align: right; color: var(--muted); font-weight: 500;
   padding: calc(4px * var(--ui)) calc(8px * var(--ui));

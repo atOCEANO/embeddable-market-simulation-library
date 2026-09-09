@@ -74,7 +74,7 @@ _BIG_BYTES = 8_000_000
 # own flagship chart drew EMA 20 and EMA 60 in one blue under two identical legend
 # swatches. Green and red are spent on win and loss and cannot be reused here, so
 # the four are blue, amber, violet and grey, which is also the order they read
-# apart in: no adjacent pair shares a hue family, and each clears 5:1 on its ground.
+# apart in: no adjacent pair shares a hue family, and each clears 5:1 on its ground
 _PALETTES = {
     "dark": {
         "surface": "#070d13", "plane": "#05090e", "grid": "#131c26",
@@ -138,7 +138,7 @@ def _palette(palette):
 # the trough drawn directly beneath the high that caused it. "panel" is the pane it
 # used to get, which is worth having when the equity axis is linear, because a
 # shaded fall in quote currency draws a late twenty percent taller than an early
-# one and a percentage pane does not. False draws neither.
+# one and a percentage pane does not. False draws neither
 _DRAWDOWN = ("under", "panel", False)
 
 
@@ -171,6 +171,7 @@ _STAT_LABELS = {
     "avg_trade_pct": ("avg trade", "{:+.2f}%"),
     "num_trades": ("trades", "{:.0f}"),
     "num_fills": ("fills", "{:.0f}"),
+    "funding_paid": ("funding", "{:+.2f}"),
 }
 
 _FONT = 'system-ui, -apple-system, "Segoe UI", sans-serif'
@@ -258,15 +259,14 @@ def _needs_time(frame):
 
 @functools.lru_cache(maxsize=None)
 def _asset(name):
-    # cached for the same reason _bundle is: the assets are static for the life of
-    # the process, and the template, the stylesheet and the 196 KB renderer were
-    # being re-read off disk on every single render
+    # the assets are static for the life of the process, and the template, the
+    # stylesheet and the 196 KB renderer were being re-read off disk on every
+    # single render
     return (_STATIC / name).read_text(encoding="utf-8")
 
 
 def _bundle():
-    # read once: the assets are static for the life of the process and a chart
-    # drawn in a loop would otherwise re-read every file per call
+    # joined once, for the reason _asset is cached
     global _bundled
     if _bundled is None:
         _bundled = "\n".join(
@@ -408,11 +408,9 @@ def _encode_color(value, num_bars, label, ahead=0):
 
 
 def _truthy(value):
-    # a NaN is not a condition being met. numpy.array([nan]).astype(bool) is True,
-    # so a mask padded with NaN reports the event it was looking for, and the doc
-    # that teaches the padding is the thing that creates the bug. pandas.NA
-    # answers neither way and raises on bool(), and a value that cannot answer the
-    # question is by definition not a condition being met
+    # a NaN is not a condition being met, for the reason at_bar's docstring gives.
+    # pandas.NA answers neither way and raises on bool(), and a value that cannot
+    # answer the question is by definition not a condition being met
     if value is None:
         return False
     if isinstance(value, float) and math.isnan(value):
@@ -706,10 +704,6 @@ def _order(names, config, has_volume, has_result, drawdown="under"):
         for name in auto:
             if name not in order:
                 order.append(name)
-    # panels= configures and never creates: a typo would otherwise manufacture a
-    # blank pane with an axis, a legend and nothing on it, while the panel the
-    # caller meant stayed unconfigured
-
     # panels= fixes the relative order of the panels it names without moving them
     # relative to the panels it does not: take the slots those panels already
     # occupy and write them back in the listed order. Naming one panel therefore
@@ -806,7 +800,7 @@ def _check_log(panels, marks, names, ohlc, tracks, ahead=0):
             )
 
 
-def _focus(value, num_bars, result, ahead=0):
+def _focus(value, num_bars, ahead=0):
     last = num_bars + ahead - 1.0
     if value is None:
         return None
@@ -916,20 +910,30 @@ def _notes(notes):
     return {"head": head, "rows": rows}
 
 
+# alpha compositions the renderer would otherwise build by concatenating a byte
+# onto one of these, in two files that had to agree on the byte. An alpha is a
+# reading somebody could disagree with, so it is chosen here and crosses the seam
+# as a colour (ADR 0115)
+_ALPHAS = (
+    ("volUp", "up", "66"), ("volDown", "down", "66"),
+    ("equityTop", "s1", "44"), ("equityBottom", "s1", "00"),
+    ("ddTop", "loss", "00"), ("ddBottom", "loss", "44"),
+)
+
+
 def _theme(mode, palette):
     out = {"mode": mode, "font": _FONT}
     for key in ("dark", "light"):
         merged = dict(_PALETTES[key])
         if palette and key in palette:
             merged.update(palette[key])
+        for name, base, alpha in _ALPHAS:
+            merged[name] = merged[base] + alpha
         out[key] = merged
     return out
 
 
 def _render(spec, title):
-    # one re.sub pass rather than chained .replace(): the vendored renderer is
-    # 196 KB of minified JavaScript, and a chained replace would happily expand a
-    # placeholder that appeared inside text already substituted
     payload = json.dumps(spec, separators=(",", ":"), allow_nan=False)
     if len(payload) > _BIG_BYTES:
         # gzip was measured before writing this: 3.1x raw, and 2.3x once base64
@@ -961,6 +965,9 @@ def _render(spec, title):
         "__BUNDLE__": _bundle(),
         "__SPEC__": payload,
     }
+    # one re.sub pass rather than chained .replace(): the vendored renderer is
+    # 196 KB of minified JavaScript, and a chained replace would happily expand a
+    # placeholder that appeared inside text already substituted
     return _PLACEHOLDER.sub(lambda m: values[m.group(0)], _asset("chart.html"))
 
 
@@ -1079,6 +1086,17 @@ def chart(
     say so were printed by the cell rather than by the chart. A DataFrame's index
     is not drawn, so ``reset_index()`` if you want it as a column. It is for
     context rather than for data, and nothing caps its length.
+
+    ``panels`` takes ``Panel`` objects and configures panels the chart already has,
+    and naming more than one also fixes their order relative to each other without
+    moving them relative to the panels you did not name. ``focus`` moves the
+    viewport and never slices the data, so every marker stays on its own bar: it
+    takes a trade row, a ``(start, end)`` pair of bar indices, or an integer ``N``
+    meaning the last ``N`` bars, and its bounds are clamped to the frame rather
+    than refused. ``candle_color`` is Pine's ``barcolor``, one colour per bar, and
+    ``None`` at a bar leaves that bar the palette's own rather than tinting it.
+    ``height`` is the height of a notebook cell in pixels, which ``show(height=)``
+    overrides for one display; a saved file sizes itself to the window instead.
 
     ``theme`` is ``"dark"``, ``"light"`` or ``"auto"``, and ``palette`` overrides
     colours inside whichever of the two is showing, as ``{"dark": {"s1": ...}}``.
@@ -1239,10 +1257,10 @@ def chart(
         equity = np.asarray(result.equity_curve, dtype=np.float64)
         # the curve holds a point per advance, so the balance the run opened with is
         # not in it. Taking the peak from the curve alone loses every fall from that
-        # balance, and the engine takes it from the balance (stats.rs:64-66), so a
-        # first bar that lost money drew a flat zero panel under a headline reading
-        # the engine's own number. Capped for the same reason the engine caps it: a
-        # bust past zero is 100% down, not more (ADR 0042)
+        # balance, and the engine takes it from the balance, so a first bar that lost
+        # money drew a flat zero panel under a headline reading the engine's own
+        # number. Capped for the same reason the engine caps it: a bust past zero is
+        # 100% down, not more (ADR 0042)
         start = getattr(result, "initial", None)
         opened = equity if start is None else np.concatenate(([float(start)], equity))
         peak = np.maximum.accumulate(opened)[-len(equity):]
@@ -1409,10 +1427,10 @@ def chart(
     # own running maximum. A band rather than a second pane, so the two readings
     # share one axis and one set of units and the trough is drawn directly beneath
     # the high that caused it. The band never inverts, because a running maximum is
-    # never below the series it is taken from
-    # not when a drawdown panel exists anyway: a mark carrying panel="drawdown"
-    # creates one the same way any other name does, and the fall would then be
-    # drawn twice, once in its own pane and once shaded onto the equity
+    # never below the series it is taken from. Not drawn when a drawdown panel
+    # already exists: a mark carrying panel="drawdown" creates one the same way any
+    # other name does, and the fall would then be drawn twice, once in its own pane
+    # and once shaded onto the equity
     has_dd_panel = any(p["name"] == "drawdown" for p in panels_out)
     if (dd_mode == "under" and not has_dd_panel
             and equity is not None and peak is not None
@@ -1445,24 +1463,25 @@ def chart(
         # 4 adds series.keys on a named background, the region names its legend
         # row reads back (ADR 0110). 5 adds notes, the caller's own table under
         # the plot (ADR 0113)
-        "schema": 5,
+        "schema": 6,
         "n": num_bars,
-        # both built by numpy rather than by a comprehension. The candles are the
-        # largest thing in the document by far, and rounding each of the four
-        # values in Python was two thirds of the cost of a chart: tolist() already
-        # materialises T lists, and the comprehension built T more on top of them.
-        # numpy rounds by scaling, so it can break a tie the other way from
-        # round(); a price is a whole number of ticks, which puts it nowhere near
-        # a tie, and 2.48M real prices came out identical. Dropping the rounding
-        # was tried and rejected: it costs nothing on exchange data, whose reprs
-        # are already short, and 2.6x on a frame somebody computed.
-        # The precision comes from the candles' own range and NOT from the price
-        # panel's digits, which every mark sharing that panel contributes to. A
-        # Level(70) beside a coin priced 0.000012 dragged the panel from eight
-        # digits to two and rounded every candle to 0.0, and one Line reaching a
-        # million took XRP from 4990 distinct candles to 52. What is displayed is
-        # a panel setting; what is stored must depend on the data alone
+        # numpy's own tolist() here and on the candles below, never a comprehension
+        # over either. The candles are the largest thing in the document by far, and
+        # rounding each of the four values in Python was two thirds of the cost of a
+        # chart: tolist() already materialises T lists, and the comprehension built
+        # T more on top of them
         "t": times.tolist(),
+        # the rounding was tried without and rejected: it costs nothing on exchange
+        # data, whose reprs are already short, and 2.6x on a frame somebody computed.
+        # numpy rounds by scaling, so it can break a tie the other way from round();
+        # a price is a whole number of ticks, which puts it nowhere near a tie, and
+        # 2.48M real prices came out identical. The precision comes from the candles'
+        # own range and NOT from the price panel's digits, which every mark sharing
+        # that panel contributes to: a Level(70) beside a coin priced 0.000012
+        # dragged the panel from eight digits to two and rounded every candle to 0.0,
+        # and one Line reaching a million took XRP from 4990 distinct candles to 52.
+        # What is displayed is a panel setting; what is stored must depend on the
+        # data alone
         "ohlc": np.round(ohlc, _digits(_extent(ohlc)) + 2).tolist(),
         "candles": {"panel": "price"},
         "panels": panels_out,
@@ -1513,7 +1532,7 @@ def chart(
             "stats names the numbers to show above the chart, and there is no "
             "run to take them from; pass a BacktestResult too"
         )
-    window = _focus(focus, num_bars, result, future)
+    window = _focus(focus, num_bars, future)
     if window is not None:
         spec["focus"] = window
 

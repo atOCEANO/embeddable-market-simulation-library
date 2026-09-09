@@ -7,80 +7,89 @@ feeds a backtest and a tune; the difference is that ``tune`` builds a fresh one 
 trial from the sampled parameters, ``StrategyClass(**params)``, so a strategy
 declares its tunables as constructor arguments and stores them as fields.
 
-- **Search space**: a dict from parameter name to a range. ``(low, high)`` of ints
-  is an integer axis, ``(low, high)`` of floats a continuous one, ``(low, high,
-  "log")`` a log axis, and a ``list`` a categorical choice. ``tune.Int``,
-  ``tune.Float``, and ``tune.Categorical`` give the same with ``step`` and ``log``
-  control.
-- **Objective**: a stats-key string (``"sharpe"``, ``"calmar"``, ...) or a callable
-  taking the ``BacktestResult`` and returning a number; higher is better under
-  ``direction="maximize"``. A trial whose strategy or objective raises, or whose
-  objective is ``NaN``, is marked failed and the search continues; an infinite value
-  (``profit_factor`` with no losing trades, say) is kept and ranks at the extreme.
-- **Minimum activity**: ``min_trades`` fails any trial that closed fewer trades than
-  that. A search ranking on a point estimate walks to the thinnest cell it can find,
-  where a handful of samples produces the widest interval and the best-looking
-  number, so a floor is the cheapest defence against a winner that is really noise
-  (ADR 0034).
-- **Holding data back**: ``oos=0.3`` fits every trial on the first 70% of the
-  bars and scores the winner on the last 30%, which no trial ever saw, into
-  ``TuneResult.oos_stats``. Without it the search fits everything, and
-  ``best_stats`` is then the maximum of a noisy score over every trial: biased
-  upward by the act of searching, by more the harder you searched. The tail is
-  always the END of the series, never a random slice, because a strategy is a
-  claim about what comes next (ADR 0049). The winner warms up inside the held-out
-  bars rather than being handed history across the boundary, so a strategy with a
-  long warm-up gives up its first few bars there.
-- **Annualization**: ``periods_per_year`` is read once from the candles' own
-  timestamps and handed to every trial, so a parallel search cannot end up with
-  workers annualizing differently from the one that inferred it. Pass a number to
-  state it; a numpy input has no timestamps and says so (ADR 0048).
-- **Parallelism**: ``n_jobs=1`` runs in this process; ``n_jobs>1`` (or ``-1`` for
-  every core) runs trials in worker processes, rebuilding the engine in each worker
-  rather than shipping a live one across the boundary (ADR 0021). Only
-  ``n_jobs=1`` is reproducible from ``seed``: a parallel run asks for trials before
-  earlier ones have reported, so the order results reach the sampler depends on
-  which worker finishes first and the search follows a different path each time.
-  Pin ``n_jobs=1`` when a result has to be reproducible (ADR 0036).
+``space`` is a dict from parameter name to a range. ``(low, high)`` of ints is an
+integer axis, ``(low, high)`` of floats a continuous one, ``(low, high, "log")`` a
+log axis, and a ``list`` a categorical choice. ``tune.Int``, ``tune.Float`` and
+``tune.Categorical`` give the same with ``step`` and ``log`` control.
+
+``objective`` is a stats-key string (``"sharpe"``, ``"calmar"``, and the rest) or a
+callable taking the ``BacktestResult`` and returning a number; higher is better
+under ``direction="maximize"``. A trial whose strategy or objective raises, or
+whose objective is ``NaN``, is marked failed and the search continues; an infinite
+value (``profit_factor`` with no losing trades, say) is kept and ranks at the
+extreme.
+
+``min_trades`` fails any trial that closed fewer trades than that. A search ranking
+on a point estimate walks to the thinnest cell it can find, where a handful of
+samples produces the widest interval and the best-looking number, so a floor is the
+cheapest defence against a winner that is really noise (ADR 0034).
+
+``oos=0.3`` fits every trial on the first 70% of the bars and scores the winner on
+the last 30%, which no trial ever saw, into ``TuneResult.oos_stats``. Without it
+the search fits everything, and ``best_stats`` is then the maximum of a noisy score
+over every trial: biased upward by the act of searching, by more the harder you
+searched. The tail is always the END of the series, never a random slice, because a
+strategy is a claim about what comes next (ADR 0049). The winner warms up inside
+the held-out bars rather than being handed history across the boundary, so a
+strategy with a long warm-up gives up its first few bars there.
+
+``sampler`` is ``"tpe"``, which concentrates its trials where the scores are good,
+or ``"random"``, which draws independently over the whole space. The second is not
+just a weaker search: ``metrics.deflated_sharpe`` refuses a null built with
+anything else, because a converging search leaves its trials neither independent
+nor scattered the way the space is, and those are the two quantities the deflation
+threshold is computed from (ADR 0054). ``verbose=True`` turns optuna's per-trial
+logging back on, which is worth having on a long search.
+
+``periods_per_year`` is read once from the candles' own timestamps and handed to
+every trial, so a parallel search cannot end up with workers annualizing
+differently from the one that inferred it. Pass a number to state it; a numpy input
+has no timestamps and says so (ADR 0048).
+
+``n_jobs=1`` runs in this process; ``n_jobs>1`` (or ``-1`` for every core) runs
+trials in worker processes, rebuilding the engine in each worker rather than
+shipping a live one across the boundary (ADR 0021). Only ``n_jobs=1`` is
+reproducible from ``seed``: a parallel run asks for trials before earlier ones have
+reported, so the order results reach the sampler depends on which worker finishes
+first and the search follows a different path each time. Pin ``n_jobs=1`` when a
+result has to be reproducible (ADR 0036).
 
 ``optuna`` drives the search and ``cloudpickle`` carries the strategy and objective
 to the workers; both install with ``pip install 'emsl[tune]'``.
 
-```python
-from emsl import tune
-from emsl.backtest import Strategy
+    from emsl import tune
+    from emsl.backtest import Strategy
 
 
-class SmaCross(Strategy):
-    def __init__(self, fast, slow):
-        self.fast = fast
-        self.slow = slow
+    class SmaCross(Strategy):
+        def __init__(self, fast, slow):
+            self.fast = fast
+            self.slow = slow
 
-    def init(self, engine):
-        self.close = engine.closes
-        self.warmup = self.slow
+        def init(self, engine):
+            self.close = engine.closes
+            self.warmup = self.slow
 
-    def next(self, state, engine):
-        i = state["tick_index"]
-        fast = self.close[i - self.fast:i].mean()
-        slow = self.close[i - self.slow:i].mean()
-        if state["position"] == 0 and fast > slow:
-            engine.market_buy(1.0)
-        elif state["position"] > 0 and fast < slow:
-            engine.close()
+        def next(self, state, engine):
+            i = state["tick_index"]
+            fast = self.close[i - self.fast:i].mean()
+            slow = self.close[i - self.slow:i].mean()
+            if state["position"] == 0 and fast > slow:
+                engine.market_buy(1.0)
+            elif state["position"] > 0 and fast < slow:
+                engine.close()
 
 
-result = tune(
-    SmaCross,
-    {"fast": (5, 40), "slow": (40, 200)},
-    data,
-    objective="sharpe",
-    n_trials=200,
-    n_jobs=-1,
-)
-print(result.best_params, result.best_value)
-print(result.best_stats["max_drawdown_pct"])
-```
+    result = tune(
+        SmaCross,
+        {"fast": (5, 40), "slow": (40, 200)},
+        data,
+        objective="sharpe",
+        n_trials=200,
+        n_jobs=-1,
+    )
+    print(result.best_params, result.best_value)
+    print(result.best_stats["max_drawdown_pct"])
 """
 
 from __future__ import annotations
@@ -173,7 +182,10 @@ class Categorical(_Spec):
     def __init__(self, choices):
         self.choices = list(choices)
         if not self.choices:
-            raise ValueError("a categorical space needs at least one choice")
+            raise ValueError(
+                f"choices arrived as {choices!r}; a categorical space needs at "
+                f"least one choice to draw from"
+            )
 
     def _distribution(self):
         from optuna.distributions import CategoricalDistribution
@@ -218,8 +230,8 @@ _WORKER = {}
 def _worker_init(
     candles, config, periods_per_year, risk_free, strategy_wrapped, objective_wrapped, min_trades
 ):
-    # runs once when a worker process starts: rebuild the Backtester from the candles
-    # and config, and unwrap the cloudpickled strategy and objective
+    # runs once when a worker process starts, so every trial that worker takes
+    # reuses the one engine rather than rebuilding it per call
     _WORKER["backtester"] = Backtester(
         candles, periods_per_year=periods_per_year, risk_free=risk_free, **config
     )
@@ -239,9 +251,8 @@ def _worker_eval(params):
 
 
 def _evaluate(backtester, strategy, objective, params, min_trades=0):
-    # one trial: build a fresh strategy from the sampled params, backtest it, and
-    # score it. A NaN score is an undefined result the caller fails the trial on; an
-    # infinite score (profit_factor with no losses, say) is kept so it can rank
+    # a NaN score is an undefined result the caller fails the trial on; an infinite
+    # score (profit_factor with no losses, say) is kept so it can rank
     result = backtester.run(strategy(**params))
     # a configuration that barely traded is scored on a handful of samples, and the
     # best point estimate in a search walks straight to the thinnest cell. Failing it
@@ -294,7 +305,8 @@ def _resolve_objective(objective):
 
         return named
     raise TypeError(
-        "objective must be a stats-key string or a callable taking a BacktestResult"
+        f"objective arrived as {objective!r}; pass a stats-key string or a "
+        f"callable taking a BacktestResult"
     )
 
 
@@ -423,6 +435,12 @@ class TuneResult:
     the act of searching and by exactly as much as the search worked. ``oos_stats``
     is the same strategy scored on bars no trial ever saw, and it is the number to
     quote. It is ``None`` when nothing was held out (ADR 0049).
+
+    ``sampler``, ``direction``, ``min_trades`` and ``data_hash`` record how the
+    search was run, because a number computed about a search has to know which
+    search it is talking about: ``metrics.deflated_sharpe`` reads all four and
+    refuses a null drawn by TPE, one that minimized, one carrying an activity floor,
+    or one that ran on other bars (ADR 0058).
     """
 
     def __init__(self, study, strategy, best_result=None, oos_result=None,
@@ -436,11 +454,6 @@ class TuneResult:
         self.best_result = best_result
         self.oos_result = oos_result
         self.oos_stats = dict(oos_result.stats) if oos_result is not None else None
-        # what was optimised and how it was searched, because a number computed
-        # about a search has to know which search it is talking about. The
-        # activity floor is here for the same reason: it selects which trials
-        # survive, so a null carrying one has a narrower spread than the space
-        # it is meant to describe (ADR 0058)
         self.objective = objective
         self.sampler = sampler
         self.direction = direction
@@ -512,9 +525,15 @@ def tune(
     optuna = _import_optuna()
 
     if not callable(strategy):
-        raise TypeError("strategy must be a Strategy subclass or a callable that builds one")
+        raise TypeError(
+            f"strategy arrived as {strategy!r}, which is not callable; pass a "
+            f"Strategy subclass or a callable that builds one"
+        )
     if not isinstance(space, dict) or not space:
-        raise ValueError("space must be a dict of name to range with at least one entry")
+        raise ValueError(
+            f"space arrived as {space!r}; pass a dict of parameter name to range "
+            f"with at least one entry"
+        )
     if direction not in ("maximize", "minimize"):
         raise ValueError(f"direction must be 'maximize' or 'minimize', got {direction!r}")
     if int(n_trials) < 1:

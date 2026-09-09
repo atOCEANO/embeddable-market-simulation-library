@@ -6,11 +6,16 @@ trial, so they have to be cheap and they stay there. Everything here runs once,
 on a result you already have, which is why it is Python: it is read far more
 often than it is executed. Nothing here simulates anything.
 
-Every function takes the ``BacktestResult`` itself rather than an equity curve, so
-it can read the annualization and the opening balance the run recorded rather
-than being told them again. Two readings of one number are how two numbers come
-to disagree, which is the whole reason ``initial`` and ``periods_per_year`` are
-carried on the result at all (ADR 0048).
+Every function that reads a finished run takes the ``BacktestResult`` itself rather
+than an equity curve, so it can read the annualization and the opening balance the
+run recorded rather than being told them again. Two readings of one number are how
+two numbers come to disagree, which is the whole reason ``initial`` and
+``periods_per_year`` are carried on the result at all (ADR 0048).
+
+Four exports read something else. ``cost_curve`` and ``breakeven_bps`` take a
+``strategy`` and its ``data`` and run the backtest themselves, once per cost level.
+``deflated_sharpe`` takes two ``TuneResult`` objects, the study and its null, and
+``deflation_threshold`` takes two floats.
 
 The return series is derived by the identical rule the engine uses: seeded from
 the opening balance, one return per interval, and a non-positive previous equity
@@ -309,7 +314,13 @@ def decompose(result):
 
     ``unrealized`` is whatever the other three do not account for: a position
     still open at the end, marked, net of the entry fee it already paid. It is
-    zero on a run that ends flat, and a test pins that.
+    zero on a run that ends flat, and a test pins that. ``net_pct`` is ``net``
+    against the opening balance.
+
+    ``fee_share`` is fees over gross, and ``turnover`` is the notional both sides
+    of every round trip moved, over the opening balance. They are read together: a
+    strategy paying half its gross edge away in costs has a cost problem rather
+    than an idea problem, and neither number alone says which one you have.
     """
     trades = result.trades or []
     gross = float(sum(t["pnl"] for t in trades))
@@ -317,10 +328,6 @@ def decompose(result):
     funding = float((result.stats or {}).get("funding_paid", 0.0))
     series = _curve(result)
     net = float(series[-1] - series[0])
-    # the notional both sides of every round trip moved, over the opening balance.
-    # Read with `fee_share`: a strategy paying half its gross edge away in costs
-    # has a cost problem rather than an idea problem, and neither number alone
-    # says which one you have
     traded = float(sum(t["size"] * (t["entry_price"] + t["exit_price"]) for t in trades))
     return {
         "gross_pnl": gross,
@@ -339,8 +346,8 @@ def trade_stats(result):
 
     ``win_rate`` and ``profit_factor`` are the same pair for a rule that grinds
     out small wins and for one that is short gamma waiting for the bar that ends
-    it. A 70% win rate at a payoff of 0.3 is a losing rule, and until now the
-    numbers to see that were sitting unread in ``result.trades``.
+    it. A 70% win rate at a payoff of 0.3 is a losing rule, and these numbers,
+    read off ``result.trades``, are what show it.
 
     ``expectancy`` is the average net PnL of a trade, in quote, and
     ``expectancy_pct`` the same as a percent of the opening balance.
@@ -523,7 +530,7 @@ def buy_and_hold(result, frame):
     compares: the excess return, the beta against it, and the information ratio.
 
     The first question anyone asks of a crypto strategy is whether it beat holding
-    the coin, and until now nothing here could answer it.
+    the coin.
 
     ``frame`` needs one price per bar of the run, and that is the only thing
     checked. A **different asset** over the same bars is not a mistake here, it is
@@ -729,11 +736,11 @@ def conditional_value_at_risk(result, alpha=0.95):
     # flat most of the time has a mass of returns at exactly zero for the cutoff to
     # land on: at eight percent exposure that swept in 96.1% of the sample instead
     # of 5% and reported a shortfall nineteen times too small. Ranking cannot be
-    # diluted by a tie, and the two agree to the last bit when there is none
-    # nudged before the ceiling because 1.0 - 0.95 is 0.05000000000000004, so a
-    # round hundred bars at the default confidence asks for the worst 5.000000004
-    # and takes six. The nudge is far below one bar and cannot round a real
-    # fraction down
+    # diluted by a tie, and the two agree to the last bit when there is none. The
+    # count is nudged before the ceiling because 1.0 - 0.95 is 0.05000000000000004,
+    # so a round hundred bars at the default confidence asks for the worst
+    # 5.000000004 and takes six. The nudge is far below one bar and cannot round a
+    # real fraction down
     k = max(1, int(math.ceil((1.0 - alpha) * values.size - 1e-9)))
     worst = np.partition(values, k - 1)[:k]
     return float(-worst.mean() * 100.0)
@@ -868,7 +875,7 @@ def deflated_sharpe(study, null):
     times you looked is a property of **your** search and is read off it (ADR
     0058).
     """
-    _trials, looks, spread = _null_shape(study, null)
+    looks, spread = _null_shape(study, null)
     return probabilistic_sharpe(
         study.best_result, benchmark=deflation_threshold(spread, looks)
     )
@@ -961,7 +968,7 @@ def _null_shape(study, null):
             f"than the thing it is judging; run the null at the same n_trials",
             stacklevel=3,
         )
-    return scored, looks, float(np.std(np.asarray(scored, dtype=np.float64), ddof=1))
+    return looks, float(np.std(np.asarray(scored, dtype=np.float64), ddof=1))
 
 
 def min_track_record_length(result, benchmark=0.0, confidence=0.95,
@@ -1413,7 +1420,7 @@ def compare(results, keys=None):
             f"from {sorted(available)}"
         )
     width = max(len(str(name)) for name, _ in named)
-    # one wider than the longest label, so a label that exactly fills the column
+    # two wider than the longest label, so a label that exactly fills the column
     # cannot run into its neighbour; "max drawdown %" is precisely 14 characters
     column = max(len(_short(key)) for key in shown) + 2
     header = f"  {'':<{width}}  {'data':<8}"

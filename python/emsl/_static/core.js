@@ -1,8 +1,11 @@
 "use strict";
 
-// spec to chart. Everything drawn is a key in the document: this file decides no
-// colour, no threshold and no number format, which is what lets a Python test in
-// a gate with no browser assert what a chart shows (ADR 0043)
+// spec to chart. Everything drawn is a key in the document, and nothing this file
+// decides is a colour or a number taken off the data, which is what lets a Python
+// test in a gate with no browser assert what a chart shows. What it does decide is
+// what only the renderer knows: the grain a given width of axis can carry, the
+// locale and the stamp a number is written in, and the type scale in device
+// pixels (ADRs 0043, 0115)
 
 let SPEC = null;
 let THEME = null;
@@ -11,7 +14,7 @@ let chart = null;
 let anchors = [];                      // one series per panel, the coordinate frame
 let redraws = [];                      // primitive invalidators
 let cursor = 0;                        // bar under the crosshair
-let selection = null;                  // {from, to} of the selected trade
+let selection = null;                  // half open [from, to, fillIndex] of the selected trade
 let UI = 1;
 
 const LWC = LightweightCharts;
@@ -23,9 +26,9 @@ const SCALE = { linear: 0, log: 1, percent: 2 };
 // the palette keys chart.css reads. Written on mount and on every toggle, so the
 // stylesheet and the chart cannot drift apart
 const CSS_VARS = {
-  plane: "--plane", surface: "--surface", grid: "--grid", axis: "--axis",
-  ink: "--ink", ink2: "--ink-2", muted: "--muted", hairline: "--hairline",
-  win: "--win", loss: "--loss", s1: "--s1",
+  plane: "--plane", surface: "--surface", ink: "--ink", ink2: "--ink-2",
+  muted: "--muted", hairline: "--hairline", win: "--win", loss: "--loss",
+  s1: "--s1",
 };
 
 const T = function () {
@@ -50,14 +53,9 @@ const invalidate = function () {
 // one sub-linear scale factor for everything: a chart three times wider does not
 // want three times bigger type. Both dimensions feed it and the tighter one wins,
 // since a notebook cell is wide and short and several panes stacked into 400px
-// leave the labels eating the plot.
-//
-// Sub-linear is right and the old curve was not sub-linear, it was nearly flat:
-// gaining 1.0 of scale took 4600px of width, so a chart could grow eight times in
-// area while its labels grew a quarter, and the legend ended up 2.6 times smaller
-// against the chart at 2560 than at 760. The floor is 1.0 because nothing should
-// ever render below the size it was authored at, least of all in the cramped cell
-// where legibility is already worst.
+// leave the labels eating the plot. The floor is 1.0 because nothing should ever
+// render below the size it was authored at, least of all in the cramped cell
+// where legibility is already worst
 const scaleFor = function (w, h) {
   const byW = 0.92 + w / 3400;
   const byH = 0.88 + h / 1700;
@@ -97,15 +95,11 @@ const stamp = function (i) {
 
 const DAY = 86400;
 
-// Generous on purpose. What reads as noise is a LONE fine tick among coarse ones,
-// and a fine grain appearing between every pair of coarse ones is a sub-grid that
-// reads fine. Telling those apart needs the whole tick set, which a formatter
-// called once per tick does not have, so the line is drawn where the mix is
-// certainly ragged rather than where it might be.
+// generous, because one tick at a time cannot tell a lone fine tick from a sub-grid (ADR 0111)
 const coarsestTick = function (seconds) {
   if (seconds > DAY * 100) return 1;       // months and years
   if (seconds > DAY * 21) return 2;        // and days
-  return 4;                                // and times, down to seconds
+  return 4;                                // and times
 };
 
 let axisSpan = 0;                      // seconds on screen
@@ -314,16 +308,9 @@ const runsOf = function (rows) {
 // per-item colour is data, so it is written into the point rather than into the
 // series options, and it has to be rewritten on a theme change.
 //
-// The split is here because the renderer joins a line straight across whitespace.
-// ADR 0038 says a value that does not exist is drawn as whitespace and the line
-// stops, and the document says exactly that: the point carries a time and no
-// value. lightweight-charts draws through it anyway, so a trailing stop that
-// existed on bars 0 to 40 and again on 900 to 940 was drawn as a smooth line
-// across the 860 bars where there was no stop, which is the precise lie the
-// decision was written to prevent, arriving from the renderer instead of from
-// the data. A break between two series is the only break it honours, so a gapped
-// track is drawn as one series per run. The spec is unchanged, because the spec
-// was never wrong; this is how it is painted and nothing else (ADR 0073).
+// The one series per contiguous run below is not in the spec because the spec
+// was never wrong: it is what it takes to paint a gap the renderer would
+// otherwise join straight across (ADR 0073)
 const paint = function (entry) {
   const spec = entry.spec;
   const rows = track(spec);
@@ -366,7 +353,7 @@ const paintVolume = function () {
   const rows = track(SPEC.vol);
   for (let j = 0; j < rows.length; j++) {
     const i = SPEC.vol.i0 + j;
-    rows[j].color = (SPEC.ohlc[i][3] >= SPEC.ohlc[i][0] ? T().up : T().down) + "66";
+    rows[j].color = SPEC.ohlc[i][3] >= SPEC.ohlc[i][0] ? T().volUp : T().volDown;
   }
   VOLUME.setData(rows);
 };
@@ -438,18 +425,10 @@ const frameFor = function (index) {
   return anchors[index];
 };
 
-// Give a panel's anchor the extent of whatever is drawn on it, when nothing else
-// on that panel carries values.
-//
-// A Band, a Marker or a Level alone on its own panel is drawn entirely by
-// primitives, and a primitive converts prices through a series. The anchor is the
-// only series there and it holds whitespace, so the price scale has no first
-// value; the renderer then skips the source before it ever asks for a range, and
-// every conversion off it comes back null. Such a panel mounted cleanly, threw
-// nothing, and painted nothing at all, which is the worst way for a chart to be
-// wrong. It also swallowed `Panel(range=)` on that panel, since the provider is
-// only consulted for a series carrying data. The anchor is fully transparent, so
-// seeding it costs no pixels (ADR 0075).
+// give a panel's anchor the extent of whatever is drawn on it, when nothing else
+// on that panel carries values, which is the panel that used to mount clean and
+// paint nothing. The anchor is fully transparent, so seeding it costs no pixels
+// (ADR 0075)
 const seedAnchors = function () {
   SPEC.panels.forEach(function (panel, index) {
     if (panel.candles || panel.volume) return;
@@ -529,15 +508,14 @@ const mount = function (spec, root) {
     grid: { vertLines: { color: t.grid }, horzLines: { color: t.grid } },
     crosshair: {
       mode: LWC.CrosshairMode.Normal,
-      vertLine: { color: t.muted, width: 1, style: LWC.LineStyle.Solid, labelBackgroundColor: t.axis },
-      horzLine: { color: t.muted, width: 1, style: LWC.LineStyle.Solid, labelBackgroundColor: t.axis },
+      vertLine: {
+        color: t.muted, width: 1, style: LWC.LineStyle.Solid, labelBackgroundColor: t.axis,
+      },
+      horzLine: {
+        color: t.muted, width: 1, style: LWC.LineStyle.Solid, labelBackgroundColor: t.axis,
+      },
     },
-    // the top margin is where the legend lives. A pane primitive draws beneath
-    // the series whatever its zOrder says, so a backing behind the text does
-    // not work: an equity curve and a drawdown both start at the top left of
-    // their own pane and drew straight through their own label. Reserving the
-    // room is what actually keeps it readable
-    rightPriceScale: { borderColor: t.axis, scaleMargins: { top: 0.2, bottom: 0.08 } },
+    rightPriceScale: { borderColor: t.axis },
     // the renderer will not draw a bar narrower than half a pixel, and it does not
     // say so: fitContent on a year of hourly candles asks for 8760 bars, hits the
     // floor at 4380px of width, and quietly frames the last 2256 instead. The chart
@@ -612,7 +590,7 @@ const mount = function (spec, root) {
   // the engine's own two curves. They carry a `make` like any other line, because
   // the gap split in `paint` only runs for an entry that has one: both are dense
   // by construction today, so this is a guard rather than a fix, and the reason to
-  // write it is that the next curve added here will not be (ADRs 0073, 0075)
+  // write it is that the next curve added here will not be (ADR 0073)
   const addCurve = function (name, label, track, options) {
     const index = panelIndex(name);
     const panel = spec.panels[index];
@@ -642,12 +620,12 @@ const mount = function (spec, root) {
 
   if (spec.equity) {
     addCurve("equity", "equity", spec.equity, {
-      lineColor: t.s1, topColor: t.s1 + "44", bottomColor: t.s1 + "00", lineWidth: 2,
+      lineColor: t.s1, topColor: t.equityTop, bottomColor: t.equityBottom, lineWidth: 2,
     });
   }
   if (spec.drawdown) {
     addCurve("drawdown", "drawdown %", spec.drawdown, {
-      lineColor: t.loss, topColor: t.loss + "00", bottomColor: t.loss + "44",
+      lineColor: t.loss, topColor: t.ddTop, bottomColor: t.ddBottom,
       lineWidth: 1, invertFilledArea: true,
     });
   }
@@ -702,7 +680,7 @@ const mount = function (spec, root) {
   // this is what gives a primitive-only panel one that carries values
   seedAnchors();
 
-  if (typeof mountPrimitives === "function") mountPrimitives();
+  mountPrimitives();
   if (typeof mountTrades === "function") mountTrades();
   if (typeof mountControls === "function") mountControls();
 
@@ -722,14 +700,5 @@ const mount = function (spec, root) {
     const ahead = spec.t.length - spec.n;
     if (ahead > 0) chart.timeScale().applyOptions({ rightOffset: ahead });
     chart.timeScale().fitContent();
-    // the last tick label is centred on its bar and clipped at the price gutter,
-    // so a year of hourly candles ends the axis on "20" rather than "2026". The
-    // obvious fix is a rightOffset of about a label's width, and it is not taken
-    // here: the only unit rightOffset accepts is bars, so reserving pixels means
-    // adding slots, and every bar on the chart then narrows by the ratio. Two
-    // render tests measure a bar as the canvas width over the bar count, which is
-    // exactly the assumption that breaks, and they are right to: a fix for a
-    // clipped label should not move the bars. It needs room taken out of the
-    // gutter instead, which the renderer has no option for
   }
 };

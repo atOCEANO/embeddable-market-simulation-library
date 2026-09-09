@@ -2,15 +2,14 @@
 
 Wraps the Rust ``Batch``: ``num_envs`` independent envs over one shared candle
 series, each starting at a random offset, stepped in parallel with the GIL
-released. You control three things:
-
-- **Observation**: pass ``features`` ``(T, F)`` and the agent sees a ``(window, F)``
-  window of your indicators; omit it and it sees the raw ``(window, 5)`` candles.
-- **Reward**: pass ``reward_fn(state, prev)`` where the two arguments carry the
-  batched account fields as ``(num_envs,)`` arrays; omit it for the change in
-  equity. It runs once per step over arrays, so it stays on the fast path.
-- **Action**: ``Discrete(3)`` by default (0 hold, 1 buy, 2 sell a fixed
-  ``trade_size``); pass ``action_fn`` and ``action_space`` to decode your own.
+released. You control three things. The observation is ``features`` ``(T, F)``,
+which the agent sees a ``(window, F)`` window of; omit it and it sees the raw
+``(window, 5)`` candles. The reward is ``reward_fn(state, prev)``, whose two
+arguments carry the batched account fields as ``(num_envs,)`` arrays; omit it for
+the change in equity. That function runs once per step over arrays, so it stays on
+the fast path. The action space is ``Discrete(3)`` by default, where 0 holds, 1
+buys and 2 sells a fixed ``trade_size``; pass ``action_fn`` and ``action_space``
+to decode your own.
 
 Episodes terminate on liquidation and truncate at the last bar, or at
 ``episode_len`` steps if set; finished envs auto-reset on the same step, with the
@@ -96,7 +95,11 @@ class VectorEnv(gym.vector.VectorEnv):
         if features is not None:
             features = to_float2d(features)
             if features.ndim != 2 or features.shape[0] != self._num_bars:
-                raise ValueError("features must be (T, F) with T matching the candles")
+                raise ValueError(
+                    f"features arrived with shape {features.shape} against "
+                    f"{self._num_bars} candles; features must be (T, F) with one "
+                    f"row per bar"
+                )
             n_features = int(features.shape[1])
         self._has_features = features is not None
 
@@ -169,7 +172,10 @@ class VectorEnv(gym.vector.VectorEnv):
         # per-env override array uniformly, so each env carries its own regime
         if isinstance(value, (tuple, list)):
             if len(value) != 2:
-                raise ValueError("a cost range must be a (low, high) pair")
+                raise ValueError(
+                    f"{name} arrived with {len(value)} entries; a cost range is a "
+                    f"(low, high) pair"
+                )
             low, high = float(value[0]), float(value[1])
             # the engine holds this rule too and now applies it to the drawn array
             # (ADR 0086), but it can only name `fee_taker_per_env[0]`, and a range
@@ -216,8 +222,6 @@ class VectorEnv(gym.vector.VectorEnv):
         return (cur.equity - prev.equity).astype(np.float32)
 
     def _sizes(self, actions):
-        # a custom decoder maps the raw actions and current state to per-env signed
-        # sizes; the default reads Discrete(3): 1 buy, 2 sell, else hold
         if self._action_fn is not None:
             return np.asarray(self._action_fn(actions, self._prev), dtype=np.float64)
         actions = np.asarray(actions)

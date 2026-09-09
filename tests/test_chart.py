@@ -1028,8 +1028,8 @@ def test_a_palette_is_validated_the_same_way_on_the_call_as_on_the_session():
 # ------------------------------------------------- packaging and the js bundle
 
 def test_every_vendored_asset_ships_inside_the_wheel():
-    # the gate does COPY tests /tests and nothing else, so the source tree does
-    # not exist here and this resolves each asset out of the installed package.
+    # the gate copies no source tree, so there is no python/emsl to resolve
+    # against here and this reads each asset out of the installed package.
     # maturin ships python-source with no include key, so a non-.py file rides
     # along by convention, and a packaging regression is invisible until a user
     # calls save()
@@ -1097,6 +1097,18 @@ def test_no_colour_is_written_into_the_javascript():
     for text in (_chart._asset(n) for n in _chart._ASSETS):
         for hit in re.findall(r"rgba\([^)]*\)", text):
             assert hit == "rgba(0,0,0,0)", f"a javascript asset carries {hit}"
+
+
+def test_no_alpha_is_composed_in_the_javascript():
+    # the pattern above cannot see this shape: an alpha byte concatenated onto a
+    # theme colour carries no # of its own, so `t.up + "66"` walked past it for
+    # the life of the layer, in two files that had to agree on the byte. Choosing
+    # an alpha is choosing a colour, and it belongs on the python side (ADR 0115)
+    from emsl import _chart
+
+    for name in _chart._ASSETS:
+        hit = re.search(r'\+\s*"[0-9a-fA-F]{2}"', _chart._asset(name))
+        assert hit is None, f"{name} composes a colour: {hit.group(0)}"
 
 
 def test_importing_emsl_pulls_in_no_optional_dependency():
@@ -1504,8 +1516,6 @@ def test_a_tz_aware_frame_still_charts():
 def test_a_tz_aware_frame_warns_about_nothing():
     # the conversion used to go through an object array of Timestamp, which numpy
     # warns about because it has no representation for a zone
-    import warnings
-
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         emsl.chart(frame(8).tz_localize("America/New_York")).spec()

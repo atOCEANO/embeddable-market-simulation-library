@@ -113,7 +113,7 @@ const selectTrade = function (n, opts) {
     chart.timeScale().setVisibleLogicalRange({ from: hit.in - pad, to: hit.out + pad });
   }
   document.getElementById("hint").textContent =
-    "trade " + hit.i + "  ·  " + hit.bars + " bars  ·  net " +
+    "trade " + hit.i + "  |  " + hit.bars + " bars  |  net " +
     fmt(hit.net, TABLE_DP.money);
   invalidate();
 };

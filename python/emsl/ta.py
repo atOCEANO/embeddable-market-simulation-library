@@ -234,7 +234,7 @@ def _against(other, size, where):
     return out
 
 
-def _smooth(values, alpha, length, where):
+def _smooth(values, alpha, length):
     # one exponential pass, seeded from the simple average of the first full
     # window rather than from the first value. Seeding from the first value lets a
     # single opening print steer the curve for hundreds of bars, and the simple
@@ -342,7 +342,7 @@ def ema(values, length):
     """
     values = _series(values, "ema")
     length = _length(length, values.size, "ema")
-    return _smooth(values, 2.0 / (length + 1.0), length, "ema")
+    return _smooth(values, 2.0 / (length + 1.0), length)
 
 
 def wma(values, length):
@@ -404,8 +404,8 @@ def rsi(values, length=14):
         )
     length = _length(length, values.size, "rsi")
     change = np.diff(values, prepend=np.nan)
-    gain = _smooth(np.maximum(change, 0.0), 1.0 / length, length, "rsi")
-    loss = _smooth(-np.minimum(change, 0.0), 1.0 / length, length, "rsi")
+    gain = _smooth(np.maximum(change, 0.0), 1.0 / length, length)
+    loss = _smooth(-np.minimum(change, 0.0), 1.0 / length, length)
     with np.errstate(divide="ignore", invalid="ignore"):
         out = np.where(loss > 0.0, 100.0 - 100.0 / (1.0 + gain / loss), 100.0)
     moved = (gain > 0.0) | (loss > 0.0)
@@ -512,7 +512,7 @@ def atr(high, low, close, length=14):
     """
     ranges = true_range(high, low, close)
     length = _length(length, ranges.size, "atr")
-    return _smooth(ranges, 1.0 / length, length, "atr")
+    return _smooth(ranges, 1.0 / length, length)
 
 
 def stdev(values, length):
@@ -850,15 +850,15 @@ def adx(high, low, close, length=14):
     plus_move = np.where(missing, np.nan, plus_move)
     minus_move = np.where(missing, np.nan, minus_move)
     alpha = 1.0 / length
-    ranges = _smooth(true_range(high, low, close), alpha, length, "adx")
-    plus_smoothed = _smooth(plus_move, alpha, length, "adx")
-    minus_smoothed = _smooth(minus_move, alpha, length, "adx")
+    ranges = _smooth(true_range(high, low, close), alpha, length)
+    plus_smoothed = _smooth(plus_move, alpha, length)
+    minus_smoothed = _smooth(minus_move, alpha, length)
     with np.errstate(divide="ignore", invalid="ignore"):
         plus = np.where(ranges > 0.0, plus_smoothed / ranges * 100.0, np.nan)
         minus = np.where(ranges > 0.0, minus_smoothed / ranges * 100.0, np.nan)
         total = plus + minus
         dx = np.where(total > 0.0, np.abs(plus - minus) / total * 100.0, np.nan)
-    return Trend(_smooth(dx, alpha, length, "adx"), plus, minus)
+    return Trend(_smooth(dx, alpha, length), plus, minus)
 
 
 def obv(close, volume):

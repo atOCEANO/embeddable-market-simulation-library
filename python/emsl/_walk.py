@@ -15,7 +15,7 @@ the chart take the result as they would any other, because it is one.
     forward = emsl.walk_forward(SmaCross, space, candles, windows=5, train=0.5)
 
     forward.stats["sharpe"]        # out of sample, by construction
-    forward.decay                  # how much the fit flattered itself, per window
+    forward.decay                  # how much the fit flattered itself, averaged over the windows
     emsl.chart(frame=candles, run=forward.result).show()
 """
 
@@ -79,10 +79,15 @@ class WalkForward:
 
     ``bars_traded`` is beside it: how many of the window's bars its own winner
     could decide on, once its warm-up is taken off. A window whose warm-up is
-    longer than the window is a window nobody traded, and a score of zero there
-    used to be indistinguishable from a stretch that genuinely broke even.
-    ``traded`` is ``None`` when the objective is a callable, since a callable
-    takes a whole result and a window is a slice of one.
+    longer than the window is a window nobody traded, and its zero score is not a
+    stretch that genuinely broke even. ``traded`` is ``None`` when the objective is
+    a callable, since a callable takes a whole result and a window is a slice of
+    one.
+
+    ``span`` is the first and last bar any window traded, which is where the flat
+    stretch before the first fit ends. ``stats`` is ``result.stats``, out of sample
+    by construction, and ``direction`` is which way the searches were pointed,
+    which is what orients ``decay`` and ``consistency`` (ADR 0090).
     """
 
     def __init__(self, result, windows, span, direction="maximize"):
@@ -236,8 +241,7 @@ def _score_windows(records, result, composite, objective):
     refitting a live strategy actually does (ADR 0060).
 
     ``bars_traded`` is carried beside it, because a window whose winner could not
-    decide on most of its bars is a window whose score means less, and until now
-    nothing said so.
+    decide on most of its bars is a window whose score means less.
     """
     bars = len(result.equity_curve) + 1
     for record in records:
@@ -275,7 +279,7 @@ def _layout(size, windows, train, anchored):
     """The (fit_from, fit_to, test_to) of each window.
 
     The stretches are consecutive and never overlap, and no window is fitted on a
-    bar it later trades: `fit_to` is both the end of the fit and the start of the
+    bar it later trades: ``fit_to`` is both the end of the fit and the start of the
     trading, so the boundary belongs to the trading side.
     """
     if windows < 1:

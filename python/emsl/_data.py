@@ -23,21 +23,25 @@ _INTERVALS = (
 
 
 def to_ohlcv(data):
-    """Return a `(T, 5)` float64 OHLCV array from a numpy array, a pandas DataFrame
-    with the columns open/high/low/close/volume, or a path to a parquet file.
+    """Return a ``(T, 5)`` float64 OHLCV array from a numpy array, a pandas
+    DataFrame with the columns open/high/low/close/volume, or a path to a parquet
+    file.
 
     **Volume is in base units**, the same units an order's size is in, because the
     volume cap compares one against the other and the market-impact term divides
     one by the other. A feed shipping quote volume instead inflates the cap by
-    roughly the price, so `max_fill_fraction` stops binding and impact goes to
+    roughly the price, so ``max_fill_fraction`` stops binding and impact goes to
     zero: no error, no warning, just a better backtest than the market would have
-    given. The router's frames carry base `volume` and a separate `volume_usd`,
-    and only the first is read.
+    given. The router's frames carry base ``volume`` and a separate
+    ``volume_usd``, and only the first is read.
     """
     if isinstance(data, np.ndarray):
         arr = np.ascontiguousarray(data, dtype=np.float64)
         if arr.ndim != 2 or arr.shape[1] != 5:
-            raise ValueError("array data must be (T, 5) OHLCV")
+            raise ValueError(
+                f"data arrived with shape {arr.shape}; an array must be (T, 5) "
+                f"OHLCV, one row per bar"
+            )
         return arr
     frame = _as_frame(data)
     missing = [c for c in _OHLCV if c not in frame.columns]
@@ -56,13 +60,22 @@ def _validate_index(frame):
     if isinstance(idx, pd.RangeIndex):
         return
     if not idx.is_monotonic_increasing:
-        raise ValueError("data index must be sorted ascending")
+        stamps = idx.to_numpy()
+        at = int(np.argmax(stamps[1:] <= stamps[:-1])) + 1
+        raise ValueError(
+            f"data index falls back at row {at}, from {stamps[at - 1]} to "
+            f"{stamps[at]}; sort the frame by its index before passing it"
+        )
     if not idx.is_unique:
-        raise ValueError("data index must be unique")
+        repeats = idx[idx.duplicated()]
+        raise ValueError(
+            f"data index repeats {len(repeats)} of its {len(idx)} stamps, the "
+            f"first being {repeats[0]}; one row per bar, so drop or aggregate them"
+        )
 
 
 def to_float2d(data):
-    """Return a `(T, F)` float64 array from a numpy array or a pandas DataFrame."""
+    """Return a ``(T, F)`` float64 array from a numpy array or a pandas DataFrame."""
     if isinstance(data, np.ndarray):
         return np.ascontiguousarray(data, dtype=np.float64)
     frame = _as_frame(data)
@@ -85,9 +98,9 @@ def index_of(data):
 
 
 def prepare(data):
-    """Return `(ohlcv_array, index_or_None)` from one read of `data`.
+    """Return ``(ohlcv_array, index_or_None)`` from one read of ``data``.
 
-    `to_ohlcv` and `index_of` each route a parquet path through `_as_frame`, so
+    ``to_ohlcv`` and ``index_of`` each route a parquet path through ``_as_frame``, so
     calling both decoded the file twice, doubling the load time and peak memory of
     the most convenient entry point and leaving room for the two reads to disagree
     if the file changed between them.

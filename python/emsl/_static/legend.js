@@ -30,8 +30,8 @@ const legendValue = function (v, digits) {
 // row, because shading used as scene should not be made to explain itself.
 //
 // The swatch takes the bottom stop, which is the strongest, since a fill runs
-// bottom to top. Outlined, because a wash at a seventh of full alpha is a smudge
-// against the plane rather than a colour (ADR 0110)
+// bottom to top. Outlined, because a background wash is a smudge against the
+// plane rather than a colour (ADR 0110)
 const backgroundRow = function (spec, i) {
   for (let k = 0; k < spec.spans.length; k++) {
     const span = spec.spans[k];
@@ -63,10 +63,16 @@ const legendRows = function (index) {
     if (traded) {
       const bar = SPEC.ohlc[i];
       const up = bar[3] >= bar[0];
-      rows.push({ swatch: up ? T().up : T().down, hollow: up, label: "O", value: fmt(bar[0], panel.digits) });
+      rows.push({
+        swatch: up ? T().up : T().down, hollow: up,
+        label: "O", value: fmt(bar[0], panel.digits),
+      });
       rows.push({ label: "H", value: fmt(bar[1], panel.digits) });
       rows.push({ label: "L", value: fmt(bar[2], panel.digits) });
-      rows.push({ label: "C", value: fmt(bar[3], panel.digits), valueColor: up ? T().up : T().down });
+      rows.push({
+        label: "C", value: fmt(bar[3], panel.digits),
+        valueColor: up ? T().up : T().down,
+      });
     } else {
       rows.push({ label: "projected" });
     }
@@ -75,7 +81,7 @@ const legendRows = function (index) {
   if (panel.volume && SPEC.vol && traded) {
     const bar = SPEC.ohlc[i];
     rows.push({
-      swatch: (bar[3] >= bar[0] ? T().up : T().down) + "66",
+      swatch: bar[3] >= bar[0] ? T().volUp : T().volDown,
       label: "Volume", value: legendValue(legendValueAt(SPEC.vol, i), panel.digits),
     });
   }

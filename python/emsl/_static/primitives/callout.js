@@ -109,8 +109,11 @@ const calloutPrimitive = function (anchor, spec) {
                     if (ty - h / 2 < legendRoom) ty = cy + side * away;
 
                     ctx.beginPath();
-                    if (ctx.roundRect) ctx.roundRect(x - w / 2, ty - h / 2, w, h, Math.round(3 * UI));
-                    else ctx.rect(x - w / 2, ty - h / 2, w, h);
+                    if (ctx.roundRect) {
+                      ctx.roundRect(x - w / 2, ty - h / 2, w, h, Math.round(3 * UI));
+                    } else {
+                      ctx.rect(x - w / 2, ty - h / 2, w, h);
+                    }
                     ctx.fillStyle = T().surface;
                     ctx.fill();
                     ctx.strokeStyle = color;

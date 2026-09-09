@@ -9,7 +9,9 @@ let paneBands = [];                    // vertical extent of each pane, for hove
 let paneState = [];
 // the band at the top of every pane the legend has reserved, in css pixels.
 // Published rather than local because callout.js places a caption from a price
-// and has no other way of knowing the room is spoken for
+// and has no other way of knowing the room is spoken for. The 11 and the 12.5
+// by 1.5 it is built from are legend.js's own `pad` and `lineH`, retyped because
+// this side has no canvas to measure, so the two sets have to move together
 let legendRoom = 0;
 
 const placePaneCtls = function () {
@@ -23,7 +25,8 @@ const placePaneCtls = function () {
   // pane heights come from the api but the separator size does not, so it is
   // derived: whatever vertical space the panes do not account for is divided
   // between the gaps
-  const sep = panes.length > 1 ? Math.max(0, (el.clientHeight - axis - sum) / (panes.length - 1)) : 0;
+  const sep = panes.length > 1
+    ? Math.max(0, (el.clientHeight - axis - sum) / (panes.length - 1)) : 0;
   const bw = Math.max(14, Math.min(21 * UI, (gutter - 8) / 3));
   const h = CTL_H * UI;
 
@@ -31,8 +34,9 @@ const placePaneCtls = function () {
   // count of pixels while the margin reserving that room is a fraction of the
   // pane. One fraction for all of them meant the price pane held back far more
   // than its label used, and the drawdown pane, at a fifth of the height, held
-  // back less than a single line: its own curve was drawn through its own name
-  // a narrow pane wraps its legend onto a second line and the room has to follow
+  // back less than a single line: its own curve was drawn through its own name.
+  //
+  // A narrow pane wraps its legend onto a second line and the room has to follow
   // it. This is a threshold rather than a measurement, because the wrap happens
   // in a canvas this file cannot measure into; it is set where the OHLC row stops
   // fitting on one line
@@ -154,11 +158,20 @@ const mountControls = function () {
     return { auto: true, mode: SCALE[p.scale] };
   });
 
+  // the one place in the bundle that interpolates spec text into markup, and it
+  // depends on a guard on the other side of the seam: `_safe` in
+  // python/emsl/_chart.py refuses a panel name carrying the characters that would
+  // break out of the attribute, which the payload escaping cannot reach because
+  // JSON.parse restores the original
   paneCtls.innerHTML = SPEC.panels.map(function (p, i) {
-    return '<div class="panectl" data-pane="' + i + '" role="group" aria-label="' + p.name + ' scale">' +
-      '<button data-act="auto" aria-pressed="true" title="Auto-fit the ' + p.name + ' scale">A</button>' +
-      '<button data-act="log" aria-pressed="' + (paneState[i].mode === 1) + '" title="Logarithmic ' + p.name + ' scale">L</button>' +
-      '<button data-act="pct" aria-pressed="' + (paneState[i].mode === 2) + '" title="Percent ' + p.name + ' scale">%</button></div>';
+    return '<div class="panectl" data-pane="' + i + '" role="group" aria-label="' +
+      p.name + ' scale">' +
+      '<button data-act="auto" aria-pressed="true" title="Auto-fit the ' +
+      p.name + ' scale">A</button>' +
+      '<button data-act="log" aria-pressed="' + (paneState[i].mode === 1) +
+      '" title="Logarithmic ' + p.name + ' scale">L</button>' +
+      '<button data-act="pct" aria-pressed="' + (paneState[i].mode === 2) +
+      '" title="Percent ' + p.name + ' scale">%</button></div>';
   }).join("");
 
   // only the hovered pane shows its buttons, driven by pointer position against

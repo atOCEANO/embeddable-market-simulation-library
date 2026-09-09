@@ -1,15 +1,23 @@
 """The marks a chart can carry, and the colour helper that feeds them.
 
-Every class here is a plain value object: it copies its arrays so a later mutation
-cannot change the picture, checks what it can check without knowing the frame, and
-holds no reference to a chart. Nothing in this module computes anything. There is
-no ``sma``, no ``rsi``, no ``zscore`` and no indicator registry, because a chart
-that computes is a chart that can disagree with the run it is drawing (ADR 0042).
-It also does not know how many bars the frame has, so the length of a series is
-checked by ``chart`` rather than here (ADR 0037).
+Every mark, meaning ``Line``, ``Histogram``, ``Band``, ``Level``, ``Marker``,
+``Markers`` and ``Background``, is a plain value object: it copies its arrays so a
+later mutation cannot change the picture, checks what it can check without knowing
+the frame, and holds no reference to a chart. ``Panel`` holds no arrays at all; it
+is the configuration of one panel, how tall it is, what scale it draws on and
+whether its axis is pinned. ``Recorder`` is the one mutable thing here, a collector
+a strategy writes to on every bar, which allocates its own arrays and hands them
+back already aligned.
 
-``ramp`` is the one function, and it turns numbers into colours so a line can
-carry a second variable in its own colour.
+Nothing in this module computes anything. There is no ``sma``, no ``rsi``, no
+``zscore`` and no indicator registry, because a chart that computes is a chart that
+can disagree with the run it is drawing (ADR 0042). It also does not know how many
+bars the frame has, so the length of a series is checked by ``chart`` rather than
+here (ADR 0037).
+
+Three functions come with them. ``ramp`` turns numbers into colours so a line can
+carry a second variable in its own colour, and ``at_bar`` and ``at_next`` pad a
+series that is one short onto its bars.
 """
 
 from __future__ import annotations
@@ -428,8 +436,8 @@ class Markers(_Mark):
             raise ValueError("Markers mask is empty")
         if arr.dtype != bool:
             # a float mask is how a comparison arrives after passing through NaN,
-            # and astype(bool) would read that NaN as True, putting a glyph on the
-            # one bar the condition could not be evaluated on
+            # and a NaN is not a condition being met, for the reason at_bar's
+            # docstring gives
             if arr.dtype.kind not in "iu":
                 raise TypeError(
                     f"Markers mask must be boolean, got {arr.dtype}; compare "
@@ -446,8 +454,6 @@ class Markers(_Mark):
 
 
 def _marker_values(value, size):
-    # None anchors every glyph to its own bar, a number puts them all on one
-    # line, and an array lets each read its own bar
     if value is None:
         return None
     if np.ndim(value) == 0:
@@ -638,9 +644,9 @@ class Recorder:
                 store[target] = value
 
     def _open(self, key, value, shift):
-        # a boolean fills with False rather than NaN, because
-        # numpy.array([nan]).astype(bool) is True and a bar nothing was recorded
-        # on is not a bar the condition was met on
+        # a boolean fills with False rather than NaN, because a bar nothing was
+        # recorded on is not a bar the condition was met on, for the reason
+        # at_bar's docstring gives
         blank = (np.zeros(self._n, dtype=bool)
                  if isinstance(value, (bool, np.bool_))
                  else np.full(self._n, np.nan))

@@ -96,6 +96,12 @@ class BacktestResult:
     identifiable a week later. A notebook accumulates two hundred of these, and
     without them "was Tuesday's 2.1 sharpe on the same fees as today's 1.9" has no
     answer at all (ADR 0051). ``to_dict`` returns the lot as plain data.
+
+    ``risk_free`` is the annual rate the stats were computed against, carried for
+    the reason ``periods_per_year`` is: ``metrics.sharpe`` reads it off the result
+    unless a call passes its own. ``bust`` says the account reached zero, which a
+    trade row cannot always say: a forced close books one carrying ``liquidated``,
+    and an account drained by fees or funding books nothing at all (ADR 0091).
     """
 
     def __init__(self, stats, equity_curve, trades, initial=None,
@@ -110,9 +116,6 @@ class BacktestResult:
         self.config = dict(config) if config else {}
         self.data_hash = data_hash
         self.strategy = strategy
-        # the account reached zero, which a trade row cannot always say: a forced
-        # close books one carrying liquidated, and an account drained by fees or
-        # funding books nothing at all (ADR 0091)
         self.bust = bool(bust)
         self.version = _version()
 
