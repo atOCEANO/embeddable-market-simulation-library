@@ -104,7 +104,7 @@ action, _ = model.predict(venv.reset(), deterministic=True)
 
 <br>
 
-### Own The Loop
+### Own the loop
 
 If you would rather write the training loop, the env is a plain Gymnasium vector env, so a single-file policy-gradient or actor-critic loop (the CleanRL shape) reads the batched observation and writes a batched action with no adapter at all. A minimal REINFORCE, PyTorch yours to bring (`pip install torch`):
 
@@ -211,7 +211,7 @@ def action_fn(actions, state):                 # a continuous target position in
 
 <br>
 
-## Cost Randomization
+## Cost randomization
 
 Give a cost knob a `(low, high)` pair instead of a scalar and each env draws its own value uniformly from that range, so the batch trains across a spread of cost regimes rather than one exact setting. It applies to `fee_taker`, `fee_maker`, `slippage_bps`, and `impact`.
 
@@ -224,13 +224,13 @@ env = VectorEnv(
 )
 ```
 
-The draw uses the constructor `seed` and is fixed for each env's life: an env keeps its costs across autoresets rather than resampling, so it is fixed heterogeneity across workers, not per-episode noise. A policy that holds up across the spread is less likely to be fit to one lucky cost setting. The reasoning, and why sampling lives in Python rather than Rust, is in [ADR 0014](Decisions.md). For a distribution other than uniform, sample the per-env costs yourself and pass the arrays to [`emsl.Batch`](Python_API.md#batch) directly.
+The draw uses the constructor `seed` and is fixed for each env's life: an env keeps its costs across autoresets rather than resampling, so it is fixed heterogeneity across workers, not per-episode noise. A policy that holds up across the spread is less likely to be fit to one lucky cost setting. The reasoning is in [ADR 0014](Decisions.md). For a distribution other than uniform, sample the per-env costs yourself and pass the arrays to [`emsl.Batch`](Python_API.md#batch) directly.
 
 The per-env cost draw and the start offsets come from independent generators, both spawned from the constructor `seed`, so a given `seed` produces the same start offsets whether or not a cost range is passed. The cost draw is fixed for the env's life; `reset(seed=...)` re-seeds only the offset stream.
 
 <br>
 
-## Episodes and Autoreset
+## Episodes and autoreset
 
 An env ends in one of two ways, reported as separate `(num_envs,)` boolean arrays:
 
@@ -239,7 +239,7 @@ An env ends in one of two ways, reported as separate `(num_envs,)` boolean array
 
 Finished envs auto-reset on the same step: the observation returned for a done env is already the first observation of its next episode, at a fresh random offset. The true final observation and equity of the episode that ended are placed in `infos`:
 
-| infos key | |
+| infos key | What it holds |
 | :--- | :--- |
 | `final_observation` | object array; the final observation at done indices, `None` elsewhere. |
 | `_final_observation` | boolean mask of which entries are set. |
@@ -250,12 +250,12 @@ This is the pre-1.0 Gymnasium vector autoreset, the same-step convention the lar
 
 <br>
 
-## Gymnasium Surface
+## Gymnasium surface
 
 `VectorEnv` subclasses `gymnasium.vector.VectorEnv` and exposes `num_envs`, `single_observation_space` (`Box(window, F)`), `single_action_space` (`Discrete(3)`), and their batched forms. `reset(seed=None, options=None)` returns `(obs, info)`; `step(actions)` returns `(obs, rewards, terminations, truncations, infos)`.
 
 <br>
 
-## On the Cost Hook
+## On the cost hook
 
 The spec sketched a per-fill `cost_fn(fill, state)` callback. It is deliberately not offered: a Python callback cannot run inside the GIL-free batched step without dragging the engine back under the GIL and down to Python speed. Its size-dependent intent lives instead in the `impact` coefficient (a worse fill for a larger share of the bar's volume), and its cross-env variety in the cost ranges above. The reasoning is in [ADR 0013](Decisions.md).

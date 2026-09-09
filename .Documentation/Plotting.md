@@ -34,7 +34,7 @@
 
 **`save()` writes one HTML file** instead, which opens in a browser by double-clicking it, for the people who want the picture without the notebook.
 
-Every example on this page ends in `.show()` and appears in the cell below the code. There are three things you can give it, and each one alone is already a chart.
+Every example that draws here ends in `.show()` and appears in the cell below the code. There are three things you can give it, and each one alone is already a chart.
 
 **A frame** is candles, volume, a crosshair readout, zoom and pan:
 
@@ -87,7 +87,7 @@ Everything but the two `Line`s came out of the `BacktestResult`, and those two a
 
 <br>
 
-Every image on this page is generated from a document these notebooks actually produced, so none of them can drift from what the library draws today.
+Every image on this page is produced by `dev/charts/build.py` against a frozen parquet, so none of them can drift from what the library draws today; the [Contributor Guide](Contributor_Guide.md) carries the `charts` stage that runs it.
 
 Every argument here is named, and this guide keeps it that way throughout. `chart` also accepts them positionally and matches by type, which is convenient once you know it and invisible until you do:
 
@@ -402,9 +402,11 @@ Two lengths are accepted, and they mean different things ([ADR 0037](Decisions.m
 | `T` | bar 0. Entry `i` is bar `i`. |
 | `T - 1` | bar 1. Entry `i` is bar `i + 1`. |
 
+A third, `T + future`, is accepted only when `future=` has given the axis room for it; see [Drawing past the last candle](#drawing-past-the-last-candle).
+
 Anything else raises and names both numbers, because a silent trim or pad is a chart that is off by an amount nobody can see.
 
-```
+```text
 ValueError: series 1 has 4000 values, frame has 8760; expected 8760, one per bar,
 or 8759, drawn from bar 1 like an equity curve or a diff
 ```
@@ -511,8 +513,6 @@ emsl.chart(
 
 <br>
 
-<br>
-
 ## Panels
 
 `"price"` always exists, comes first and carries the candles. `"volume"` appears when the frame has a usable volume column, `"equity"` when a result is passed, and any other name is created the first time a `panel=` mentions it. `"drawdown"` is shaded onto the equity panel rather than given one of its own, unless you ask for one with `drawdown="panel"`.
@@ -555,13 +555,13 @@ emsl.chart(
 ).show()
 ```
 
-`drawdown` takes `"under"`, `"panel"` or `False`. A pane of its own is worth having on a **linear** equity axis, where the shading is drawn in quote currency and a late twenty percent therefore draws taller than an early one; on a log axis, which the **L** button gives you without re-running anything, equal percentages are equal distances and the shading is faithful. `chart_defaults(drawdown="panel")` sets it for a whole session rather than at every call. `Panel(name="equity", show=False)` removes the panel and the shading with it, and a hidden panel ships no data at all rather than merely going unpainted.
+`drawdown` takes `"under"`, `"panel"` or `False`. A pane of its own is worth having on a **linear** equity axis, where the shading is drawn in quote currency and a late twenty percent therefore draws taller than an early one; on a log axis, which the **L** button gives you without re-running anything, equal percentages are equal distances and the shading is faithful. `chart_defaults(drawdown="panel")` sets it for a whole session rather than at every call. `Panel(name="equity", show=False)` removes the panel and the shading with it.
 
 One thing to know before reading a percent axis, because it is the one scale whose meaning depends on where you are looking. Percent is per series, not per panel: the renderer baselines each one at its own first **visible** point. So two series that start on different bars are measured from different anchors while the viewport sits left of the later one, and both the baseline and the numbers move as you pan. On a panel carrying one series that is exactly what you want. On a panel carrying a curve and a benchmark that begins two hundred bars in, the two percentages are not comparable until you scroll past the later start. The `%` button puts any panel into that mode, so it is reachable without ever passing `scale="percent"`.
 
 **The drawdown is not the equity curve as a percentage**, which is the usual reason people reach to turn it off. Percent rescales the axis and leaves the curve identical, so it tells you nothing new. Drawdown measures the fall from the running peak, so it pins to zero on every new high and only moves when you are below one. On a run that ends up 23%, the two answer different questions at the same bar:
 
-| | at the worst bar |
+| Measure | At the worst bar |
 | :--- | :--- |
 | equity, as a return | **+3.72%** |
 | drawdown | **-8.55%** |
@@ -574,7 +574,8 @@ Up on the year and eight percent below the high, on the same bar. The curve alon
 
 ```python
 from emsl.plot import (
-    Panel, Line, Histogram, Band, Level, Marker, Markers, Background, ramp,
+    Panel, Line, Histogram, Band, Level, Marker, Markers, Background, Recorder,
+    ramp, at_bar, at_next,
 )
 ```
 
@@ -587,8 +588,8 @@ from emsl.plot import (
 | `Marker(bar, ...)` | one annotation at one bar. |
 | `Markers(mask, ...)` | a glyph on every bar a condition holds, which is what `plotshape` does. |
 | `Background(values, name, ...)` | shading behind the bars, on a condition of your choosing. A `name` puts the region under the crosshair in the legend. |
-| `ramp(values, *stops, domain=)` | numbers to colours, one per value. |
-| `Recorder(engine)` | collect values inside `Strategy.next` with their alignment declared. |
+| `ramp(values, *stops, colors=, domain=)` | numbers to colours, one per value. |
+| `Recorder(bars)` | collect values inside `Strategy.next` with their alignment declared. |
 | `at_bar(values)`, `at_next(values)` | the same two rules as plain functions, for a list you already have. |
 
 `Band` with `only="above"` or `"below"` is the conditional fill an overbought shading actually is: it exists solely where the upper edge is past the reference, and its gradient runs from that edge toward each excursion's own extreme, so a brief poke past the level shades faintly and a deep one shades hard.
@@ -610,7 +611,7 @@ emsl.chart(
 
 <div align="center">
   <img src="imgs/charts/ex-zones.png" alt="conditional shading above seventy and below thirty, gradient toward each excursion's extreme" width="100%" />
-  <p style="margin: 0;"><i>The gradient runs from the level toward each excursion own extreme, so a brief poke past 70 shades faintly and a deep one shades hard</i></p>
+  <p style="margin: 0;"><i>Two zones on one oscillator: each exists only where the reading is past its own level, so the panel between them is left clear</i></p>
 </div>
 
 <br>
@@ -652,10 +653,10 @@ It takes the same keywords as `Marker`, and `value=` additionally accepts an arr
 
 Four inputs depend on the frame, so only `chart` can check them, and all four refuse rather than draw something plausible.
 
-| | |
+| Refused | Because |
 | :--- | :--- |
 | a result from a different number of bars | trade rows carry bar indices into the original series, so every marker would land on the wrong bar. |
-| a series of an unaccepted length | named above. |
+| a series of an unaccepted length | the lengths are "The length contract" above, and the message names both numbers. |
 | a logarithmic panel whose data reaches zero | the offending bar is named. |
 | a frame with no timestamps, duplicate timestamps, or a non-finite price | a chart cannot fabricate its x axis, the renderer keys on time, and a candle missing one of its four numbers cannot be drawn. |
 
@@ -682,8 +683,6 @@ emsl.chart(frame=frame, marks=strategy.marks(), run=result, focus=worst).show()
 
 <br>
 
-<br>
-
 ## Output
 
 ```python
@@ -699,8 +698,6 @@ chart.spec()                            # the underlying document, for tests
 <br>
 
 ### Where it renders
-
-**In the cell**, and it stays in the notebook file. A chart's whole document, data and renderer together, is the cell's output, and a notebook stores its outputs. So the `.ipynb` you commit, email or reopen in six months carries every chart you drew, still zoomable, with the kernel shut down. Nothing is fetched when it opens, because there is nothing left to fetch.
 
 There is nothing to configure and no renderer to select. Libraries that need to be told their environment need it because their JavaScript has to be loaded into the frontend, and every frontend loads scripts differently. A chart here is an iframe carrying its whole document inline: the cell output holds one `<iframe>`, no script tag, no module loader and no URL, so the host only has to render an iframe. That is the same job in every frontend.
 
@@ -741,7 +738,24 @@ emsl.chart(
 ).save(path="reports/walk-2025.html")
 ```
 
-A DataFrame goes in the same place, which is usually what you already have: `notes=walk.summary`.
+A DataFrame goes in the same place, which is usually what you already have. A `WalkForward` carries one record per refit on `windows`, so the table under the chart is the schedule the chart is asserting:
+
+```python
+walk = emsl.walk_forward(
+    strategy=SmaCross,
+    space={"fast": (10, 30)},
+    data=frame,
+    windows=2,
+    train=0.5,
+    seed=0,
+)
+
+emsl.chart(
+    frame=frame,
+    run=walk.result,
+    notes=pandas.DataFrame(walk.windows),   # fitted_on, traded_on, params, and the scores
+).save(path="reports/walk-2025.html")
+```
 
 <div align="center">
   <img src="imgs/charts/ex-notes.png" alt="the settings behind the chart, carried in the document" width="100%" />
@@ -807,13 +821,13 @@ chart.save(path="run.html")       # fills whatever window opens it
 
 There is no width, anywhere. A chart fills whatever contains it. A notebook cell is a container of unknown size, so a pinned width is how a chart ends up cut off on one screen and short of the edge on another, and it is the one place the layout would stop holding at any size. Panels are sized with `weight`, a stretch factor, for the same reason.
 
-A year of hourly candles is 8760 bars, and a notebook cell gives each of them about a fifth of a pixel. Every bar is still fitted, because framing a quarter of the data and saying nothing is worse than a crowded one, and below one device pixel of bar spacing the candles are **aggregated to the column**: one drawn candle per pixel, opening at the first of its group and closing at the last, reaching the extremes of all of them ([ADR 0111](Decisions.md)). Zooming in un-aggregates as the spacing grows, and the crosshair reads the real bar throughout, so nothing you can hover is a summary. The time axis holds one grain at a time for the same reason: at a year it names months, and a lone day number between two of them is noise rather than detail.
+A year of hourly candles is 8760 bars, and a notebook cell gives each of them about a fifth of a pixel. Every bar is still fitted, because framing a quarter of the data and saying nothing is worse than a crowded one, and below one device pixel of bar spacing the candles are **aggregated to the column**: one drawn candle per pixel, opening at the first of its group and closing at the last, reaching the extremes of all of them ([ADR 0111](Decisions.md)). Zooming in un-aggregates as the spacing grows. The legend reads a real bar rather than the aggregate, so nothing you hover is a summary of several; under conflation the bar it reports can be a neighbour of the drawn column rather than the group's own first bar, which the render test holds to within two percent of where the pointer is. The time axis holds one grain at a time for the same reason: at a year it names months, and a lone day number between two of them is noise rather than detail.
 
 <br>
 
 ### What it costs
 
-Every chart embeds its own copy of the renderer, about 260 KB once escaped, plus its data. Twenty charts in one notebook is therefore roughly 4 MB of identical JavaScript, paid once into the `.ipynb` and again into every copy of it.
+Every chart embeds its own copy of the renderer, the vendored library plus the stylesheet, the shell and the seven files of the bundle, about 300 KB once escaped, plus its data. Twenty charts in one notebook is therefore roughly 6 MB of identical JavaScript, paid once into the `.ipynb` and again into every copy of it.
 
 That is not an oversight and it is not worth engineering around. Sharing one copy would mean the iframes reaching into the parent document, which is exactly the coupling that makes a saved file stop working when it leaves the notebook it came from. The advice is fewer, richer charts: a chart with five panels on it costs one renderer, and five charts cost five.
 

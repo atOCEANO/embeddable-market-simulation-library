@@ -45,7 +45,7 @@ The library is a cargo workspace of three crates plus a thin Python package. The
 
 A good test of placement: could a future tick or L2 engine reuse it? If yes, it is a core primitive and belongs in `emsl-core`, which holds no candle series and no bar-level logic. If it only makes sense per candle, it belongs in `bar-engine`. The Python crate and package hold no simulation logic at all; they parse, convert, and orchestrate.
 
-The chart layer splits on the same principle one layer further out: Python decides what is drawn and where, and the JavaScript decides only how it is painted, so no colour, threshold, number format or arithmetic lives on that side ([ADR 0043](Decisions.md)). A test greps the shipped assets for a colour, and the only hit it allows is full transparency. Every asset is a plain script that declares and executes nothing at load, which is what lets the same files run as separate script tags in the development harness and as one bundle in the wheel; there is no npm and no build step anywhere in the project.
+The chart layer splits on the same principle one layer further out: Python decides what is drawn and where, and the JavaScript decides only how it is painted ([ADR 0043](Decisions.md)). That is the rule the seam is held to, not a description of what the assets already contain, and four exceptions ship. The axis grain thresholds decide when a tick set is ragged, the number locale carries its own grouping, the timestamp format is written there in full, and two precision maps keep a trade caption and its table row one number rather than two opinions about it. Each of those is a question about the surface being painted rather than about the run being drawn, and Python cannot answer it without knowing the viewport; a colour, an alpha, or a threshold measured in bars is the other kind and belongs on the Python side ([ADR 0115](Decisions.md)). Two tests hold that half: one greps the shipped assets for a colour and allows only full transparency, and one refuses an alpha composed onto a theme colour, which is the shape that walked past the first for the life of the layer. Every asset is a plain script that declares and executes nothing at load, which is what lets the same files run as separate script tags in the development harness and as one bundle in the wheel; there is no npm and no build step anywhere in the project.
 
 <br>
 
@@ -79,7 +79,7 @@ docker run --rm -v "<sample-market-data>/data:/data:ro" \
   -v "${PWD}/.Documentation:/out" emsl-charts
 ```
 
-Regenerating should change nothing unless the drawing changed, and that is the check worth making: thirteen of the fourteen images survived the move to this stage byte for byte. If a rerun rewrites images you did not touch, something moved that you did not mean to move, and the fonts are the first place to look.
+Regenerating should change nothing unless the drawing changed, and that is the check worth making: thirteen of the fourteen that existed when the stage was introduced survived the move byte for byte, and fifteen ship today. If a rerun rewrites images you did not touch, something moved that you did not mean to move, and the fonts are the first place to look.
 
 `dev/golden.py` rewrites `tests/chart_schema.json`, the key-path golden for the chart spec. The renderer is JavaScript and the gate has no browser, so the contract between the two halves is the one thing a Python test cannot reach directly: a key renamed in `_chart.py` passes every test in the suite and draws a blank chart. Recording every key path the spec carries turns that rename into a one-line diff instead. Run it whenever the spec gains, loses or renames a key, and bump `schema` in `_chart.py` in the same commit. It imports the test module rather than rebuilding the fixture itself, so the golden cannot be recorded against a different chart from the one the test checks.
 
@@ -124,7 +124,7 @@ Every non-obvious decision, a PnL-booking rule, a cost convention, an autoreset 
 
 ### Submitting a change
 
-Run the build loop above green before you submit, and the Docker gate too for anything Python-facing. Commit subjects read `scope: summary`, where scope names the layer or layers touched (`core:`, `bar:`, `py:`, `docs:`, `test:`, comma-joined when a change spans them), detail goes in the body, and a governing ADR is cited in parentheses: for example `bar: charge funding on a bar interval (ADR 0017)`. A non-obvious decision lands its ADR in the same change, never a follow-up.
+Run the build loop above green before you submit, and the Docker gate too for anything Python-facing. Commit subjects read `scope: summary`, where scope names the layer or layers touched (`core:`, `bar:`, `rust:`, `py:`, `js:`, `docs:`, `test:`, `dev:`, comma-joined when a change spans them), with `chore:` for housekeeping that touches no layer and `all:` for one that touches every layer, detail goes in the body, and a governing ADR is cited in parentheses: for example `bar: charge funding on a bar interval (ADR 0017)`. A non-obvious decision lands its ADR in the same change, never a follow-up.
 
 <br>
 

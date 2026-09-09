@@ -44,7 +44,7 @@ The whole engine is one small loop: load candles, place an order if you want to,
 <br>
 <br>
 
-## Scope and Fidelity
+## Scope and fidelity
 
 It **does**: event-driven bar simulation, thousands of parallel runs over one shared series, the order types a real venue offers, a cost model (maker/taker fees, perp funding, slippage, market impact, a per-order volume cap), a small Python API, and a chart layer that draws a run and your own arrays into one self-contained HTML file.
 
@@ -57,7 +57,7 @@ It **does not**: model the full order book (L2), latency, or queue position, and
 <br>
 <br>
 
-## How It Works
+## How it works
 
 You hand the engine a table of candles and walk it forward one bar at a time. On any bar you can place an order, a market buy or sell, a limit, or a stop, then call `step` to advance exactly one candle: it resolves whatever is pending and hands back your new account, the balances, position, and equity. Repeat to the end of the data. That loop is the whole engine; the backtester and the RL env are wrappers around it.
 
@@ -96,7 +96,7 @@ print(state["equity"], state["position"])      # account value and position at t
 <br>
 <br>
 
-## Ways to Drive It
+## Ways to drive it
 
 Every surface below takes the same eleven engine knobs. `emsl.Market` holds them once so they cannot drift apart, and hands out the surfaces itself:
 
@@ -279,7 +279,7 @@ For the probabilities there are `probabilistic_sharpe`, `sharpe_interval`, `min_
 The five paths above produce numbers. `emsl.chart` is how you look at them: candles, the fills on the bars they happened on, an equity curve with its drawdown shaded onto it, a trade log, and any array of your own beside them.
 
 ```python
-import numpy
+import numpy as np
 
 import emsl
 from emsl.plot import Background, Band, Histogram, Level, Line
@@ -288,7 +288,7 @@ result = emsl.backtest.Backtester(candles=frame, market="spot").run(strategy)
 
 # the bars the rule was actually in the market. Ticks index bars, so this is one
 # entry per candle; an equity curve is one shorter and the chart aligns it for you
-held = numpy.zeros(len(frame), dtype=bool)
+held = np.zeros(len(frame), dtype=bool)
 for trade in result.trades:
     held[trade["entry_tick"]:trade["exit_tick"] + 1] = True
 
@@ -300,11 +300,11 @@ emsl.chart(
              fill="#8b97a514"),
         Line(values=strategy.basis, name="basis 96", width=1, style="dashed"),
         Histogram(values=strategy.hist, name="MACD 12/26/9", panel="momentum",
-                  color=numpy.where(strategy.hist >= 0.0, "#2fe0a8", "#ff5470")),
+                  color=np.where(strategy.hist >= 0.0, "#2fe0a8", "#ff5470")),
         Level(value=0.0, panel="momentum", style="dotted"),
     ],
     run=result,
-    candle_color=numpy.where(held, "#4d9fff", None),
+    candle_color=np.where(held, "#4d9fff", None),
 ).show()
 ```
 
@@ -343,7 +343,7 @@ The [Plotting](.Documentation/Plotting.md) guide shows every one of those marks 
 Throughput depends on which path you drive, and they differ by orders of magnitude, so it is worth knowing which one you are on. Measured on a 28-thread x86_64 box against the built wheel over a 2,000-bar series:
 
 | Path | Throughput | What bounds it |
-| :--- | ---: | :--- |
+| :--- | :--- | :--- |
 | Single-env raw step | ~358K steps/s | the Python-to-Rust boundary, crossed on every `step` |
 | Single-env with a Python strategy | ~77K steps/s | your per-bar Python, not the engine |
 | Batched RL step | ~110-200K env-steps/s | building the observation, GIL released |
@@ -440,7 +440,7 @@ pip install dist/*.whl
 <br>
 <br>
 
-## Building and Validating
+## Building and validating
 
 The pure-Rust crates validate locally with cargo; the Python surface validates on a Docker gate that builds the one abi3 wheel and runs the test suite across Python 3.9, 3.11, and 3.12. The riskiest code is adversarially verified, a process that has caught real bugs before they shipped; the full workflow is in the [Validation Guide](.Documentation/Validation_Guide.md).
 

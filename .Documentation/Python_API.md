@@ -33,6 +33,7 @@ Everything the package exports, and where each piece is documented in full:
 | `emsl.Engine` | The single environment: place orders, `step` one bar, read the state. [Below](#engine). |
 | `emsl.Batch` | Many independent envs over one shared series, stepped in parallel with the GIL released. [Below](#batch). |
 | `emsl.backtest` | `Backtester` and `Strategy`: drive a strategy over a series, get stats, equity, and trades. [Below](#backtesting). |
+| `emsl.Strategy` | The base class a strategy subclasses, re-exported from `emsl.backtest`. [Below](#backtesting). |
 | `emsl.tune` | Search a strategy's parameters, each trial a full backtest, across worker processes. [Below](#tuning). |
 | `emsl.walk_forward` | Refit repeatedly and trade each stretch with what was fitted before it. [Below](#walking-forward). |
 | `emsl.Market` | The venue and its costs as one object, which hands out every surface configured identically. [Below](#the-market). |
@@ -42,7 +43,7 @@ Everything the package exports, and where each piece is documented in full:
 | `emsl.sb3` | `EmslVecEnv`, the Stable-Baselines3 adapter. [RL Guide](RL_Guide.md#training). |
 | `emsl.chart` | Draw a frame, your own arrays and a run as one self-contained HTML document. [Below](#plotting), in full in the [Plotting](Plotting.md) guide. |
 | `emsl.chart_defaults` | Set the theme, height and palette every later chart uses. [Plotting](Plotting.md#output). |
-| `emsl.plot` | `Line`, `Histogram`, `Band`, `Level`, `Marker`, `Background`, `Panel`, and `ramp`: the marks a chart carries. [Plotting](Plotting.md#the-marks). |
+| `emsl.plot` | `Line`, `Histogram`, `Band`, `Level`, `Marker`, `Markers`, `Background`, `Panel`, `Recorder`, `ramp`, `at_bar` and `at_next`: the marks a chart carries and the helpers that record and align them. [Plotting](Plotting.md#the-marks). |
 | `emsl.to_ohlcv` | Turn a DataFrame, a parquet path, or an array into the `(T, 5)` the engine takes. [Below](#data-input). |
 
 All of it sits on the one Rust engine, so a backtest, an RL rollout, and a parameter search see the same fill model and the same costs.
@@ -92,7 +93,7 @@ The wrappers call it for you, so a DataFrame can go straight into `Backtester` o
 
 <br>
 
-## The Market
+## The market
 
 The engine takes eleven knobs, and a backtest, a search and an RL rollout each take the same eleven. Written out at three call sites they are three chances to disagree, and the claim that one fill model sits behind every surface was being held up by you retyping them identically. `emsl.Market` holds them once and hands out the surfaces itself.
 
@@ -122,6 +123,7 @@ Each method takes only the arguments that are **not** the venue, so a knob canno
 | `engine(candles, report=False)` | an `Engine`. |
 | `backtest(candles, periods_per_year=None, risk_free=0.0)` | a `Backtester`. |
 | `tune(strategy, space, data, **search)` | a `TuneResult`; `search` is the search controls only. |
+| `walk_forward(strategy, space, data, **rest)` | a `WalkForward`; `rest` is the layout and the search controls only. |
 | `env(data, **rest)` | a `VectorEnv`; `rest` is the RL arguments only. |
 | `replace(**changes)` | a copy with some knobs changed. |
 | `as_dict()` | the knobs as the keyword arguments the engine takes. |
@@ -171,9 +173,9 @@ eng = Engine(
 
 | Call | Returns | Does |
 | :--- | :--- | :--- |
-| `market_buy(size)` / `market_sell(size)` | id or `None` | Taker order; fills at the next bar's open, pays the taker fee, takes slippage. `None` when the queue already holds `max_open_orders` for this bar. |
-| `limit_buy(size, price)` / `limit_sell(size, price)` | id or `None` | Maker order; rests until a later bar reaches the price. `None` if the book is full. |
-| `stop(side, size, trigger, reduce_only=False)` | id or `None` | Becomes a market order once a bar crosses `trigger`. `side` is `"buy"` or `"sell"`. Pass `reduce_only=True` for a stop-loss. |
+| `market_buy(size)` / `market_sell(size)` | id or `None` | Taker order; fills at the next bar's open, pays the taker fee, takes slippage. `None` when the queue already holds `max_open_orders` for this bar, or the size is not a positive finite number. |
+| `limit_buy(size, price)` / `limit_sell(size, price)` | id or `None` | Limit order; rests until a later bar reaches the price, and pays the maker fee unless it was already through the market at the open. `None` if the book is full or the size is not a positive finite number; a non-finite price raises. |
+| `stop(side, size, trigger, reduce_only=False)` | id or `None` | Becomes a market order once a bar crosses `trigger`. `side` is `"buy"` or `"sell"`. `None` if the book is full, the size is not a positive finite number, or the trigger is not finite. Pass `reduce_only=True` for a stop-loss. |
 | `order(side, size, type, price, trigger, reduce_only, post_only, tif)` | id or `None` | The primitive the shortcuts wrap; the only call that sets `post_only` and `tif`. |
 | `close()` | id or `None` | Queue a reduce-only market order sized to the whole position. `None` when flat. |
 | `cancel(order_id)` | bool | Drop a resting order. True if it was found. |
@@ -390,7 +392,7 @@ The stop rests only once a position is held (orders fill on the next bar, so the
 
 `stats` is a dict with these keys:
 
-| Key | Unit | |
+| Key | Unit | Meaning |
 | :--- | :--- | :--- |
 | `total_return_pct`, `net_profit_pct`, `cagr_pct` | percent | Total return (net of fees; both names give the same figure) and annualized return. |
 | `sharpe`, `sortino`, `calmar` | ratio | Risk-adjusted return; annualized. Each is `inf` when it earned something against no measured risk at all, so the set stays orderable ([ADR 0046](Decisions.md)). |
@@ -516,6 +518,7 @@ Leaving `oos` out warns, because the default cannot be silent without being a tr
 | `seed` | `None` | Seeds the sampler. |
 | `direction` | `"maximize"` | `"maximize"` or `"minimize"`. |
 | `verbose` | `False` | `True` restores optuna's per-trial logging. |
+| `min_trades` | 0 | Fails a trial that closed fewer round trips ([ADR 0034](Decisions.md)). |
 
 The `TuneResult` carries `.best_params` (a dict), `.best_value` (the objective at the best trial), `.best_stats` (the winning run's full [stats](#statistics) dict, so its return, drawdown, and trade count are there without a re-run), `.trials` (a list of `{number, params, value, state, stats}`), and `.study` (the underlying optuna study for deeper inspection). `.best_strategy()` builds a fresh strategy from `.best_params`.
 
@@ -763,7 +766,7 @@ emsl.chart(frame, [                                  # matched by type, in any o
 ).show()
 ```
 
-`chart(frame, *args, panels=, focus=, candle_color=, theme=, palette=, height=, title=, notes=)` returns a `Chart`, with `show()` for a notebook cell, `save(path)` for a file, and `spec()` for the underlying document. `frame` is a DataFrame with a DatetimeIndex or a parquet path, narrower than the `Backtester` deliberately: a chart cannot omit its x axis, and fabricating one is how a file ends up reading 1970.
+`chart(frame, *args, marks=, run=, panels=, focus=, candle_color=, theme=, palette=, height=, title=, future=0, stats=, trades=True, drawdown=, notes=)` returns a `Chart`, with `show()` for a notebook cell, `save(path)` for a file, and `spec()` for the underlying document. `frame` is a DataFrame with a DatetimeIndex or a parquet path, narrower than the `Backtester` deliberately: a chart cannot omit its x axis, and fabricating one is how a file ends up reading 1970.
 
 Arrays are read by position. Length `T` maps entry `i` to bar `i` and length `T - 1` maps entry `i` to bar `i + 1`, which is what `equity_curve` and a diff are; any other length raises and names both numbers ([ADR 0037](Decisions.md)). A `NaN` is drawn as a gap rather than a dropped row ([ADR 0038](Decisions.md)).
 

@@ -38,7 +38,7 @@ Three crates, each building only on the one beneath it:
 2. **`bar-engine`** (pure Rust; no Python). The bar-level realization: the shared candle series with zero-copy windows, the next-bar fill model, the single `step()` state machine, the optional reporter and its stats, and the Rayon batched runner. It builds only on `emsl-core`.
 3. **`emsl-py`** (the only Python-linked crate; PyO3, compiled to `emsl._emsl`). A thin shell over `bar-engine`: it parses arguments, copies candles once from numpy, hands state back as dicts, vends the zero-copy observation view, and releases the GIL around the batched step. It holds no simulation logic.
 
-The Python package `emsl` re-exports the compiled `Engine` and `Batch` and adds everything that is not simulation. Three of those are drivers, and they hold no simulation logic of their own: `emsl.backtest` and `emsl.rl` wrap the engine's loop, and `emsl.tune` and `emsl.walk_forward` orchestrate many backtests, across worker processes for the first and as one composite pass for the second (ADRs 0021, 0057). `emsl.Market` carries the eleven engine knobs once and hands out those surfaces so they cannot drift apart (ADR 0053). The rest look at a run rather than producing one: `emsl.metrics` evaluates a finished result, `emsl.ta` is functions of arrays that never see the engine, and `emsl.chart` draws. These are the larger half of the package by line count and none of them simulates anything, which is the line that matters: a defect here is a wrong number about a correct run.
+The Python package `emsl` re-exports the compiled `Engine` and `Batch` and adds everything that is not simulation. Four of those are drivers, and they hold no simulation logic of their own: `emsl.backtest` and `emsl.rl` wrap the engine's loop, and `emsl.tune` and `emsl.walk_forward` orchestrate many backtests, across worker processes for the first and as one composite pass for the second (ADRs 0021, 0057). `emsl.Market` carries the eleven engine knobs once and hands out those surfaces so they cannot drift apart (ADR 0053). The rest look at a run rather than producing one: `emsl.metrics` evaluates a finished result, `emsl.ta` is functions of arrays that never see the engine, and `emsl.chart` draws. These are the larger half of the package by line count and none of them simulates anything, which is the line that matters: a defect here is a wrong number about a correct run.
 
 `bar-engine` also carries an in-core sweep that drives compiled Rust strategies over a parameter grid; it is not exposed to Python, since it can only run strategies compiled into the engine, and it survives as the Criterion benchmark of the GIL-free path (ADR 0011).
 
@@ -70,7 +70,7 @@ Steps 1, 2 and 3 all read the clipped bar, which is what makes the fence a rule 
 
 <div align="center">
   <img src="imgs/205314.png" alt="The within-bar event order" width="25%" />
-  <p style="margin: 0;"><i>The five events resolved within one <code>step()</code>, in order: market fills, resting fills, funding, liquidation, then the close mark.</i></p>
+  <p style="margin: 0;"><i>The six events resolved within one <code>step()</code>, in order: the liquidation fence, market fills, resting fills, funding, liquidation, then the close mark.</i></p>
 </div>
 
 <br>
@@ -91,12 +91,6 @@ The candle series lives once behind an `Arc<[Candle]>`, so thousands of envs sha
 ### Reporting
 
 By default the engine records nothing but the running state, so its memory does not grow with the length of the run. With `report=True` it keeps an equity curve, sampled each step, and a trade log, one row per closed portion of a position. Performance statistics (return, CAGR, Sharpe, Sortino, Calmar, drawdown, volatility, and the trade metrics) are derived from those two buffers. Reporting stays off for RL and is never part of the state the agent sees.
-
-<br>
-
-### Design decisions
-
-Every non-obvious behavior is a recorded decision, settled with its reasoning before the code that depends on it. They are collected, one numbered entry each, in [Decisions](Decisions.md); the code and the other guides cite them by number.
 
 <br>
 

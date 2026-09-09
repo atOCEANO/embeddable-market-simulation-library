@@ -84,7 +84,7 @@ Read a disagreement as a question rather than a verdict: the reference is a seco
 
 ### The stages outside the gate
 
-Five stages exist that the gate does not run. Two of them are tests, opt-in because each pulls an image far heavier than the correctness gate and each covers something the gate structurally cannot:
+Six stages exist that the gate does not run. Two of them are tests, opt-in because each pulls an image far heavier than the correctness gate and each covers something the gate structurally cannot:
 
 ```bash
 docker build --target test-browser .    # the chart's javascript, in chromium
@@ -93,15 +93,16 @@ docker build --target test-sb3 .        # the Stable-Baselines3 adapter, with to
 
 `test-browser` is the other half of the chart layer. Everything in `tests/test_chart.py` reads `Chart.spec()`, because the gate has no browser and a spec assertion is the sharper test of what Python decided ([ADR 0043](Decisions.md)). What that cannot reach is whether the shipped JavaScript parses, runs and draws, and roughly 1,250 lines of it had never been executed by anything in the project. The first run of it found that the vendored renderer joins a line straight across whitespace, so ADR 0038's central claim was false in the artifact while true in the document ([ADR 0073](Decisions.md)). `tests/test_render.py` skips wherever playwright is absent, so the correctness gate stays green without one.
 
-The other three assert nothing, which is exactly why they are not gates:
+The other four assert nothing, which is exactly why they are not gates:
 
 ```bash
 docker build --target bench .                                 # engine throughput
 docker build --target bench-surfaces -t emsl-bench-surfaces . # then docker run it
 docker build --target charts -t emsl-charts .                 # the documentation images
+docker build --target diagrams -t emsl-diagrams .             # the hand-made diagrams
 ```
 
-`bench` prints the engine's throughput and `bench-surfaces` prints it per surface (`Engine`, `Backtester`, `tune`, `VectorEnv`, `Batch`). Neither can fail, and it is worth being plain about what that means: **there is no performance guard anywhere in this project**. `_smooth` could regress from 33x to 1x and every stage above would stay green. The numbers are visible to somebody who runs them and invisible to everybody who does not, which is a known hole rather than an oversight, and closing it needs a baseline that survives being run on different hardware. `charts` rebuilds every chart image the documentation shows, from frozen data so that a rerun redraws rather than redecides ([ADR 0085](Decisions.md)); the [Contributor Guide](Contributor_Guide.md) has the recipe.
+`bench` prints the engine's throughput and `bench-surfaces` prints it per surface (`Engine`, `Backtester`, `tune`, `VectorEnv`, `Batch`). Neither can fail, and it is worth being plain about what that means: **there is no performance guard anywhere in this project**. `_smooth` could regress from 33x to 1x and every stage above would stay green. The numbers are visible to somebody who runs them and invisible to everybody who does not, which is a known hole rather than an oversight, and closing it needs a baseline that survives being run on different hardware. `charts` rebuilds every chart image the documentation shows, from frozen data so that a rerun redraws rather than redecides ([ADR 0085](Decisions.md)); the [Contributor Guide](Contributor_Guide.md) has the recipe. `diagrams` renders the mermaid sources behind the hand-made images ([ADR 0087](Decisions.md)), and its recipe and the three settings it depends on are in the [Contributor Guide](Contributor_Guide.md) too.
 
 <br>
 
@@ -137,4 +138,4 @@ Every non-obvious behavior is settled as a numbered [decision](Decisions.md) bef
 
 ### Nothing ships unverified
 
-A change below the Python boundary is not done until cargo test, fmt, and clippy pass; a Python-facing change is not done until the Docker gate is green across the version matrix. The riskiest changes add an adversarial pass on top. Continuous integration runs the same two loops (see [`.github/workflows/`](../.github/workflows/)).
+A change below the Python boundary is not done until cargo test, fmt, and clippy pass; a Python-facing change is not done until the Docker gate is green across the version matrix. The riskiest changes add an adversarial pass on top. Continuous integration runs the same two loops on every push to main and on every pull request, the crates tested, formatted and linted, and the one abi3 wheel built once and imported and tested across 3.9, 3.11 and 3.12 (see [`.github/workflows/`](../.github/workflows/)).
