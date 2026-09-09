@@ -27,7 +27,9 @@ pub struct Account {
 }
 
 impl Account {
-    /// A fresh account with `quote` cash and no position.
+    /// A fresh account with `quote` cash and no position. Nothing is validated
+    /// here; the Python boundary is where a negative or non-finite quote is
+    /// refused (ADR 0027).
     pub fn new(market: Market, quote: f64) -> Account {
         Account {
             market,
@@ -47,11 +49,9 @@ impl Account {
         let realized = self.position.apply(fill);
         self.quote -= fee;
         match self.market {
-            // Spot: the full notional moves; a buy spends, a sell receives.
             Market::Spot => {
                 self.quote -= fill.side.sign() * fill.size.get() * fill.price.get();
             }
-            // Perp: only realized PnL booked on closes and flips moves quote.
             Market::Perp => {
                 self.quote += realized;
             }
@@ -67,13 +67,15 @@ impl Account {
         }
     }
 
-    /// Unrealized PnL of the open position at `mark`, in quote.
+    /// Unrealized PnL of the open position at `mark`, in quote: the price move
+    /// alone, with no fee and no funding in it.
     #[inline]
     pub fn unrealized(&self, mark: Price) -> f64 {
         self.position.unrealized(mark)
     }
 
-    /// Cumulative realized PnL, in quote.
+    /// Cumulative realized PnL since the account was built, in quote, gross of
+    /// fees: a fee comes straight off `quote` and never enters this.
     #[inline]
     pub fn realized(&self) -> f64 {
         self.position.realized
@@ -270,7 +272,8 @@ mod tests {
     fn perp_long_is_bust_where_its_margin_runs_out() {
         let mut a = Account::new(Market::Perp, 100.0);
         a.apply_fill(&fill(Side::Buy, 10.0, 100.0), 0.0); // 10x notional on 100 margin
-                                                          // equity at 90 = 100 + 10*(90-100) = 0
+
+        // equity at 90 = 100 + 10*(90-100) = 0
         assert!(a.is_bust_at(Price(90.0)));
         assert!(!a.is_bust_at(Price(90.01)));
         assert!(close(a.bankruptcy_price(0.0).unwrap().get(), 90.0));

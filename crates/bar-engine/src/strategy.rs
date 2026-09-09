@@ -12,10 +12,12 @@ use crate::engine::Engine;
 /// in `next` fill on the following bar (no same-bar lookahead). `Send` so a batch
 /// sweep can run strategies across threads.
 pub trait Strategy: Send {
-    /// Called once, before the first step.
+    /// Called on the reset state, before any bar has been stepped. Defaulted to a
+    /// no-op, so a strategy with no setup can leave it out.
     fn init(&mut self, _state: &State) {}
 
-    /// Called each bar with the current state; place orders on `engine`.
+    /// Called on every bar the engine has left, and the one method a strategy has
+    /// to write. Nothing it places can show up in the `state` it was handed.
     fn next(&mut self, state: &State, engine: &mut Engine);
 }
 

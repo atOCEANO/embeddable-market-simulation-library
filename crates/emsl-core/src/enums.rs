@@ -19,7 +19,7 @@ impl Side {
         }
     }
 
-    /// The opposite side.
+    /// The other side, whose `sign()` is the negation of this one's.
     #[inline]
     pub const fn opposite(self) -> Side {
         match self {

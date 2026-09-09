@@ -3,10 +3,19 @@
 //! step against the NEW bar, marks the account, and returns the new `State`. An
 //! order decided on one bar fills on the next, never the bar the decision saw.
 //!
-//! Within a step the order of events follows the bar: pending market orders fill
-//! at the open, resting limit and stop orders fill against the range, funding is
-//! charged at each interval boundary, then liquidation is checked at the bar's
-//! adverse extreme, then equity is marked at the close.
+//! Within a step the order of events follows the bar, and the fence comes before
+//! all of it. The price the position's margin runs out at is worked out before
+//! any order is resolved: a bar that OPENED past it killed the account before it
+//! opened, so the forced close happens first and nothing on that bar fills, and
+//! any other bar is clipped there, so an order that would have filled beyond the
+//! fence never triggers. Then, against that clipped candle: 1. pending market
+//! orders fill at the open, 2. resting limit and stop orders fill against the
+//! range, 3. funding is charged at each interval boundary and marked at the
+//! clipped close, 4. liquidation is checked at the bar's own adverse extreme.
+//! Equity is then marked at the close. A fill that reduces a perp is bounded once
+//! more as it lands, because the fence was read from the position carried into the
+//! bar and one grown or opened during the bar has none of its own
+//! (ADRs 0067, 0094).
 
 use emsl_core::{
     Account, Bps, Candle, CostModel, Fill, FlatCostModel, Market, Order, OrderId, OrderType, Price,
@@ -121,10 +130,7 @@ impl Engine {
     /// zero-bar series has no bar to reset or step to. Call `reset()` to get the
     /// first state.
     pub fn new(candles: Candles, config: EngineConfig) -> Engine {
-        assert!(
-            !candles.is_empty(),
-            "engine requires a non-empty candle series"
-        );
+        assert!(!candles.is_empty(), "candles must have at least one row");
         Engine {
             fill_model: FillModel {
                 slippage_bps: Bps(config.slippage_bps),
@@ -194,7 +200,9 @@ impl Engine {
         self.state()
     }
 
-    /// The current bar index (cursor position).
+    /// The current bar index. Zero after `reset()`, and it stops at the last bar
+    /// rather than running past it, so a driver that keeps stepping sees it stand
+    /// still.
     pub fn tick(&self) -> usize {
         self.tick
     }
@@ -204,7 +212,8 @@ impl Engine {
         self.tick + 1 >= self.candles.len()
     }
 
-    /// The number of candles the engine holds.
+    /// The number of candles the engine holds, fixed for its life: the series is
+    /// shared immutably and never appended to.
     pub fn num_bars(&self) -> usize {
         self.candles.len()
     }
@@ -281,7 +290,10 @@ impl Engine {
         if !size.is_finite() || size <= 0.0 || !price.is_finite() {
             return None;
         }
-        // A post_only limit that would cross the prevailing price is rejected.
+        // Crossing is judged against the CURRENT close, the last price the strategy
+        // actually saw. The next bar's open is what this order would really cross,
+        // and reading it here would be the lookahead the engine refuses everywhere
+        // else
         if post_only
             && self
                 .fill_model
@@ -322,8 +334,9 @@ impl Engine {
     /// The one order primitive the typed shortcuts wrap. Dispatches on `kind`: a
     /// market ignores `price` and `trigger`, a limit needs a `price`, a stop needs
     /// a `trigger`. `tif` applies to market and limit orders; a stop rests until it
-    /// triggers (ADR 0016). `None` if the book is full, a post_only limit would
-    /// cross, or a limit has no price or a stop no trigger.
+    /// triggers (ADR 0016). `None` if the book is full, the size is not a positive
+    /// finite number, a post_only limit would cross, or a limit has no price or a
+    /// stop no trigger.
     #[allow(clippy::too_many_arguments)]
     pub fn order(
         &mut self,
@@ -344,32 +357,38 @@ impl Engine {
     }
 
     /// Queue a market buy; it fills on the next bar's open. `None` if the queue is
-    /// already holding `max_open_orders` for this bar.
+    /// already holding `max_open_orders` for this bar, or the size is not a
+    /// positive finite number.
     pub fn market_buy(&mut self, size: f64) -> Option<OrderId> {
         self.place_market(Side::Buy, size, false, TimeInForce::Ioc)
     }
 
     /// Queue a market sell; it fills on the next bar's open. `None` if the queue is
-    /// already holding `max_open_orders` for this bar.
+    /// already holding `max_open_orders` for this bar, or the size is not a
+    /// positive finite number.
     pub fn market_sell(&mut self, size: f64) -> Option<OrderId> {
         self.place_market(Side::Sell, size, false, TimeInForce::Ioc)
     }
 
     /// Rest a buy limit; it fills when a later bar trades down to `price`. `None`
-    /// if the book is full.
+    /// if the book is full, the size is not a positive finite number, or `price`
+    /// is not finite.
     pub fn limit_buy(&mut self, size: f64, price: f64) -> Option<OrderId> {
         self.place_limit(Side::Buy, size, price, false, false, TimeInForce::Gtc)
     }
 
-    /// Rest a sell limit; it fills when a later bar trades up to `price`.
+    /// Rest a sell limit; it fills when a later bar trades up to `price`. `None`
+    /// if the book is full, the size is not a positive finite number, or `price`
+    /// is not finite.
     pub fn limit_sell(&mut self, size: f64, price: f64) -> Option<OrderId> {
         self.place_limit(Side::Sell, size, price, false, false, TimeInForce::Gtc)
     }
 
     /// Rest a stop that becomes a market order once `trigger` is crossed. `None`
-    /// if the book is full or the size or trigger is not finite. `reduce_only`
-    /// makes it a protective stop that can only shrink the position, never open
-    /// one on the other side; a stop-loss wants it true (ADR 0028).
+    /// if the book is full, the size is not a positive finite number, or the
+    /// trigger is not finite. `reduce_only` makes it a protective stop that can
+    /// only shrink the position, never open one on the other side; a stop-loss
+    /// wants it true (ADR 0028).
     pub fn stop(
         &mut self,
         side: Side,
@@ -793,16 +812,21 @@ impl Engine {
     ///
     /// `fenced` clips the whole candle, and it is read once from the position
     /// carried INTO the bar, which is the approximation ADR 0067 accepted on the
-    /// grounds that its error runs pessimistic. It does not, in two shapes. A
+    /// grounds that its error runs pessimistic. It does not, in three shapes. A
     /// position GROWN during the bar and exited on the same bar is bounded by a
     /// fence computed for a smaller position, or by no fence at all when the
     /// account entered the bar flat, so a market entry and a protective stop
     /// armed in one decision booked straight through the margin and left the
-    /// account owing money. And a resting limit prices at its own limit, which
+    /// account owing money. A resting limit prices at its own limit, which
     /// never passes through the taker clamp, so it walks out of the fenced candle
-    /// from underneath. Bounding the fill instead of the bar covers both, because
-    /// the bound is read at the moment the fill lands rather than a step earlier
-    /// (ADR 0094).
+    /// from underneath. And a partial exit that drives quote negative leaves a
+    /// residual for the forced close to price off a balance the closed form at
+    /// `bankruptcy_price` assumes is positive, which solves to a price on the far
+    /// side of the entry: a liquidated WINNER in the trade log, on a dead account.
+    /// That third one is the dangerous shape, because the first two are loud and
+    /// pessimistic while it flatters. Bounding the fill instead of the bar covers
+    /// all three, because the bound is read at the moment the fill lands rather
+    /// than a step earlier (ADR 0094).
     ///
     /// Closing at the bankruptcy price leaves equity exactly zero AT that price,
     /// so a partial close is bounded by the same number as a full one and no
@@ -861,10 +885,10 @@ impl Engine {
     /// dead position's entry fee standing to be charged against the NEXT trade
     /// (ADRs 0030, 0031).
     ///
-    /// Thirteen boundary mutants survive here and ALL THIRTEEN are equivalent or
-    /// sit on an unreachable branch. Measured, not argued: probes asserting the
-    /// three invariants below ran against 179 Rust tests, 547 Python tests and
-    /// 3,600 randomised differential cases without firing once.
+    /// Twelve boundary mutants survive here and ALL TWELVE are equivalent or sit
+    /// on an unreachable branch. Measured, not argued: probes asserting the three
+    /// invariants below ran, at 1.0.0, against 179 Rust tests, 547 Python tests
+    /// and 3,600 randomised differential cases without firing once.
     ///
     ///   `applied` is never zero or less. `apply_fill_clamped` returns before
     ///   calling this on a non-positive size and `liquidate` never books a flat
@@ -1019,7 +1043,7 @@ impl Engine {
             // entry be funded by the proceeds of a sale that may just as well have
             // come after it, so the account ended a wide bar richer than slot order
             // (ADR 0006) would have left it, which is the optimism ADR 0056 exists
-            // to remove rather than relocate.
+            // to remove rather than relocate (ADR 0071)
             let slots: Vec<usize> = (0..fills.len())
                 .filter(|&i| adversity(position, entry, &fills[i].1).is_finite())
                 .collect();
@@ -1100,7 +1124,8 @@ impl Engine {
         }
     }
 
-    /// The reporter, when reporting is on.
+    /// The reporter, or `None` when `report` was false at construction. It cannot
+    /// be turned on afterwards; `reset()` only empties the one already there.
     pub fn reporter(&self) -> Option<&Reporter> {
         self.reporter.as_ref()
     }
@@ -1498,7 +1523,8 @@ mod tests {
         e.reset();
         e.market_buy(1.0);
         e.step(); // long 1 @ 200
-                  // a reduce_only buy cannot grow the long, so it applies nothing
+
+        // a reduce_only buy cannot grow the long, so it applies nothing
         e.order(
             Side::Buy,
             1.0,
@@ -1977,7 +2003,9 @@ mod tests {
         e.reset();
         e.market_buy(1.0);
         e.step(); // long 1 @ 200
-                  // at bar 2 (fill 300) equity is 100 + 1*(300-200) = 200, so max size = 3*200/300 = 2
+
+        // at bar 2 (fill 300) equity is 100 + 1*(300-200) = 200, so the cap is
+        // 3*200/300 = 2
         e.market_sell(10.0);
         let s = e.step(); // flips: closes 1, opens short capped at 2
         assert_eq!(s.position, -2.0);
@@ -2222,7 +2250,7 @@ mod tests {
     }
 
     #[test]
-    fn a_partial_close_takes_only_its_share_of_the_entry_fee() {
+    fn a_single_partial_close_splits_the_entry_fee_by_size() {
         let mut config = cfg();
         config.report = true;
         config.fee_taker = 0.01;
@@ -2834,7 +2862,8 @@ mod tests {
         assert_eq!(placed, 3);
         let s = e.step();
         assert_eq!(s.position, 30.0); // three slots at the 10-unit cap, not a hundred
-                                      // the queue drains with the bar, so the next bar gets its slots back
+
+        // the queue drains with the bar, so the next bar gets its slots back
         assert!(e.market_buy(50.0).is_some());
     }
 
@@ -2932,7 +2961,7 @@ mod tests {
             }
             let state = e.step();
             assert_eq!(state.equity, 0.0, "exit={exit} left {}", state.equity);
-            let trades = e.reporter().expect("reporting").trades();
+            let trades = e.reporter().expect("reporting is on").trades();
             assert_eq!(trades.len(), 1);
             assert_eq!(trades[0].exit_price, 90.0);
             assert!(trades[0].liquidated, "exit={exit} booked no liquidation");
@@ -2958,7 +2987,7 @@ mod tests {
             e.stop(Side::Sell, 10.0, trigger, true);
             let state = e.step();
             assert_eq!(state.equity, want_equity, "stop at {trigger}");
-            let trades = e.reporter().expect("reporting").trades();
+            let trades = e.reporter().expect("reporting is on").trades();
             assert_eq!(trades[0].exit_price, want_exit, "stop at {trigger}");
         }
     }
@@ -2982,7 +3011,7 @@ mod tests {
         e.market_sell(6.0);
         let state = e.step();
         assert_eq!(state.equity, 0.0);
-        for trade in e.reporter().expect("reporting").trades() {
+        for trade in e.reporter().expect("reporting is on").trades() {
             assert!(trade.pnl <= 0.0, "a liquidation booked {}", trade.pnl);
             assert!(trade.exit_price <= 101.0, "exited at {}", trade.exit_price);
         }
@@ -3266,7 +3295,7 @@ mod tests {
 
         let held: Vec<usize> = e
             .reporter()
-            .expect("reporting")
+            .expect("reporting is on")
             .trades()
             .iter()
             .map(|t| t.bars_held)
@@ -3275,7 +3304,7 @@ mod tests {
     }
 
     #[test]
-    fn a_partial_close_takes_its_share_of_the_entry_fee_and_no_more() {
+    fn two_partial_closes_consume_the_entry_fee_exactly_once() {
         // ADR 0030's whole point: a trade carries its round trip, so the entry fee
         // is split across the closes by size and consumed exactly once. The
         // arithmetic that does it had no test of its own
@@ -3295,7 +3324,7 @@ mod tests {
 
         let fees: Vec<f64> = e
             .reporter()
-            .expect("reporting")
+            .expect("reporting is on")
             .trades()
             .iter()
             .map(|t| t.fees)
@@ -3470,7 +3499,7 @@ mod tests {
         assert_eq!(state.position, 0.0);
         assert_eq!(state.equity, 0.0);
         assert_eq!(state.bar_close, 100.0); // the bar recovered, the account did not
-        let trades = e.reporter().expect("reporting").trades();
+        let trades = e.reporter().expect("reporting is on").trades();
         assert_eq!(trades.len(), 1);
         assert_eq!(trades[0].exit_price, 90.0);
         assert!(trades[0].liquidated);
@@ -3501,7 +3530,7 @@ mod tests {
         assert_eq!(state.position, 0.0);
         assert_eq!(state.equity, 0.0);
         assert_eq!(state.bar_close, 100.0); // the bar came back, the account did not
-        let trades = e.reporter().expect("reporting").trades();
+        let trades = e.reporter().expect("reporting is on").trades();
         assert_eq!(trades.len(), 1);
         assert_eq!(trades[0].exit_price, 110.0);
         assert!(trades[0].liquidated);
@@ -3550,7 +3579,7 @@ mod tests {
         // ADR 0052's nothing left, to the last bit the funding arithmetic allows:
         // 100 of margin, 11 of credit and an exit at 111.1 land 5.7e-14 off zero
         assert!(state.equity.abs() < 1e-9);
-        let trades = e.reporter().expect("reporting").trades();
+        let trades = e.reporter().expect("reporting is on").trades();
         assert_eq!(trades.len(), 1);
         assert!((trades[0].exit_price - 111.1).abs() < 1e-9);
         assert!(trades[0].liquidated);
@@ -3670,7 +3699,7 @@ mod tests {
             // opened past it, so the exit is priced there and leaves nothing
             assert_eq!(state.position, 0.0, "exit={exit}");
             assert_eq!(state.equity, 0.0, "exit={exit} left {}", state.equity);
-            let trades = e.reporter().expect("reporting").trades();
+            let trades = e.reporter().expect("reporting is on").trades();
             assert_eq!(trades.len(), 1, "exit={exit}");
             assert_eq!(trades[0].exit_price, 110.0, "exit={exit}");
             assert!(trades[0].liquidated, "exit={exit} booked no liquidation");
@@ -3699,7 +3728,7 @@ mod tests {
             e.stop(Side::Buy, 10.0, trigger, true);
             let state = e.step();
             assert_eq!(state.equity, want_equity, "stop at {trigger}");
-            let trades = e.reporter().expect("reporting").trades();
+            let trades = e.reporter().expect("reporting is on").trades();
             assert_eq!(trades[0].exit_price, want_exit, "stop at {trigger}");
         }
     }
@@ -3765,8 +3794,6 @@ mod tests {
         }
     }
 
-    // one signed action per bar: positive buys, negative sells, and the magnitude is
-    // the fraction of equity to put on
     /// One action per bar, and the magnitude picks the ORDER KIND as well as the
     /// size, so the same generator reaches a resting book.
     ///

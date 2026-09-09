@@ -16,14 +16,15 @@ pub struct RestingOrderBook {
 }
 
 impl RestingOrderBook {
-    /// A book with `capacity` slots.
+    /// A book with `capacity` free slots, allocated once and never resized.
     pub fn new(capacity: usize) -> RestingOrderBook {
         RestingOrderBook {
             slots: vec![None; capacity],
         }
     }
 
-    /// Number of resting orders.
+    /// Number of resting orders, counted by scanning every slot rather than
+    /// tracked, so it costs the capacity and not the occupancy.
     pub fn len(&self) -> usize {
         self.slots.iter().filter(|s| s.is_some()).count()
     }
@@ -33,7 +34,7 @@ impl RestingOrderBook {
         self.slots.iter().all(Option::is_none)
     }
 
-    /// True when every slot is taken.
+    /// True when every slot is taken, so the next `place` hands its order back.
     pub fn is_full(&self) -> bool {
         self.slots.iter().all(Option::is_some)
     }
@@ -51,7 +52,8 @@ impl RestingOrderBook {
         }
     }
 
-    /// A resting order by id.
+    /// A resting order by id. The engine hands out a fresh id per order and never
+    /// reuses one, so a cancelled order's id matches nothing later.
     pub fn get(&self, id: OrderId) -> Option<&Order> {
         self.slots.iter().flatten().find(|o| o.id == id)
     }
@@ -92,7 +94,8 @@ impl RestingOrderBook {
         }
     }
 
-    /// Remove every resting order.
+    /// Remove every resting order, freeing all slots, so the next `place` takes
+    /// slot 0 and the priority that comes with it (ADR 0006).
     pub fn cancel_all(&mut self) {
         for slot in &mut self.slots {
             *slot = None;

@@ -163,25 +163,19 @@ mod tests {
         // bars once fast >= slow, so every such row returned an untraded run
         let mut e = Engine::new(rising(40), cfg());
         let mut s = SmaCross::from_params(&[10.0, 3.0]);
-        run(&mut e, &mut s);
-        let inverted = e.stats(365.0, 0.0).unwrap().num_trades;
+        let inverted = run(&mut e, &mut s);
 
         let mut e = Engine::new(rising(40), cfg());
         let mut s = SmaCross::from_params(&[3.0, 3.0]);
         run(&mut e, &mut s);
         let equal = e.stats(365.0, 0.0).unwrap().num_trades;
 
-        // equal lengths cannot cross, so that row is genuinely inert; the inverted
-        // row compares a 10-bar mean against a 3-bar one and must not match it
+        // equal lengths cannot cross, so that row is genuinely inert
         assert_eq!(equal, 0);
-        let mut e = Engine::new(rising(40), cfg());
-        let mut s = SmaCross::from_params(&[10.0, 3.0]);
-        let final_state = run(&mut e, &mut s);
-        assert_eq!(inverted, e.stats(365.0, 0.0).unwrap().num_trades);
         // on a monotone rise the 3-bar mean sits above the 10-bar one, so an
         // inverted row (fast 10, slow 3) reads fast < slow and stays flat, which is
         // a real comparison rather than the degenerate equality it used to make
-        assert_eq!(final_state.position, 0.0);
+        assert_eq!(inverted.position, 0.0);
     }
 
     #[test]

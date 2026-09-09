@@ -38,7 +38,8 @@ impl EnvBatch {
         EnvBatch { engines }
     }
 
-    /// Number of envs.
+    /// Number of envs, fixed at construction: a batch never grows or shrinks, so
+    /// every per-env array the caller passes has to be exactly this long.
     pub fn len(&self) -> usize {
         self.engines.len()
     }
@@ -114,7 +115,7 @@ impl EnvBatch {
             .zip(self.engines.par_iter())
             .for_each(|(chunk, engine)| {
                 let bars = engine.candle_window(window);
-                let pad = window - bars.len(); // fewer than `window` bars -> pad the front
+                let pad = window - bars.len();
                 for (row, bar) in bars.iter().enumerate() {
                     let base = (pad + row) * cols;
                     chunk[base] = bar.open;

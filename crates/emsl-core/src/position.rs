@@ -32,7 +32,7 @@ pub struct Position {
 }
 
 impl Position {
-    /// A flat position.
+    /// A flat position: no size, no entry price, and no realized PnL yet.
     pub fn flat() -> Position {
         Position::default()
     }
@@ -60,8 +60,6 @@ impl Position {
     /// `Account::apply_fill` gates its cash move on the same `moves_position`
     /// predicate, so a fill refused here never moves quote either (ADR 0023).
     pub fn apply(&mut self, fill: &Fill) -> f64 {
-        // size is a positive magnitude; a non-finite, zero, or negative size is
-        // ignored so a bad value cannot open the wrong side or poison the account
         if !moves_position(fill) {
             return 0.0;
         }

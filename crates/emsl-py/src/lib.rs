@@ -22,7 +22,7 @@ use pyo3::types::{PyDict, PyList};
 use bar_engine::{Candles, Engine as BarEngine, EngineConfig, EnvBatch, Stats, Trade};
 use emsl_core::{Candle, Market, Order, OrderId, OrderType, Side, State, TimeInForce};
 
-/// Parse a market string into the core enum.
+/// Parse a market string into the core enum, case-insensitively.
 fn parse_market(market: &str) -> PyResult<Market> {
     match market.to_ascii_lowercase().as_str() {
         "spot" => Ok(Market::Spot),
@@ -33,7 +33,7 @@ fn parse_market(market: &str) -> PyResult<Market> {
     }
 }
 
-/// Parse a side string into the core enum.
+/// Parse a side string into the core enum, case-insensitively.
 fn parse_side(side: &str) -> PyResult<Side> {
     match side.to_ascii_lowercase().as_str() {
         "buy" => Ok(Side::Buy),
@@ -44,7 +44,7 @@ fn parse_side(side: &str) -> PyResult<Side> {
     }
 }
 
-/// Parse an order-type string into the core enum.
+/// Parse an order-type string into the core enum, case-insensitively.
 fn parse_order_type(kind: &str) -> PyResult<OrderType> {
     match kind.to_ascii_lowercase().as_str() {
         "market" => Ok(OrderType::Market),
@@ -56,7 +56,7 @@ fn parse_order_type(kind: &str) -> PyResult<OrderType> {
     }
 }
 
-/// Parse a time-in-force string into the core enum.
+/// Parse a time-in-force string into the core enum, case-insensitively.
 fn parse_tif(tif: &str) -> PyResult<TimeInForce> {
     match tif.to_ascii_uppercase().as_str() {
         "GTC" => Ok(TimeInForce::Gtc),
@@ -173,7 +173,7 @@ fn finite(name: &str, value: f64) -> PyResult<f64> {
     Ok(value)
 }
 
-/// Reject a configuration scalar that is not finite and at or above `low`.
+/// Reject a configuration scalar that is not finite, or that is below `low`.
 fn at_least(name: &str, value: f64, low: f64) -> PyResult<f64> {
     finite(name, value)?;
     if value < low {
@@ -220,9 +220,6 @@ fn build_config(
             "max_open_orders must be between 1 and {MAX_OPEN_ORDERS_LIMIT}, got {max_open_orders}"
         )));
     }
-    // A fee rate at or below -1 is a rebate larger than the notional; it turns the
-    // spot cash clamp's `1 + rate` divisor non-positive and mints equity out of a
-    // fill that never happens.
     for (name, rate) in [("fee_taker", fee_taker), ("fee_maker", fee_maker)] {
         a_rebate(name, rate)?;
     }
@@ -238,7 +235,7 @@ fn build_config(
             let v = at_least("max_fill_fraction", max_fill_fraction, 0.0)?;
             if v <= 0.0 {
                 return Err(PyValueError::new_err(
-                    "max_fill_fraction must be greater than 0, got 0".to_string(),
+                    "max_fill_fraction must be greater than 0, got 0",
                 ));
             }
             v
@@ -590,24 +587,28 @@ impl Engine {
     }
 
     /// Queue a market buy; it fills on the next bar's open. Returns the order id,
-    /// or None if the queue already holds max_open_orders for this bar.
+    /// or None if the queue already holds max_open_orders for this bar, or size is
+    /// not a positive finite number.
     fn market_buy(&mut self, size: f64) -> Option<u64> {
         self.inner.market_buy(size).map(|id| id.0)
     }
 
     /// Queue a market sell; it fills on the next bar's open. Returns the order id,
-    /// or None if the queue already holds max_open_orders for this bar.
+    /// or None if the queue already holds max_open_orders for this bar, or size is
+    /// not a positive finite number.
     fn market_sell(&mut self, size: f64) -> Option<u64> {
         self.inner.market_sell(size).map(|id| id.0)
     }
 
-    /// Rest a buy limit. Returns the order id, or None if the book is full.
+    /// Rest a buy limit. Returns the order id, or None if the book is full or size
+    /// is not a positive finite number; a non-finite price raises instead.
     fn limit_buy(&mut self, size: f64, price: f64) -> PyResult<Option<u64>> {
         finite("price", price)?;
         Ok(self.inner.limit_buy(size, price).map(|id| id.0))
     }
 
-    /// Rest a sell limit. Returns the order id, or None if the book is full.
+    /// Rest a sell limit. Returns the order id, or None if the book is full or size
+    /// is not a positive finite number; a non-finite price raises instead.
     fn limit_sell(&mut self, size: f64, price: f64) -> PyResult<Option<u64>> {
         finite("price", price)?;
         Ok(self.inner.limit_sell(size, price).map(|id| id.0))
@@ -694,8 +695,9 @@ impl Engine {
     /// The one order primitive the shortcuts wrap. `side` is "buy" or "sell",
     /// `type` is "market", "limit", or "stop", `tif` is "GTC", "IOC", or "FOK". A
     /// limit needs `price`, a stop needs `trigger`. Returns the order id, or None if
-    /// the book is full or a post_only limit would cross. `tif` applies to market
-    /// and limit orders; a stop rests until it triggers (ADR 0016).
+    /// the book is full, a post_only limit would cross, or `size` is not a positive
+    /// finite number. `tif` applies to market and limit orders; a stop rests until
+    /// it triggers (ADR 0016).
     #[pyo3(signature = (
         side,
         size,
@@ -722,10 +724,14 @@ impl Engine {
         let kind = parse_order_type(r#type)?;
         let tif = parse_tif(tif)?;
         if kind == OrderType::Limit && price.is_none() {
-            return Err(PyValueError::new_err("a limit order requires a price"));
+            return Err(PyValueError::new_err(
+                "price is required when type is 'limit'",
+            ));
         }
         if kind == OrderType::Stop && trigger.is_none() {
-            return Err(PyValueError::new_err("a stop order requires a trigger"));
+            return Err(PyValueError::new_err(
+                "trigger is required when type is 'stop'",
+            ));
         }
         if let Some(p) = price {
             finite("price", p)?;
@@ -979,23 +985,27 @@ impl Batch {
         })
     }
 
-    /// Number of envs.
+    /// Number of envs, so `len(batch)` and `batch.num_envs` are the same number.
     fn __len__(&self) -> usize {
         self.inner.len()
     }
 
-    /// Number of envs.
+    /// Number of envs, fixed at construction: every per-env array passed in has to
+    /// be exactly this long.
     #[getter]
     fn num_envs(&self) -> usize {
         self.inner.len()
     }
 
-    /// True when the envs have no next bar to step into.
+    /// True when no env has a next bar to step into. After per-env random-start
+    /// resets that takes until the last env reaches the end; an empty batch is
+    /// done from the start.
     fn done(&self) -> bool {
         self.inner.done()
     }
 
-    /// Reset every env, returning the per-env initial state dicts.
+    /// Reset every env to the first bar, returning one initial state dict per env
+    /// in env order.
     fn reset_all<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
         let states = py.allow_threads(|| self.inner.reset_all());
         states_to_list(py, &states)
@@ -1060,9 +1070,11 @@ impl Batch {
             .as_slice()
             .map_err(|_| PyValueError::new_err("mask must be a contiguous 1-D bool array"))?;
         if mask_slice.len() != self.inner.len() {
-            return Err(PyValueError::new_err(
-                "mask length must equal num_envs".to_string(),
-            ));
+            return Err(PyValueError::new_err(format!(
+                "mask length {} must equal num_envs {}",
+                mask_slice.len(),
+                self.inner.len()
+            )));
         }
         let mask_vec = mask_slice.to_vec();
         let offs = self.offsets_vec(offsets)?;

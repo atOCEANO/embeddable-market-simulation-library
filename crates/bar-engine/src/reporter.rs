@@ -67,22 +67,27 @@ impl Reporter {
         self.trades.push(trade);
     }
 
-    /// The equity sampled at each recorded step.
+    /// The equity sampled at each recorded step: one point per bar the engine
+    /// actually advanced, so a driver that keeps calling `step` past the last bar
+    /// adds none.
     pub fn equity_curve(&self) -> &[f64] {
         &self.equity_curve
     }
 
-    /// The closed trades, in order.
+    /// The closed trades, in the order they closed. A forced close is logged here
+    /// like any other, carrying `liquidated` (ADR 0003).
     pub fn trades(&self) -> &[Trade] {
         &self.trades
     }
 
-    /// Number of recorded equity points.
+    /// Number of recorded equity points, and nothing else. It does not pair with
+    /// `is_empty`, which wants the trade log empty too, so a reporter holding a
+    /// trade and no equity point answers zero here and `false` there.
     pub fn len(&self) -> usize {
         self.equity_curve.len()
     }
 
-    /// True when nothing has been recorded.
+    /// True when neither buffer holds anything: no equity point and no trade.
     pub fn is_empty(&self) -> bool {
         self.equity_curve.is_empty() && self.trades.is_empty()
     }

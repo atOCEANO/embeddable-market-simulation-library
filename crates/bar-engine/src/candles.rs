@@ -19,17 +19,17 @@ impl Candles {
         Candles { bars: bars.into() }
     }
 
-    /// Number of bars.
+    /// Number of bars, fixed for the life of the series and shared by every clone.
     pub fn len(&self) -> usize {
         self.bars.len()
     }
 
-    /// True when the series has no bars.
+    /// True when the series has no bars, which is what `Engine::new` refuses.
     pub fn is_empty(&self) -> bool {
         self.bars.is_empty()
     }
 
-    /// The bar at `i`, if it exists.
+    /// The bar at `i`, copied out of the shared buffer, or `None` past the end.
     pub fn get(&self, i: usize) -> Option<Candle> {
         self.bars.get(i).copied()
     }

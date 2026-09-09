@@ -9,6 +9,7 @@ use crate::order::Order;
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct State {
     pub tick_index: usize,
+    /// Base-asset balance on spot; zero on a perp.
     pub base: f64,
     pub quote: f64,
     /// Signed position in base units, negative is short.

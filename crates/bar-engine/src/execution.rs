@@ -179,7 +179,8 @@ impl FillModel {
     }
 }
 
-/// Build a taker fill on `side` of `size` at `price`.
+/// Build a taker fill on `side` of `size` at `price`. The caller has already
+/// slipped the price and held it inside the bar; this only stamps `is_taker`.
 fn taker(side: Side, size: f64, price: f64) -> Fill {
     Fill {
         side,

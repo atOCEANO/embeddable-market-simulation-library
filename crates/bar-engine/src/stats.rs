@@ -109,16 +109,16 @@ impl Stats {
             //
             // At the other end it overflows. Annualizing raises the ratio to
             // one-over-the-years, and on high-frequency candles that exponent
-            // leaves the float range: 200
-            // minute bars is 0.00038 of a year, so a 50% gain annualizes past
-            // f64::MAX and comes back infinite. A run ending +50% and one ending
-            // +300% then report the same infinity, tie at the top of a sweep, and
-            // borrow the meaning ADR 0046 reserves for a reward earned against no
-            // measured risk. ADR 0048 derives the annualization from the candles,
-            // so minute bars are not an exotic input. The value saturates rather
-            // than escaping; `total_return_pct` is what to rank a sub-year run on,
-            // because an annualized rate off a few hours is an extrapolation and
-            // not a measurement (ADR 0072).
+            // leaves the float range: 200 minute bars is 0.00038 of a year, so
+            // a 50% gain annualizes past f64::MAX and comes back infinite. A
+            // run ending +50% and one ending +300% then report the same
+            // infinity, tie at the top of a sweep, and borrow the meaning ADR
+            // 0046 reserves for a reward earned against no measured risk. ADR
+            // 0048 derives the annualization from the candles, so minute bars
+            // are not an exotic input. The value saturates rather than
+            // escaping; `total_return_pct` is what to rank a sub-year run on,
+            // because an annualized rate off a few hours is an extrapolation
+            // and not a measurement (ADR 0072).
             let cagr = if final_equity > 0.0 {
                 let raw = (final_equity / initial).powf(periods_per_year / n_returns as f64) - 1.0;
                 raw.min(CAGR_CEILING)
@@ -448,7 +448,7 @@ mod tests {
         // including an incomplete one that keeps the caller's rate: 2% a YEAR is
         // then charged as 2% a BAR, which moves sharpe and sortino and nothing
         // above notices. The fallback is no annualization AND no rate, so it has
-        // to be the same number as an honest call at one period and zero (0108)
+        // to be the same number as an honest call at one period and zero (ADR 0108)
         let curve = [110.0, 99.0, 121.0];
         let honest = compute(100.0, &curve, &[], 1.0, 0.0, 3);
         for ppy in [0.0, -1.0, f64::NAN, f64::INFINITY] {

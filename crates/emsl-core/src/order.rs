@@ -86,7 +86,8 @@ impl Order {
         }
     }
 
-    /// Size not yet filled.
+    /// Size not yet filled, in base units. A partial fill leaves the order resting
+    /// on this remainder rather than retiring it (ADR 0068).
     #[inline]
     pub fn remaining(&self) -> Qty {
         self.size - self.filled
