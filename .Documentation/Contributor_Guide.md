@@ -104,7 +104,6 @@ The palette in `config.json` is the project's own: node fill `#16232e`, a teal `
 - **Clippy is a gate, not advice.** `clippy --all-targets -- -D warnings` must pass. Do not silence a lint without a comment saying why (the one crate-level allow, for a pyo3-macro false positive, is documented at its site).
 - **Public items carry doc comments.** A `///` on every public type, method, and field, saying what it is, not restating its name.
 - **Unsafe carries a `SAFETY` comment.** Every `unsafe` block states the invariant that makes it sound. The zero-copy observation is the worked example.
-- **No em dashes in prose or comments.** Commas, semicolons, periods, or parentheses instead.
 
 There is no linter on the Python side and there is not going to be one, so those conventions are held by review and are written down here rather than left to be inferred:
 
