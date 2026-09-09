@@ -1,7 +1,6 @@
 # Continuous integration: the same two loops used locally. The pure-Rust crates
 # are tested, formatted, and linted; the one abi3 wheel is built once and imported
-# and tested across the Python version matrix. Draft: wire the repository up before
-# relying on it.
+# and tested across the Python version matrix.
 
 name: ci
 
