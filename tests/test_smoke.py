@@ -121,7 +121,6 @@ def test_observation_is_a_zero_copy_readonly_view():
     assert obs.shape == (1, 5)
     assert obs.dtype == np.float64
     assert obs[0].tolist() == [100.0, 160.0, 90.0, 150.0, 1000.0]  # bar 0
-    # a borrowed view, not an owning copy, and read-only
     assert obs.flags.owndata is False
     assert obs.flags.writeable is False
     with pytest.raises(ValueError):

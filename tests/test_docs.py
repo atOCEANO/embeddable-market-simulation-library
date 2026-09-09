@@ -42,8 +42,9 @@ _GATE = (
 # worse trade than one recorded hole
 _UNUSED_DECISIONS = {80}
 
-# builder produces the wheel every other stage installs and is never run on its
-# own, so it is the one stage a contributor has no reason to read about
+# builder produces the wheel every other stage installs, and the one recipe that
+# does run it alone sits in dev/golden.py's docstring rather than in a page, so
+# the stage is exempt here for as long as that is where the recipe lives
 _INTERNAL_STAGES = {"builder"}
 
 _API = {
@@ -123,6 +124,13 @@ def called(func):
 
 def tools():
     for root in _TOOLS:
+        if root.is_dir():
+            return root
+    return None
+
+
+def docs_root():
+    for root in _CANDIDATES:
         if root.is_dir():
             return root
     return None
@@ -385,3 +393,20 @@ def test_the_indicator_count_the_docs_claim_is_the_count_there_is():
         assert f"{len(functions)} functions" in text or f"{len(functions)} indicators" in text, (
             f"{name} does not state the indicator count of {len(functions)}"
         )
+
+
+def test_every_chart_image_that_ships_was_drawn_by_a_call_in_the_builder():
+    # the count of these was written out in shoot.py and rotted the first time one
+    # was added, which is the shape ADR 0114 is about. Nothing else here would
+    # notice: a keep() cut while its png stayed committed, or a png added by hand
+    # that no run produces, passes every other test on this page
+    root = docs_root()
+    assert root is not None, "no .Documentation found in the gate or beside tests"
+    dev = tools()
+    assert dev is not None, "dev/ was not found in the gate or beside tests"
+    shipped = sorted((root / "imgs" / "charts").glob("*.png"))
+    build = (dev / "charts" / "build.py").read_text(encoding="utf-8")
+    drawn = re.findall(r'\bkeep\("', build)
+    assert len(shipped) == len(drawn), (
+        f"{len(shipped)} chart images ship and build.py draws {len(drawn)}"
+    )

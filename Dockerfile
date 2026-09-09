@@ -1,5 +1,5 @@
 # Cross-version gate: build the one abi3 wheel, then prove it imports and passes
-# the smoke tests on Python 3.9, 3.11, and 3.12. The wheel is built once in
+# the whole suite on Python 3.9, 3.11, and 3.12. The wheel is built once in
 # `builder`; each test stage installs that same wheel on a different interpreter.
 #
 # Run one stage at a time, any failure fails the build:
@@ -115,7 +115,7 @@ CMD ["python", "/benchmarks/surfaces.py"]
 # against the engine it is built from, which shares every mistake the engine
 # makes. Each env is compared against a reference started at that env's own
 # offset, because an episode beginning part way into the series still funds on
-# the bars the SERIES funds on (ADRs 0002, 0017, 0018) and nothing that starts
+# the bars the SERIES funds on (ADRs 0002, 0017) and nothing that starts
 # every env at bar zero can see that rule at all.
 #   docker build --target test-differential .
 FROM python:3.11-slim AS test-differential
@@ -172,7 +172,7 @@ CMD ["sh", "-c", "python /charts/build.py && python /charts/shoot.py"]
 # produced by something committed here, so none of them is a file nobody can
 # remake. Opt-in, and it writes into the tree rather than asserting anything:
 #   docker build --target diagrams -t emsl-diagrams .
-#   docker run --rm -v "${PWD}/.Documentation:/out" emsl-diagrams
+#   docker run --rm --shm-size=1g -v "${PWD}/.Documentation:/out" emsl-diagrams
 # The bundled headless-shell in this image is broken with an ENOENT, which is why
 # puppeteer.json points executablePath at the chromium the image also ships.
 FROM minlag/mermaid-cli AS diagrams

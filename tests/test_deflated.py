@@ -83,7 +83,7 @@ def test_deflating_harder_lowers_the_probability():
     # a bar twice as high cannot make the same winner look better
     study = search()
     null = search(sampler="random", seed=1, n_trials=20)
-    _trials, looks, spread = metrics._null_shape(study, null)
+    looks, spread = metrics._null_shape(study, null)
     gentle = metrics.probabilistic_sharpe(
         study.best_result, benchmark=metrics.deflation_threshold(spread, looks)
     )
@@ -102,8 +102,8 @@ def test_the_looks_are_the_searchs_own_trials_and_not_the_nulls():
     study = search(n_trials=12)
     few = search(sampler="random", seed=3, n_trials=12)
     many = search(sampler="random", seed=3, n_trials=48)
-    _t, looks_few, _s = metrics._null_shape(study, few)
-    _t, looks_many, _s = metrics._null_shape(study, many)
+    looks_few, _s = metrics._null_shape(study, few)
+    looks_many, _s = metrics._null_shape(study, many)
     assert looks_few == looks_many == len(study.trials) == 12
 
 
@@ -114,8 +114,8 @@ def test_a_bigger_search_has_more_to_beat_than_a_smaller_one():
     null = search(sampler="random", seed=3, n_trials=40, data=data)
     small = search(n_trials=4, data=data)
     large = search(n_trials=40, data=data)
-    _t, few, spread_a = metrics._null_shape(small, null)
-    _t, many, spread_b = metrics._null_shape(large, null)
+    few, spread_a = metrics._null_shape(small, null)
+    many, spread_b = metrics._null_shape(large, null)
     assert few == 4 and many == 40
     assert spread_a == spread_b            # one null, one spread
     assert metrics.deflation_threshold(spread_b, many) > metrics.deflation_threshold(
@@ -282,7 +282,7 @@ def test_the_look_count_is_the_searchs_own_even_against_a_thinner_null():
     data = series()
     study = search(n_trials=40, data=data)
     thin = search(sampler="random", seed=3, n_trials=6, data=data)
-    _trials, looks, _spread = shaped(study, thin)
+    looks, _spread = shaped(study, thin)
     assert looks == len(study.trials) == 40
 
 
@@ -294,8 +294,8 @@ def test_a_thin_null_does_not_lower_the_bar_the_winner_has_to_clear():
     thin = search(sampler="random", seed=3, n_trials=6, data=data)
     fat = search(sampler="random", seed=3, n_trials=40, data=data)
     deep = search(n_trials=40, data=data)
-    _t, looks_thin, spread_thin = shaped(deep, thin)
-    _t, looks_fat, _s = shaped(deep, fat)
+    looks_thin, spread_thin = shaped(deep, thin)
+    looks_fat, _s = shaped(deep, fat)
     assert looks_thin == looks_fat == 40
     # one search, so one bar, whatever the null measuring it was sized at
     assert metrics.deflation_threshold(spread_thin, looks_thin) > (

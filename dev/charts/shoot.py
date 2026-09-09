@@ -17,8 +17,8 @@ from playwright.sync_api import sync_playwright
 
 CHARTS = pathlib.Path("/work/charts")
 
-# their own folder under imgs: these are generated and there are fourteen of
-# them, so they do not get mixed in with the hand-made diagrams beside them
+# their own folder under imgs: these are generated, so they do not get mixed in
+# with the hand-made diagrams beside them
 IMAGES = pathlib.Path("/out/imgs/charts")
 
 # twice the scale, because these are read on displays that have had twice the

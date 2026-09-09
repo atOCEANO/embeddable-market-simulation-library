@@ -279,7 +279,8 @@ def main():
             mine, engine = drive_engine(bars, cfg, actions)
             theirs, ref = drive_reference(bars, cfg, actions, reached)
         except Exception as exc:
-            disagree.append((case, seed, cfg, bars, actions, f"raised: {type(exc).__name__}: {exc}"))
+            disagree.append((case, seed, cfg, bars, actions,
+                             f"raised: {type(exc).__name__}: {exc}"))
             continue
 
         where = None

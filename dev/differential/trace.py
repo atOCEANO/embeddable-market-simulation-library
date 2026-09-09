@@ -5,6 +5,13 @@ little as possible around that point, so the question can be argued from the
 decisions rather than from a forty bar random walk.
 
   python trace.py <seed> [cases]
+
+It writes the shrunk case to /diff, which no stage creates, so that has to be a
+mount or the run ends on a missing directory after the search it just did:
+
+  docker build --target test-differential -t emsl-differential .
+  docker run --rm -v "${PWD}/diff:/diff" -w /differential emsl-differential \
+      python trace.py 42
 """
 
 import json
@@ -65,7 +72,12 @@ def trace(bars, cfg, actions):
     engine = D.emsl.Engine(
         array, market=cfg["market"], quote=cfg["quote"], fee_taker=cfg["fee_taker"],
         fee_maker=cfg["fee_maker"], slippage_bps=cfg["slippage_bps"],
-        max_fill_fraction=cfg["max_fill_fraction"], leverage=cfg["leverage"],
+        max_fill_fraction=cfg["max_fill_fraction"],
+        # without it the traced engine takes the default eight slots while the
+        # reference below takes the drawn one, so a case that diverged because the
+        # book filled at one or two is traced as a pair that never disagrees
+        max_open_orders=cfg["max_open_orders"],
+        leverage=cfg["leverage"],
         impact=cfg["impact"], funding_rate=cfg["funding_rate"],
         funding_interval=cfg["funding_interval"], report=True,
     )

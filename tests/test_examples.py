@@ -153,9 +153,10 @@ def prelude():
         "buy_and_hold": np.asarray(close / close.iloc[0] * 10_000.0),
         "tenkan": close.rolling(9).mean(), "kijun": close.rolling(26).mean(),
         "GREEN": "#2fe0a8", "RED": "#ff5470",
-        "senkou_a": np.concatenate(
-            [np.full(26, np.nan), np.asarray((close.rolling(9).mean() + close.rolling(26).mean()) / 2)]
-        ),
+        "senkou_a": np.concatenate([
+            np.full(26, np.nan),
+            np.asarray((close.rolling(9).mean() + close.rolling(26).mean()) / 2),
+        ]),
         "senkou_b": np.concatenate(
             [np.full(26, np.nan), np.asarray(close.rolling(52).mean())]
         ),
@@ -178,7 +179,6 @@ def test_every_example_that_stands_on_the_prelude_actually_runs():
         if why is not None:
             skipped.append((number, why))
             continue
-        # show() takes a height and save() a path, so both swallow their arguments
         code = re.sub(r"\.show\(\s*[^)]*\)", ".spec()", source)
         code = re.sub(r"\.save\(\s*[^)]*\)", ".spec()", code)
         namespace = prelude()

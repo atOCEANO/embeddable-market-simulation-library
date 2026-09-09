@@ -4,6 +4,7 @@ against another library, which would only prove the two agree.
 """
 
 import math
+import warnings
 
 import numpy as np
 import pytest
@@ -356,15 +357,13 @@ def test_a_missing_close_makes_the_true_range_a_gap_not_the_bars_own_range():
 def test_nothing_warns_on_a_gappy_or_infinite_input():
     # a numpy RuntimeWarning is the module leaking its workings; a gap is an
     # answer and should arrive as one
-    import warnings as _warnings
-
     high, low, close, volume = ramp_bars()
     for hurt in (np.nan, np.inf, -np.inf):
         for name, call in LINES.items():
             damaged = close.copy()
             damaged[10] = hurt
-            with _warnings.catch_warnings():
-                _warnings.simplefilter("error")
+            with warnings.catch_warnings():
+                warnings.simplefilter("error")
                 call(high, low, damaged, volume)
 
 

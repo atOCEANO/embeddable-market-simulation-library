@@ -22,7 +22,9 @@ from emsl import Batch, Engine, tune
 from emsl.backtest import Backtester, Strategy
 from emsl.rl import VectorEnv
 
-# one shared series and one shared strategy, so every surface runs the same logic
+# one shared series for every surface, and one crossover shared by the three that
+# run a strategy at all: the hand-driven engine, the backtester and the search.
+# The raw engine steps with none, and the two batched surfaces carry their own
 BARS = 10_000
 FAST = 10
 SLOW = 50
@@ -64,7 +66,6 @@ class SmaCross(Strategy):
 
 
 def best_rate(work, amount, repeats=3):
-    # run `work` a few times, return the highest amount/second seen
     best = 0.0
     for _ in range(repeats):
         t0 = time.perf_counter()

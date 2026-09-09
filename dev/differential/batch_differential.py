@@ -9,7 +9,7 @@ and shares every mistake the engine makes. Here each env is compared against a
 knowing nothing about either implementation.
 
 The offsets are the point. An episode that starts part way into the series must
-still fund on the bars the SERIES funds on (ADRs 0002, 0017, 0018), still hold
+still fund on the bars the SERIES funds on (ADRs 0002, 0017), still hold
 its own book, and still reach the end of the data when the data ends rather than
 when its own step count runs out. All three are invisible when every env starts
 at bar zero, which is what the batched tests do.

@@ -5,6 +5,7 @@ processes. optuna and cloudpickle back it, so the whole module skips without the
 """
 
 import pickle
+import warnings
 
 import numpy as np
 import pytest
@@ -181,14 +182,18 @@ def test_evaluate_keeps_inf_but_fails_on_nan():
         _evaluate(FakeBacktester({"pf": float("nan")}), ctor, lambda r: r.stats["pf"], {})
 
 
-def test_bad_direction_raises():
-    with pytest.raises(ValueError):
+def test_a_direction_that_is_neither_maximize_nor_minimize_is_refused():
+    # the message has to open with the parameter, or a caller reads the raise as
+    # coming from optuna and goes looking in the wrong library
+    with pytest.raises(ValueError) as excinfo:
         tuned(SmaCross, SPACE, series(), direction="up", n_trials=5)
+    assert str(excinfo.value).startswith("direction")
 
 
-def test_empty_space_raises():
-    with pytest.raises(ValueError):
+def test_a_search_with_nothing_to_search_is_refused():
+    with pytest.raises(ValueError) as excinfo:
         tuned(SmaCross, {}, series(), n_trials=5)
+    assert str(excinfo.value).startswith("space")
 
 
 def test_strategy_must_be_callable():
@@ -223,11 +228,15 @@ def test_explicit_specs_carry_step_and_log():
     assert isinstance(Categorical(["a", "b"])._distribution(), CategoricalDistribution)
 
 
-def test_bad_space_entries_raise():
-    with pytest.raises(ValueError):
+def test_a_space_entry_that_is_not_a_range_names_the_key_it_came_from():
+    # a search space is a dict written in one place, so the raise is useless
+    # unless it says which of the entries it is about
+    with pytest.raises(ValueError) as excinfo:
         _to_distribution("x", (1, 2, "nope"))  # third element must be 'log'
-    with pytest.raises(TypeError):
+    assert str(excinfo.value).startswith("space['x']")
+    with pytest.raises(TypeError) as excinfo:
         _to_distribution("x", 5)  # not a range, list, or spec
+    assert str(excinfo.value).startswith("space['x']")
 
 
 def test_cloudpickled_wrapper_round_trips_a_closure_through_stdlib_pickle():
@@ -297,10 +306,8 @@ def test_the_holdout_is_the_end_of_the_series_and_never_the_start():
 
 def test_stating_a_zero_holdout_is_not_the_same_as_not_saying():
     # oos=0 is a decision and passes quietly; leaving it out is not, and warns
-    import warnings as _warnings
-
-    with _warnings.catch_warnings():
-        _warnings.simplefilter("error")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
         result = emsl.tune(SmaCross, SPACE, series(), n_trials=5, seed=0, oos=0,
                            periods_per_year=365.0)
     assert result.oos_stats is None

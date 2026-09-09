@@ -781,9 +781,6 @@ def test_the_log_button_toggles_its_panel_and_says_so(tmp_path):
             return x, y
 
         x, y = aim()
-        # the hover is part of the feature, so it is asserted rather than worked
-        # around: the group is invisible and untouchable until the pointer is
-        # inside its pane's band
         assert group.get_attribute("data-active") == "true"
         assert page.evaluate(
             "([x, y]) => (document.elementFromPoint(x, y) || {}).tagName", [x, y]

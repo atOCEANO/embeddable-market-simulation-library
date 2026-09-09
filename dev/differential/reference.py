@@ -9,11 +9,13 @@ It is not fast and it is not clever. Every step is the sentence from the ADR it
 implements, in the order the ADR puts it, with the number of the decision beside
 it so a disagreement can be argued about rather than guessed at.
 
-Scope: market, limit and stop orders on spot and perp, with fees, slippage,
-market impact, the volume cap, the spot clamps, the perp margin cap, funding and
-liquidation. ``start`` begins an episode part way into the series, which is what
-the batched path does. Not modelled: FOK, post_only, replace, partial-fill
-accumulation across bars for limits (the harness places one order at a time).
+Scope: market, limit and stop orders on spot and perp, with every time in force,
+``post_only``, ``reduce_only``, ``replace``, fees, slippage, market impact, the
+volume cap, the spot clamps, the perp margin cap, funding and liquidation.
+``start`` begins an episode part way into the series, which is what the batched
+path does. What is missing is a tier rather than a rule: nothing here draws a
+chart, computes a statistic, or runs more than one account at a time, and the
+batched path is compared one env at a time by ``batch_differential.py``.
 """
 
 import math
@@ -55,7 +57,7 @@ class Reference:
         # episode does. Which is why an offset start is a starting tick over the
         # whole series here, and not a slice of it: `bars[start:]` would fund on
         # bars counted from the episode, and the two readings only part company
-        # once something starts somewhere other than zero (ADR 0018)
+        # once something starts somewhere other than zero
         self.entry_tick = int(start)
         self.tick = int(start)
         self.fills = 0
@@ -383,7 +385,7 @@ class Reference:
             o, h, l, c = clip(o), clip(h), clip(l), clip(c)
         seen = (o, h, l, c, v)
 
-        # 1. pending market orders fill at the open (ADR 0065)
+        # 1. pending market orders fill at the open (ADR 0004)
         for order in self.pending:
             size = self.fillable(order["size"], seen)
             if size <= 0.0:
@@ -426,7 +428,8 @@ class Reference:
                 size = self.fillable(remaining, seen)
                 if size <= 0.0:
                     continue
-                base = max(o, order["trigger"]) if order["side"] == "buy" else min(o, order["trigger"])
+                base = (max(o, order["trigger"]) if order["side"] == "buy"
+                        else min(o, order["trigger"]))
                 slip = self.taker_slip(size, v)
                 raw = base * (1.0 + slip) if order["side"] == "buy" else base * (1.0 - slip)
                 offers.append((order, size, self.within(order["side"], raw, seen), True))
@@ -454,7 +457,8 @@ class Reference:
                 self.resting[i] = None
 
         # 3. funding, then the liquidation check (ADRs 0002, 0017)
-        if self.market == "perp" and self.funding_interval > 0 and self.tick % self.funding_interval == 0:
+        if (self.market == "perp" and self.funding_interval > 0
+                and self.tick % self.funding_interval == 0):
             payment = self.position * c * self.funding_rate
             self.quote -= payment
             self.funding_paid += payment

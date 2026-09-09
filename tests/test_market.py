@@ -27,7 +27,6 @@ class Alternate(Strategy):
 
 
 def test_a_market_is_exported_and_defaults_to_the_engines_own():
-    assert emsl.Market is Market
     assert "Market" in emsl.__all__
     settings = Market().as_dict()
     assert settings["market"] == "spot"
@@ -53,11 +52,27 @@ def test_every_surface_gets_the_same_venue():
 
 def test_the_rl_env_gets_the_same_venue_too():
     pytest.importorskip("gymnasium")
+    from emsl.rl import VectorEnv
+
     venue = Market(kind="perp", leverage=5.0, fee_taker=0.0004)
-    env = venue.env(series(), num_envs=4, window=8)
+    data = series()
+    env = venue.env(data, num_envs=4, window=8, seed=1)
     obs, _ = env.reset(seed=0)
     assert obs.shape == (4, 8, 5)
+
+    # the env has no config to read back, so the venue is read off what it charges:
+    # an `env` that stopped forwarding the market would run these four on spot at
+    # the default taker fee, and a bought and marked position is where the two
+    # answers part. The shape alone leaves that mutant alive
+    typed = VectorEnv(data, num_envs=4, window=8, seed=1,
+                      market="perp", leverage=5.0, fee_taker=0.0004)
+    typed.reset(seed=0)
+    buy = np.ones(4, dtype=np.int64)
+    mine = env.step(buy)[1]
+    theirs = typed.step(buy)[1]
+    assert np.array_equal(mine, theirs)
     env.close()
+    typed.close()
 
 
 def test_a_market_backtest_matches_the_same_knobs_typed_out():

@@ -81,8 +81,10 @@ def test_a_result_built_by_hand_says_what_it_is_missing():
 
 
 def test_every_unit_of_quote_a_flat_run_moved_is_accounted_for():
-    # gross price pnl, minus fees, minus funding, equals the change in equity. This
-    # is the ADR 0030 identity extended past the trade log to the whole account
+    # the four pieces summed against the net cannot fail, because `unrealized` is
+    # defined as whatever the other three leave over (ADR 0106). What has content
+    # is that a run ending flat leaves nothing over at all, so a residual absorbing
+    # a mistake in the gross, the fees or the funding shows up here as a non-zero
     result = run()
     money = metrics.decompose(result)
     assert math.isclose(
@@ -101,11 +103,6 @@ def test_a_run_still_holding_at_the_end_puts_the_remainder_in_unrealized():
     money = metrics.decompose(result)
     assert result.stats["num_trades"] == 0
     assert money["unrealized"] != 0.0
-    assert math.isclose(
-        money["gross_pnl"] - money["fees"] - money["funding"] + money["unrealized"],
-        money["net"],
-        abs_tol=1e-9,
-    )
 
 
 def test_funding_shows_up_in_the_decomposition_of_a_perp_run():
@@ -113,11 +110,6 @@ def test_funding_shows_up_in_the_decomposition_of_a_perp_run():
     assert result.stats["funding_paid"] != 0.0
     money = metrics.decompose(result)
     assert money["funding"] == result.stats["funding_paid"]
-    assert math.isclose(
-        money["gross_pnl"] - money["fees"] - money["funding"] + money["unrealized"],
-        money["net"],
-        abs_tol=1e-9,
-    )
 
 
 # ------------------------------------------------------------ shape
