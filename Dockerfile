@@ -175,7 +175,7 @@ CMD ["sh", "-c", "python /charts/build.py && python /charts/shoot.py"]
 #   docker run --rm --shm-size=1g -v "${PWD}/.Documentation:/out" emsl-diagrams
 # The bundled headless-shell in this image is broken with an ENOENT, which is why
 # puppeteer.json points executablePath at the chromium the image also ships.
-FROM minlag/mermaid-cli AS diagrams
+FROM minlag/mermaid-cli:11.17.1@sha256:062edb08dcc7f95841c15620241b6934af93aa75c27f223ebe2e81fd0b4da4c9 AS diagrams
 USER root
 COPY dev/diagrams /diagrams
 # the image's entrypoint is mmdc itself, with its own puppeteer config bolted on,
