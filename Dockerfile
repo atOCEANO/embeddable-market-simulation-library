@@ -172,19 +172,22 @@ CMD ["sh", "-c", "python /charts/build.py && python /charts/shoot.py"]
 # produced by something committed here, so none of them is a file nobody can
 # remake. Opt-in, and it writes into the tree rather than asserting anything:
 #   docker build --target diagrams -t emsl-diagrams .
-#   docker run --rm --shm-size=1g -v "${PWD}/.Documentation:/out" emsl-diagrams
+#   docker run --rm --shm-size=1g -v "${PWD}/dev/diagrams:/diagrams" \
+#     -v "${PWD}/.Documentation/imgs:/out" emsl-diagrams
+# The sources are mounted rather than copied in, so a rerun draws what is on disk.
+# Baked in at build time they made the second command alone redraw the previous
+# build's sources and print the same success lines doing it (ADR 0117).
 # The bundled headless-shell in this image is broken with an ENOENT, which is why
 # puppeteer.json points executablePath at the chromium the image also ships.
 FROM minlag/mermaid-cli:11.17.1@sha256:062edb08dcc7f95841c15620241b6934af93aa75c27f223ebe2e81fd0b4da4c9 AS diagrams
 USER root
-COPY dev/diagrams /diagrams
 # the image's entrypoint is mmdc itself, with its own puppeteer config bolted on,
 # so it has to be cleared to run a loop; mmdc is not on PATH, hence the full path
 ENTRYPOINT []
 # no -w: the width is mermaid's own, and setting one made every wide diagram
 # 2304 where the committed pair are 2352. `-b transparent` rather than white, or
 # the images invert badly against GitHub's dark mode
-CMD ["sh", "-c", "set -e; mkdir -p /out/imgs; for f in /diagrams/*.mmd; do n=$(basename \"$f\" .mmd); /home/mermaidcli/node_modules/.bin/mmdc -i \"$f\" -o \"/out/imgs/$n.png\" -c /diagrams/config.json -p /diagrams/puppeteer.json -b transparent -s 3; echo \"rendered $n\"; done"]
+CMD ["sh", "-c", "set -e; for f in /diagrams/*.mmd; do n=$(basename \"$f\" .mmd); /home/mermaidcli/node_modules/.bin/mmdc -i \"$f\" -o \"/out/$n.png\" -c /diagrams/config.json -p /diagrams/puppeteer.json -b transparent -s 3; echo \"rendered $n\"; done"]
 
 # Stable-Baselines3 integration: install torch and sb3 and run the adapter tests.
 # torch is heavy, so this is opt-in and kept out of the correctness gate:

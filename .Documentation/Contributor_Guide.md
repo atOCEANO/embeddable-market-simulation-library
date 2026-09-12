@@ -87,14 +87,17 @@ Regenerating should change nothing unless the drawing changed, and that is the c
 
 ```bash
 docker build --target diagrams -t emsl-diagrams .
-docker run --rm --shm-size=1g -v "${PWD}/.Documentation:/out" emsl-diagrams
+docker run --rm --shm-size=1g \
+  -v "${PWD}/dev/diagrams:/diagrams" \
+  -v "${PWD}/.Documentation/imgs:/out" \
+  emsl-diagrams
 ```
 
-Both commands, every time. The stage copies `dev/diagrams` in at build time, so rerunning the second one alone renders whatever source the last build captured, and it prints the same `rendered` lines while doing it.
+The sources are mounted rather than built into the image, so editing one and rerunning draws what is on disk ([ADR 0117](Decisions.md)). The router renders its set with the same two mounts and the same flags against the same digest, so the recipes differ only in that this one names a stage and that one names the image.
 
 The images are numbered rather than named and the descriptive name survives only in their alt text: 205310 is the README hero, 205312 the crate layering, 205314 the step lifecycle, 205316 no-lookahead, 205318 the RL loop. Four of the five were reconstructed by reading the rendered PNG, because the originals were never kept, so a rerun redraws them rather than reproducing them byte for byte; 205314 is the one whose source survived and it still renders identical, which is what says the pipeline is faithful rather than merely working.
 
-The renderer is pinned to a digest in the Dockerfile rather than tracked as `latest`, which is what makes a rerun evidence rather than a coin flip: `latest` and the version tag are different images, and the tag names the mermaid release rather than the `mmdc` build inside it. At this digest all five come back byte identical, not merely at the same dimensions. That is a property of these five rather than of mermaid, and the router's set is the counterexample worth knowing about: anti-aliasing along a stadium node's rounded outline lands a few edge pixels differently between runs, so the five diagrams there that use one are visually identical and never byte identical. None of the diagrams here use that shape.
+The renderer is pinned to a digest in the Dockerfile rather than tracked as `latest`, which is what makes a rerun evidence rather than a coin flip: `latest` and the version tag are different images, and the tag names the mermaid release rather than the `mmdc` build inside it. At this digest all five come back byte identical, not merely at the same dimensions. That holds because of the shapes as much as the digest: a stadium node's rounded outline anti-aliases a handful of edge pixels differently between runs, so a set containing one is visually identical and never byte identical, and every rerun shows it as a modified file carrying no change. Nothing here uses that shape and nothing should. The router keeps the same rule now, so both sets are byte reproducible and a diff from a rerun is a real one in either repo.
 
 Three things the setup depends on, each of which cost an afternoon. The image's bundled headless-shell is broken with an ENOENT, so `puppeteer.json` points `executablePath` at the chromium the image also ships, and its entrypoint is `mmdc` itself, so the stage clears it and calls the binary by full path. The background has to be `transparent` rather than white, or the images invert badly against GitHub's dark mode. And no `-w`: setting a width made every wide diagram 2304 across where the rest are 2352.
 
