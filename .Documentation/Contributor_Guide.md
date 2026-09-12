@@ -90,6 +90,8 @@ docker build --target diagrams -t emsl-diagrams .
 docker run --rm --shm-size=1g -v "${PWD}/.Documentation:/out" emsl-diagrams
 ```
 
+Both commands, every time. The stage copies `dev/diagrams` in at build time, so rerunning the second one alone renders whatever source the last build captured, and it prints the same `rendered` lines while doing it.
+
 The images are numbered rather than named and the descriptive name survives only in their alt text: 205310 is the README hero, 205312 the crate layering, 205314 the step lifecycle, 205316 no-lookahead, 205318 the RL loop. Four of the five were reconstructed by reading the rendered PNG, because the originals were never kept, so a rerun redraws them rather than reproducing them byte for byte; 205314 is the one whose source survived and it still renders identical, which is what says the pipeline is faithful rather than merely working.
 
 The renderer is pinned to a digest in the Dockerfile rather than tracked as `latest`, which is what makes a rerun evidence rather than a coin flip: `latest` and the version tag are different images, and the tag names the mermaid release rather than the `mmdc` build inside it. At this digest all five come back byte identical, not merely at the same dimensions. That is a property of these five rather than of mermaid, and the router's set is the counterexample worth knowing about: anti-aliasing along a stadium node's rounded outline lands a few edge pixels differently between runs, so the five diagrams there that use one are visually identical and never byte identical. None of the diagrams here use that shape.
