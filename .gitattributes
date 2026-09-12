@@ -1,5 +1,6 @@
-# Normalize all text to LF in the repository and on checkout, so the working tree
-# matches the Linux gate on every platform.
+# Normalize all text to LF in the repository and on checkout, so a clone reads the
+# same on every platform rather than however the cloning machine is configured.
+# The gate runs on Linux, so a CRLF working tree would diverge from what it tests.
 * text=auto eol=lf
 
 # Binary assets: never touch their bytes (a PNG signature even contains 0x0D 0x0A).
