@@ -263,3 +263,21 @@ ENV GUNGRAUN_ALLOW_ASLR=yes
 WORKDIR /src
 COPY . .
 RUN cargo bench --locked -p bar-engine --bench step_instructions
+
+# Miri runs the candle tests in an interpreter that reports undefined behaviour,
+# which checks the library's one reinterpretation of memory, the floats behind
+# every zero-copy view (ADR 0008). It needs a nightly toolchain, pinned by date and
+# named on each command so that rust-toolchain.toml does not win. CI runs it:
+#   docker build --target miri .
+FROM python:3.11-slim AS miri
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl build-essential \
+    && rm -rf /var/lib/apt/lists/*
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+    | sh -s -- -y --default-toolchain nightly-2026-10-01 --profile minimal \
+    --component miri,rust-src
+ENV PATH="/root/.cargo/bin:${PATH}"
+RUN cargo +nightly-2026-10-01 miri setup
+WORKDIR /src
+COPY . .
+RUN cargo +nightly-2026-10-01 miri test --locked -p emsl-core candle::

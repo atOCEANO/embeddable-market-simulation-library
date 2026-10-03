@@ -24,9 +24,19 @@ pub struct Candle {
     pub volume: f64,
 }
 
+/// The bars as one row-major run of floats, five to a bar in field order, with no
+/// copy. Every zero-copy view the Python layer hands out is built on this, so it is
+/// the one place the library reinterprets memory (ADR 0008).
+pub fn floats(bars: &[Candle]) -> &[f64] {
+    // SAFETY: Candle is repr(C) with five f64 fields and no padding (the layout test
+    // below asserts it), so `bars` covers exactly `bars.len() * 5` f64s, aligned as
+    // f64 and borrowed for as long as `bars` is.
+    unsafe { std::slice::from_raw_parts(bars.as_ptr() as *const f64, bars.len() * 5) }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::Candle;
+    use super::{floats, Candle};
     use std::mem::{align_of, size_of};
 
     #[test]
@@ -53,11 +63,16 @@ mod tests {
                 volume: 10.0,
             },
         ];
-        // SAFETY: Candle is repr(C) with five f64 fields and no padding (the layout
-        // test above asserts it), so two Candles alias exactly ten f64s. The same
-        // reinterpretation the Python layer relies on for the view.
-        let flat: &[f64] =
-            unsafe { std::slice::from_raw_parts(bars.as_ptr() as *const f64, bars.len() * 5) };
-        assert_eq!(flat, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]);
+        assert_eq!(
+            floats(&bars),
+            &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]
+        );
+    }
+
+    #[test]
+    fn an_empty_slice_reinterprets_as_no_floats() {
+        // an empty slice's pointer is dangling, which from_raw_parts allows only at
+        // length zero
+        assert!(floats(&[]).is_empty());
     }
 }

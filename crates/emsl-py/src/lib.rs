@@ -20,6 +20,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
 use bar_engine::{Candles, Engine as BarEngine, EngineConfig, EnvBatch, Stats, Trade};
+use emsl_core::candle::floats;
 use emsl_core::{Candle, Market, Order, OrderId, OrderType, Side, State, TimeInForce};
 
 /// Parse a market string into the core enum, case-insensitively.
@@ -371,19 +372,13 @@ fn trade_to_dict<'py>(py: Python<'py>, trade: &Trade) -> PyResult<Bound<'py, PyD
 /// Build a read-only, zero-copy `(rows, 5)` numpy view over `window`, a slice of an
 /// engine's immutable candle buffer. `container` (the engine pyobject, which owns
 /// the `Arc`) becomes the array's base so the data outlives the view, and the array
-/// is made read-only because the buffer is shared across envs. This is the one place
-/// the crate reinterprets candle memory as floats; both `observation` and `data` go
-/// through it (ADR 0008).
+/// is made read-only because the buffer is shared across envs. Both `observation`
+/// and `data` go through it, and the floats come from emsl-core's `floats`, the
+/// library's one reinterpretation of candle memory (ADR 0008).
 fn candle_view<'py>(window: &[Candle], container: Bound<'py, PyAny>) -> Bound<'py, PyArray2<f64>> {
     let rows = window.len();
-
-    // SAFETY: Candle is repr(C) with five f64 fields and no padding (guarded by
-    // emsl-core's layout test), so a `&[Candle]` of length `rows` aliases a `&[f64]`
-    // of length `rows * 5`, row-major in open/high/low/close/volume.
-    let flat: &[f64] =
-        unsafe { std::slice::from_raw_parts(window.as_ptr() as *const f64, rows * 5) };
-    let view =
-        ArrayView2::from_shape((rows, 5), flat).expect("candle slice length is exactly rows * 5");
+    let view = ArrayView2::from_shape((rows, 5), floats(window))
+        .expect("candle slice length is exactly rows * 5");
 
     // SAFETY: `view` points into the immutable candle buffer, which outlives the
     // array because `container` (the engine, holding the Arc) is its base. The buffer
@@ -406,16 +401,11 @@ fn column_view<'py>(
     column: usize,
     container: Bound<'py, PyAny>,
 ) -> Bound<'py, PyArray1<f64>> {
+    // one field is every fifth float starting at `column`, which is exactly a strided
+    // column of the (rows, 5) view
     let rows = window.len();
-
-    // SAFETY: the same layout guarantee `candle_view` rests on. Candle is repr(C)
-    // with five f64 fields and no padding (guarded by emsl-core's layout test), so
-    // the buffer is `rows * 5` contiguous f64 and one field is every fifth of them
-    // starting at `column`, which is exactly a strided column of the (rows, 5) view.
-    let flat: &[f64] =
-        unsafe { std::slice::from_raw_parts(window.as_ptr() as *const f64, rows * 5) };
-    let view =
-        ArrayView2::from_shape((rows, 5), flat).expect("candle slice length is exactly rows * 5");
+    let view = ArrayView2::from_shape((rows, 5), floats(window))
+        .expect("candle slice length is exactly rows * 5");
 
     // SAFETY: as in `candle_view`, the view points into the immutable candle buffer,
     // which outlives the array because `container` (the engine, holding the Arc) is

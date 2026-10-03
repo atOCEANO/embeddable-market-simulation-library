@@ -1,8 +1,8 @@
 # Continuous integration: the same two loops used locally. The pure-Rust crates
 # are tested, formatted, and linted; the one abi3 wheel is built once and imported
 # and tested across the Python version matrix, installing from dev/constraints.txt
-# as the Docker gate does. The differential, browser, SB3 and sdist checks run as
-# the same Docker stages they are locally, and against the commit before, the
+# as the Docker gate does. The differential, browser, SB3, sdist and Miri checks run
+# as the same Docker stages they are locally, and against the commit before, the
 # changed Rust lines get mutation testing and the step loop an instruction count.
 
 name: ci
@@ -67,7 +67,7 @@ jobs:
       - run: pytest -q tests
 
   docker-stages:
-    name: differential, browser, SB3 and sdist
+    name: differential, browser, SB3, sdist and Miri
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -75,6 +75,7 @@ jobs:
       - run: docker build --target test-browser .
       - run: docker build --target test-sb3 .
       - run: docker build --target test-sdist .
+      - run: docker build --target miri .
 
   # Both jobs below compare against the commit before. A new branch or a rewritten
   # history has none in reach, so the diff is empty and nothing is compared.

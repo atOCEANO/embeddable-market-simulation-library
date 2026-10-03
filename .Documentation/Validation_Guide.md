@@ -84,15 +84,18 @@ Read a disagreement as a question rather than a verdict: the reference is a seco
 
 ### The stages outside the gate
 
-The gate does not run the stages below. The first three are tests that CI runs on every push and that are opt-in locally, because each pulls a far heavier image or compiles the whole engine again; each covers something the gate structurally cannot:
+The gate does not run the stages below. The first four are tests that CI runs on every push and that are opt-in locally, because each pulls a far heavier image, compiles the whole engine again or installs a nightly compiler; each covers something the gate structurally cannot:
 
 ```bash
 docker build --target test-browser .    # the chart's javascript, in chromium
 docker build --target test-sb3 .        # the Stable-Baselines3 adapter, with torch
 docker build --target test-sdist .      # the source archive, built and tested
+docker build --target miri .            # the zero-copy views' memory, under Miri
 ```
 
 `test-sdist` builds the source archive a release ships, installs it the way pip does on a platform with no wheel, and runs the whole suite against it, so a file left out of the archive fails there rather than for the first user on an unusual platform.
+
+`miri` runs the candle tests under Miri, an interpreter that checks every memory access a test makes. Every zero-copy view reads the candles through `floats` in emsl-core, the library's one reinterpretation of memory ([ADR 0008](Decisions.md)), and a mistake there can read past the buffer and still return the right values, which an ordinary test cannot see. The stage needs a nightly compiler, pinned by date.
 
 `test-browser` is the other half of the chart layer. Everything in `tests/test_chart.py` reads `Chart.spec()`, because the gate has no browser and a spec assertion is the sharper test of what Python decided ([ADR 0043](Decisions.md)). What that cannot reach is whether the shipped JavaScript parses, runs and draws, and roughly 1,250 lines of it had never been executed by anything in the project. The first run of it found that the vendored renderer joins a line straight across whitespace, so ADR 0038's central claim was false in the artifact while true in the document. `tests/test_render.py` skips wherever playwright is absent, so the correctness gate stays green without one.
 
@@ -143,4 +146,4 @@ Every non-obvious behavior is settled as a numbered [decision](Decisions.md) bef
 
 ### Nothing ships unverified
 
-A change below the Python boundary is not done until cargo test, fmt, and clippy pass; a Python-facing change is not done until the Docker gate is green across the version matrix. The riskiest changes add an adversarial pass on top. Continuous integration runs the same two loops on every push to main and on every pull request, the crates tested, formatted and linted, and the one abi3 wheel built once and imported and tested across 3.9, 3.11 and 3.12, and it builds the `test-differential`, `test-browser`, `test-sb3` and `test-sdist` stages exactly as they are built locally; against the commit before, it runs cargo-mutants on the changed Rust lines and compares the step loop's instruction count (see [`.github/workflows/`](../.github/workflows/)).
+A change below the Python boundary is not done until cargo test, fmt, and clippy pass; a Python-facing change is not done until the Docker gate is green across the version matrix. The riskiest changes add an adversarial pass on top. Continuous integration runs the same two loops on every push to main and on every pull request, the crates tested, formatted and linted, and the one abi3 wheel built once and imported and tested across 3.9, 3.11 and 3.12, and it builds the `test-differential`, `test-browser`, `test-sb3`, `test-sdist` and `miri` stages exactly as they are built locally; against the commit before, it runs cargo-mutants on the changed Rust lines and compares the step loop's instruction count (see [`.github/workflows/`](../.github/workflows/)).
