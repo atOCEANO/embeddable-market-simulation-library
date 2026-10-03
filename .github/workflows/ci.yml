@@ -1,8 +1,8 @@
 # Continuous integration: the same two loops used locally. The pure-Rust crates
 # are tested, formatted, and linted; the one abi3 wheel is built once and imported
 # and tested across the Python version matrix, installing from dev/constraints.txt
-# as the Docker gate does. The differential, browser and SB3 suites run as the
-# same Docker stages they are locally.
+# as the Docker gate does. The differential, browser, SB3 and sdist checks run as
+# the same Docker stages they are locally.
 
 name: ci
 
@@ -66,10 +66,11 @@ jobs:
       - run: pytest -q tests
 
   docker-stages:
-    name: differential, browser and SB3 suites
+    name: differential, browser, SB3 and sdist
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - run: docker build --target test-differential .
       - run: docker build --target test-browser .
       - run: docker build --target test-sb3 .
+      - run: docker build --target test-sdist .
