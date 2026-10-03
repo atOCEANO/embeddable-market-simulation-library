@@ -17,8 +17,10 @@ _CANDIDATES = (
     pathlib.Path(__file__).resolve().parent.parent / "README.md",
 )
 
-# every place a release tag can hide in an install command
-_PINNED = re.compile(r"(?:expanded_assets/|releases/download/|\.git@)v(\d+\.\d+\.\d+)")
+# every place a release tag can hide in an install command, and the version a
+# wheel or source archive repeats in its own file name
+_PINNED = re.compile(
+    r"(?:expanded_assets/v|releases/download/v|\.git@v|/emsl-)(\d+\.\d+\.\d+)")
 
 
 def readme():

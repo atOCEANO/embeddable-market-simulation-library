@@ -251,7 +251,7 @@ result = tune(SmaCross, {"fast": (5, 40), "slow": (40, 200)}, ohlcv,
 
 Higher wins by default; pass `direction="minimize"` when your metric is a cost. A trial whose objective returns `NaN` is failed and the search moves on. `n_jobs=-1` spreads the trials over every core, and the cost is reproducibility: a parallel search asks for trials before earlier ones have reported, so the sampler follows a different path each run. Pin `n_jobs=1` when a result has to reproduce from its seed ([ADR 0036](.Documentation/Decisions.md)).
 
-`tune` needs optuna and cloudpickle (`pip install 'emsl[tune]'`); the [Python API](.Documentation/Python_API.md#tuning) covers the search space, objective, and result in full.
+`tune` needs optuna and cloudpickle, which the `tune` extra installs ([Install](#install)); the [Python API](.Documentation/Python_API.md#tuning) covers the search space, objective, and result in full.
 
 ### Judging the result
 
@@ -376,7 +376,7 @@ Not promised: an indicator's output to the last bit (the recursive ones trade 2e
 
 ## Install
 
-Every [release](https://github.com/atOCEANO/embeddable-market-simulation-library/releases) carries prebuilt wheels, so installing one needs no compiler. **emsl is not on PyPI**, so a bare `pip install emsl` finds nothing; point pip at a release instead.
+Every [release](https://github.com/atOCEANO/embeddable-market-simulation-library/releases) carries prebuilt wheels, so installing one needs no compiler. **emsl is not on PyPI**, so install the wheel for your platform by its URL.
 
 Each build covers one platform, and one wheel per platform serves **Python 3.9 and up**, because the extension is stable-ABI:
 
@@ -387,15 +387,22 @@ Each build covers one platform, and one wheel per platform serves **Python 3.9 a
 | macOS, Intel and Apple silicon | one universal2 file covering both | every release |
 | Windows x64 | win_amd64 | every release |
 
-Anything not in that table, Windows on ARM for instance, builds from source in the same command; you just need the Rust toolchain for it.
-
-**The version below is the one to change.** It appears twice, here and in the tagged source install below, and a test asserts both match the shipping wheel, because a hardcoded tag in a README goes stale the day after a release; take the current one from the badge at the top of this page or from the releases page.
+Any other platform, Windows on ARM for instance, builds from the source archive (the last command below), which needs the Rust toolchain. For another release, change the version in the URL, in both the tag and the file name.
 
 ```bash
-pip install --find-links https://github.com/atOCEANO/embeddable-market-simulation-library/releases/expanded_assets/v1.3.2 emsl
+# Linux x86_64
+pip install "emsl @ https://github.com/atOCEANO/embeddable-market-simulation-library/releases/download/v1.3.2/emsl-1.3.2-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
+# Linux aarch64
+pip install "emsl @ https://github.com/atOCEANO/embeddable-market-simulation-library/releases/download/v1.3.2/emsl-1.3.2-cp39-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl"
+# macOS, Intel and Apple silicon
+pip install "emsl @ https://github.com/atOCEANO/embeddable-market-simulation-library/releases/download/v1.3.2/emsl-1.3.2-cp39-abi3-macosx_10_12_x86_64.macosx_11_0_arm64.macosx_10_12_universal2.whl"
+# Windows x64
+pip install "emsl @ https://github.com/atOCEANO/embeddable-market-simulation-library/releases/download/v1.3.2/emsl-1.3.2-cp39-abi3-win_amd64.whl"
+# anything else, built from source
+pip install "emsl @ https://github.com/atOCEANO/embeddable-market-simulation-library/releases/download/v1.3.2/emsl-1.3.2.tar.gz"
 ```
 
-The optional extras use the same `--find-links` URL and stack:
+The optional extras go in brackets before the `@`, and stack:
 
 | Extra | Pulls | For |
 | :--- | :--- | :--- |
@@ -404,10 +411,8 @@ The optional extras use the same `--find-links` URL and stack:
 | `sb3` | stable-baselines3 | the Stable-Baselines3 adapter |
 
 ```bash
-pip install --find-links <the url above> "emsl[tune,sb3]"
+pip install "emsl[tune,sb3] @ <the URL for your platform, from above>"
 ```
-
-To pick a wheel by hand, copy its link from the assets list on the [releases page](https://github.com/atOCEANO/embeddable-market-simulation-library/releases) and pass that URL to `pip install` directly.
 
 Building from source needs the Rust toolchain ([rustup](https://rustup.rs)), and pip drives the build for you:
 

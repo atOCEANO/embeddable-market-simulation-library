@@ -116,14 +116,14 @@ jobs:
             ## Install
 
             Wheels are attached below, one per platform, each covering Python 3.9 and
-            up. No compiler is needed, and pip picks the one matching your machine:
+            up, and no compiler is needed. emsl is not on PyPI, so install the wheel
+            for your machine by its URL:
 
             ```bash
-            pip install --find-links https://github.com/atOCEANO/embeddable-market-simulation-library/releases/expanded_assets/${{ github.ref_name }} emsl
+            pip install "emsl @ <the wheel's URL, from the Assets below>"
             ```
 
-            The optional extras stack the same way, `"emsl[tune,sb3]"`. Or take a wheel
-            from the Assets below and install that file directly.
+            The optional extras go in brackets before the `@`: `"emsl[tune,sb3] @ <URL>"`.
 
             Building from source instead needs the [Rust toolchain](https://rustup.rs):
 
