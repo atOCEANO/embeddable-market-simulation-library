@@ -245,3 +245,21 @@ RUN PIP_CONSTRAINT=/constraints.txt pip install --no-cache-dir /sdist/*.tar.gz \
 FROM rust-checks AS mutants
 RUN cargo install --locked cargo-mutants --version 27.1.0
 CMD ["cargo", "mutants", "--package", "emsl-core", "--package", "bar-engine", "--jobs", "4"]
+
+# Instruction counts for the step loop under Valgrind. A count does not depend on
+# the machine the way a timing does, so CI compares it with the commit before and
+# fails on a rise of more than 10%. Here it prints the counts:
+#   docker build --target bench-instructions .
+FROM python:3.11-slim AS bench-instructions
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl build-essential valgrind \
+    && rm -rf /var/lib/apt/lists/*
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+    | sh -s -- -y --default-toolchain 1.88.0 --profile minimal
+ENV PATH="/root/.cargo/bin:${PATH}"
+RUN cargo install --locked gungraun-runner --version 0.20.0
+# a build cannot switch address randomization off, which gungraun does by default
+ENV GUNGRAUN_ALLOW_ASLR=yes
+WORKDIR /src
+COPY . .
+RUN cargo bench --locked -p bar-engine --bench step_instructions
