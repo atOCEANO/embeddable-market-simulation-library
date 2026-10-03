@@ -54,7 +54,7 @@ docker build --target test311 .
 docker build --target test312 .
 ```
 
-Because the wheel is `abi3-py39`, the same artifact is what ships, so the gate tests the real deliverable, not a per-version rebuild. This is the "works on Python 3.9 and up" check, run before a Python-facing change is done, not on every edit.
+Because the wheel is `abi3-py39`, the same artifact is what ships, so the gate tests the real deliverable, not a per-version rebuild. This is the "works on Python 3.9 and up" check, run before a Python-facing change is done, not on every edit. Every gate stage installs its packages with `-c dev/constraints.txt`, as CI does, so both test the versions pinned there.
 
 <br>
 

@@ -23,7 +23,8 @@ RUN apt-get update \
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
     | sh -s -- -y --default-toolchain 1.88.0 --profile minimal
 ENV PATH="/root/.cargo/bin:${PATH}"
-RUN pip install --no-cache-dir maturin
+COPY dev/constraints.txt /constraints.txt
+RUN pip install --no-cache-dir -c /constraints.txt maturin
 WORKDIR /src
 COPY . .
 RUN maturin build --release --locked --out /wheels
@@ -57,7 +58,9 @@ COPY README.md /README.md
 # /dev, which is the device filesystem on any linux box
 COPY Dockerfile /Dockerfile
 COPY dev /devtools
-RUN pip install --no-cache-dir /wheels/*.whl numpy gymnasium pandas pyarrow optuna cloudpickle pytest \
+COPY dev/constraints.txt /constraints.txt
+RUN pip install --no-cache-dir -c /constraints.txt /wheels/*.whl \
+    numpy gymnasium pandas pyarrow optuna cloudpickle pytest \
     && python -c "import emsl; print('py39 wheel import OK')" \
     && pytest -q /tests
 
@@ -68,7 +71,9 @@ COPY .Documentation /docs
 COPY README.md /README.md
 COPY Dockerfile /Dockerfile
 COPY dev /devtools
-RUN pip install --no-cache-dir /wheels/*.whl numpy gymnasium pandas pyarrow optuna cloudpickle pytest \
+COPY dev/constraints.txt /constraints.txt
+RUN pip install --no-cache-dir -c /constraints.txt /wheels/*.whl \
+    numpy gymnasium pandas pyarrow optuna cloudpickle pytest \
     && python -c "import emsl; print('py311 wheel import OK')" \
     && pytest -q /tests
 
@@ -79,7 +84,9 @@ COPY .Documentation /docs
 COPY README.md /README.md
 COPY Dockerfile /Dockerfile
 COPY dev /devtools
-RUN pip install --no-cache-dir /wheels/*.whl numpy gymnasium pandas pyarrow optuna cloudpickle pytest \
+COPY dev/constraints.txt /constraints.txt
+RUN pip install --no-cache-dir -c /constraints.txt /wheels/*.whl \
+    numpy gymnasium pandas pyarrow optuna cloudpickle pytest \
     && python -c "import emsl; print('py312 wheel import OK')" \
     && pytest -q /tests
 
@@ -121,7 +128,8 @@ CMD ["python", "/benchmarks/surfaces.py"]
 FROM python:3.11-slim AS test-differential
 COPY --from=builder /wheels /wheels
 COPY dev/differential /differential
-RUN pip install --no-cache-dir /wheels/*.whl numpy \
+COPY dev/constraints.txt /constraints.txt
+RUN pip install --no-cache-dir -c /constraints.txt /wheels/*.whl numpy \
     && cd /differential \
     && for seed in 1 7 42 1337 20260813 99991; do \
          python differential.py 500 $seed || exit 1; \
