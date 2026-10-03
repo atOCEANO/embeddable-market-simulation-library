@@ -84,7 +84,7 @@ Read a disagreement as a question rather than a verdict: the reference is a seco
 
 ### The stages outside the gate
 
-Six stages exist that the gate does not run. Two of them are tests, opt-in because each pulls an image far heavier than the correctness gate and each covers something the gate structurally cannot:
+Six stages exist that the gate does not run. Two of them are tests that CI runs on every push and that are opt-in locally, because each pulls an image far heavier than the correctness gate; each covers something the gate structurally cannot:
 
 ```bash
 docker build --target test-browser .    # the chart's javascript, in chromium
@@ -138,4 +138,4 @@ Every non-obvious behavior is settled as a numbered [decision](Decisions.md) bef
 
 ### Nothing ships unverified
 
-A change below the Python boundary is not done until cargo test, fmt, and clippy pass; a Python-facing change is not done until the Docker gate is green across the version matrix. The riskiest changes add an adversarial pass on top. Continuous integration runs the same two loops on every push to main and on every pull request, the crates tested, formatted and linted, and the one abi3 wheel built once and imported and tested across 3.9, 3.11 and 3.12 (see [`.github/workflows/`](../.github/workflows/)).
+A change below the Python boundary is not done until cargo test, fmt, and clippy pass; a Python-facing change is not done until the Docker gate is green across the version matrix. The riskiest changes add an adversarial pass on top. Continuous integration runs the same two loops on every push to main and on every pull request, the crates tested, formatted and linted, and the one abi3 wheel built once and imported and tested across 3.9, 3.11 and 3.12, and it builds the `test-differential`, `test-browser` and `test-sb3` stages exactly as they are built locally (see [`.github/workflows/`](../.github/workflows/)).

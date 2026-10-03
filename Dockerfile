@@ -141,16 +141,18 @@ RUN pip install --no-cache-dir -c /constraints.txt /wheels/*.whl numpy \
 # The chart layer's other half. Every assertion in the correctness gate reads the
 # JSON spec, because the gate has no browser and a spec assertion is the sharper
 # test of what Python decided (ADR 0043). What it cannot reach is whether the
-# shipped JavaScript parses, runs and draws. This stage supplies the browser, so
-# it is opt-in and kept out of the correctness gate for the same reason test-sb3
-# is, that the image is heavy:
+# shipped JavaScript parses, runs and draws. This stage supplies the browser; like
+# test-sb3 it stays out of the local gate because its image is heavy, and CI runs
+# both:
 #   docker build --target test-browser .
 # The image ships the browsers under /ms-playwright but not the python package,
 # and the two are versioned together, so the pin here has to match the tag above.
 FROM mcr.microsoft.com/playwright/python:v1.47.0-jammy AS test-browser
 COPY --from=builder /wheels /wheels
 COPY tests /tests
-RUN pip install --no-cache-dir /wheels/*.whl numpy pandas pytest playwright==1.47.0 \
+COPY dev/constraints.txt /constraints.txt
+RUN pip install --no-cache-dir -c /constraints.txt /wheels/*.whl \
+    numpy pandas pytest playwright==1.47.0 \
     && pytest -q -p no:cacheprovider /tests/test_render.py
 
 # Every chart image in the documentation, rebuilt from the frozen sample data and
@@ -172,7 +174,9 @@ COPY dev/charts /charts
 # the fallback as soon as it is present, and it is what the images already use
 RUN apt-get update && apt-get install -y --no-install-recommends fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
-RUN pip install --no-cache-dir /wheels/*.whl numpy pandas pyarrow playwright==1.47.0
+COPY dev/constraints.txt /constraints.txt
+RUN pip install --no-cache-dir -c /constraints.txt /wheels/*.whl \
+    numpy pandas pyarrow playwright==1.47.0
 CMD ["sh", "-c", "python /charts/build.py && python /charts/shoot.py"]
 
 # The hand-made diagrams, rendered from their mermaid sources. The
@@ -198,13 +202,18 @@ ENTRYPOINT []
 CMD ["sh", "-c", "set -e; for f in /diagrams/*.mmd; do n=$(basename \"$f\" .mmd); /home/mermaidcli/node_modules/.bin/mmdc -i \"$f\" -o \"/out/$n.png\" -c /diagrams/config.json -p /diagrams/puppeteer.json -b transparent -s 3; echo \"rendered $n\"; done"]
 
 # Stable-Baselines3 integration: install torch and sb3 and run the adapter tests.
-# torch is heavy, so this is opt-in and kept out of the correctness gate:
+# torch is heavy, so this stays out of the local gate, and CI runs it:
 #   docker build --target test-sb3 .
+# torch alone comes from its CPU index, which does not carry every pinned version
+# of torch's own dependencies; those install from PyPI with the rest
 FROM python:3.11-slim AS test-sb3
+COPY dev/constraints.txt /constraints.txt
+RUN pip install --no-cache-dir --no-deps -c /constraints.txt torch \
+    --index-url https://download.pytorch.org/whl/cpu
 COPY --from=builder /wheels /wheels
 COPY tests /tests
 COPY .Documentation /docs
 COPY README.md /README.md
-RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu \
-    && pip install --no-cache-dir /wheels/*.whl numpy gymnasium stable-baselines3 pytest \
+RUN pip install --no-cache-dir -c /constraints.txt /wheels/*.whl \
+    numpy gymnasium stable-baselines3 pytest \
     && pytest -q /tests/test_sb3.py
