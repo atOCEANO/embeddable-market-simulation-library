@@ -417,8 +417,7 @@ pip install "emsl[tune,sb3] @ <the URL for your platform, from above>"
 Building from source needs the Rust toolchain ([rustup](https://rustup.rs)), and pip drives the build for you:
 
 ```bash
-pip install "git+https://github.com/atOCEANO/embeddable-market-simulation-library.git"          # main
-pip install "git+https://github.com/atOCEANO/embeddable-market-simulation-library.git@v1.3.2"   # or a tag
+pip install "git+https://github.com/atOCEANO/embeddable-market-simulation-library.git@v1.3.2"
 ```
 
 From a local checkout, either as a plain install or as a development build:

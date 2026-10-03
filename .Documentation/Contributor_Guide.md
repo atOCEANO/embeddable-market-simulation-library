@@ -107,18 +107,9 @@ The palette in `config.json` is the project's own: node fill `#16232e`, a teal `
 
 ### Code standards
 
-- **Formatting is rustfmt.** Run `cargo fmt --all`; the CI checks it. No hand-formatting.
 - **Clippy is a gate, not advice.** `clippy --all-targets -- -D warnings` must pass. Do not silence a lint without a comment saying why (the one crate-level allow, for a pyo3-macro false positive, is documented at its site).
-- **Public items carry doc comments.** A `///` on every public type, method, and field, saying what it is, not restating its name.
 - **Unsafe carries a `SAFETY` comment.** Every `unsafe` block states the invariant that makes it sound. The zero-copy observation is the worked example.
-
-There is no linter on the Python side and there is not going to be one, so those conventions are held by review and are written down here rather than left to be inferred:
-
-- **No type annotations.** The pure-Python surface is deliberately untyped; only the compiled extension is described, by `_emsl.pyi`. `from __future__ import annotations` still opens every implementation module.
-- **88 characters is the target and 100 the ceiling.** Multi-line calls hang by four and never align to an `=`.
-- **Docstrings are prose, not numpydoc.** No `Parameters` or `Returns` headings anywhere. Parameters are named inside the sentences in double backticks, and what a function raises is the last sentence of the paragraph. Every module, public class and public function has one; a private function gets a `#` comment instead.
-- **A comment says why, never what.** It goes on the first line of the body, before the code, opens lowercase, ends without a period, and cites its decision as `(ADR NNNN)`. The bar for adding one is that the code looks wrong until you have read it.
-- **An error message names the offending argument as the caller typed it**, gives the value it got, and puts the fix after a semicolon. Lowercase, no closing period. `ValueError` is a wrong value, `TypeError` a wrong type, `KeyError` an unknown name in a known set, `ImportError` a missing extra; every re-raise chains with `from`.
+- **An error message names the offending argument as the caller typed it**, gives the value it got, and puts the fix after a semicolon. `ValueError` is a wrong value, `TypeError` a wrong type, `KeyError` an unknown name in a known set, `ImportError` a missing extra; every re-raise chains with `from`.
 - **Refusing beats lying.** A function handed something it cannot answer about raises and says what would have been wrong, rather than answering about the nearest thing it can. Most of the defects this library has shipped were a plausible number where an exception belonged.
 
 <br>
@@ -131,7 +122,7 @@ Every non-obvious decision, a PnL-booking rule, a cost convention, an autoreset 
 
 ### Submitting a change
 
-Run the build loop above green before you submit, and the Docker gate too for anything Python-facing. Commit subjects read `scope: summary`, where scope names the layer or layers touched (`core:`, `bar:`, `rust:`, `py:`, `js:`, `docs:`, `test:`, `dev:`, comma-joined when a change spans them), with `chore:` for housekeeping that touches no layer and `all:` for one that touches every layer, detail goes in the body, and a governing ADR is cited in parentheses: for example `bar: charge funding on a bar interval (ADR 0017)`. A non-obvious decision lands its ADR in the same change, never a follow-up.
+Run the build loop above green before you submit, and the Docker gate too for anything Python-facing. A non-obvious decision lands its ADR in the same change, never a follow-up.
 
 <br>
 
