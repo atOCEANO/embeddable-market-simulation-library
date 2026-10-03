@@ -31,12 +31,18 @@ from emsl.plot import (
     at_bar, at_next, ramp,
 )
 
-PAGE = pathlib.Path("/docs/Plotting.md")
+# the gate stages copy the doc set to /docs, and a source checkout, which is what
+# CI runs from, has it beside tests
+_CANDIDATES = (
+    pathlib.Path("/docs/Plotting.md"),
+    pathlib.Path(__file__).resolve().parent.parent / ".Documentation" / "Plotting.md",
+)
+PAGE = next((path for path in _CANDIDATES if path.is_file()), None)
 
-# the gate stages mount the doc set; the browser stage copies only tests/, so
-# this skips there rather than failing on a path that was never meant to exist
-if not PAGE.exists():
-    pytest.skip("the documentation is not mounted here", allow_module_level=True)
+# the browser stage copies only tests/, so this skips there rather than failing
+# on a path that was never meant to exist
+if PAGE is None:
+    pytest.skip("the documentation is not here", allow_module_level=True)
 
 # A block whose point is prose rather than a call, keyed by a phrase it contains
 # so the list survives the page being edited around it. each one says why
