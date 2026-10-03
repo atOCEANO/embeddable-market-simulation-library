@@ -2,7 +2,8 @@
 # are tested, formatted, and linted; the one abi3 wheel is built once and imported
 # and tested across the Python version matrix, installing from dev/constraints.txt
 # as the Docker gate does. The differential, browser, SB3 and sdist checks run as
-# the same Docker stages they are locally.
+# the same Docker stages they are locally, and the changed Rust lines get mutation
+# testing against the commit before.
 
 name: ci
 
@@ -74,3 +75,21 @@ jobs:
       - run: docker build --target test-browser .
       - run: docker build --target test-sb3 .
       - run: docker build --target test-sdist .
+
+  # The job below compares against the commit before. A new branch or a rewritten
+  # history has none in reach, so the diff is empty and nothing is compared.
+  mutants:
+    name: mutants in the changed Rust lines
+    runs-on: ubuntu-latest
+    env:
+      BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@94ec8bc822f50f94d0e68501cff2eb388c550726 # 1.88.0
+      - run: cargo install --locked cargo-mutants --version 27.1.0
+      - run: git diff "$BASE" HEAD > changes.diff || true > changes.diff
+      - run: |
+          cargo mutants --package emsl-core --package bar-engine \
+            --in-diff changes.diff --jobs 4

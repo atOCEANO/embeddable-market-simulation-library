@@ -234,3 +234,14 @@ WORKDIR /
 RUN PIP_CONSTRAINT=/constraints.txt pip install --no-cache-dir /sdist/*.tar.gz \
     numpy gymnasium pandas pyarrow optuna cloudpickle pytest \
     && pytest -q -p no:cacheprovider /tests
+
+# Mutation testing of the two pure-Rust crates: cargo-mutants changes one line at a
+# time and reruns their tests, and lists every change the tests did not notice.
+# The whole pass is slow and takes a lot of memory, and it has taken the Docker
+# daemon down when another build ran beside it, so it is opt-in and run alone:
+#   docker build --target mutants -t emsl-mutants .
+#   docker run --rm emsl-mutants
+# CI runs it on the lines each push changes, where a missed mutant fails the job.
+FROM rust-checks AS mutants
+RUN cargo install --locked cargo-mutants --version 27.1.0
+CMD ["cargo", "mutants", "--package", "emsl-core", "--package", "bar-engine", "--jobs", "4"]
