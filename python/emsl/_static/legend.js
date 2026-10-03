@@ -31,7 +31,7 @@ const legendValue = function (v, digits) {
 //
 // The swatch takes the bottom stop, which is the strongest, since a fill runs
 // bottom to top. Outlined, because a background wash is a smudge against the
-// plane rather than a colour (ADR 0110)
+// plane rather than a colour
 const backgroundRow = function (spec, i) {
   for (let k = 0; k < spec.spans.length; k++) {
     const span = spec.spans[k];
@@ -228,7 +228,7 @@ const legendPrimitive = function (index) {
                   // line paint however wide it was: canvas clipped it at the pane
                   // edge and no counter was drawn, so a narrow panel dropped a
                   // series in silence. That is the exact failure this block is
-                  // here to prevent, produced by the block itself (ADR 0076)
+                  // here to prevent, produced by the block itself
                   const overflows = x + w > (last ? maxX - moreW : maxX);
                   if (overflows) {
                     if (last) {

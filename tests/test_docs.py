@@ -22,8 +22,8 @@ _CANDIDATES = (
     pathlib.Path(__file__).resolve().parent.parent / ".Documentation",
 )
 
-# the tools are not the library (ADR 0084). /dev is taken on any linux box, so the
-# python stages land them on /devtools; a source checkout has them beside tests
+# /dev is taken on any linux box, so the python stages land the dev tools on
+# /devtools; a source checkout has them beside tests
 _TOOLS = (
     pathlib.Path("/devtools"),
     pathlib.Path(__file__).resolve().parent.parent / "dev",
@@ -36,11 +36,12 @@ _GATE = (
     pathlib.Path(__file__).resolve().parent.parent / "Dockerfile",
 )
 
-# 0080 was never written. The numbering skipped it and no commit in the history
-# ever held it, so there is nothing to recover; renumbering now would break every
-# cross-reference and every commit message that cites a decision, which is a far
-# worse trade than one recorded hole
-_UNUSED_DECISIONS = {80}
+# 0080 was never written, and the rest were withdrawn because they recorded fixes
+# and working notes rather than decisions. Renumbering would break every citation
+# of a later decision, so the gaps stay
+_UNUSED_DECISIONS = {31, 33, 36, 62, 66, 73, 75, 76, 77, 78, 80, 81, 84, 85, 86, 87,
+                     88, 89, 90, 91, 92, 93, 97, 98, 99, 101, 102, 104, 105, 106, 107,
+                     108, 109, 110, 111, 112, 113, 114, 116, 117, 118}
 
 # builder produces the wheel every other stage installs, and the one recipe that
 # does run it alone sits in dev/golden.py's docstring rather than in a page, so
@@ -397,7 +398,7 @@ def test_the_indicator_count_the_docs_claim_is_the_count_there_is():
 
 def test_every_chart_image_that_ships_was_drawn_by_a_call_in_the_builder():
     # the count of these was written out in shoot.py and rotted the first time one
-    # was added, which is the shape ADR 0114 is about. Nothing else here would
+    # was added. Nothing else here would
     # notice: a keep() cut while its png stayed committed, or a png added by hand
     # that no run produces, passes every other test on this page
     root = docs_root()

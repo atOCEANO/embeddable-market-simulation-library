@@ -249,7 +249,7 @@ result = tune(SmaCross, {"fast": (5, 40), "slow": (40, 200)}, ohlcv,
               objective=risk_adjusted, n_trials=200, oos=0.3, n_jobs=-1)
 ```
 
-Higher wins by default; pass `direction="minimize"` when your metric is a cost. A trial whose objective returns `NaN` is failed and the search moves on. `n_jobs=-1` spreads the trials over every core, and the cost is reproducibility: a parallel search asks for trials before earlier ones have reported, so the sampler follows a different path each run. Pin `n_jobs=1` when a result has to reproduce from its seed ([ADR 0036](.Documentation/Decisions.md)).
+Higher wins by default; pass `direction="minimize"` when your metric is a cost. A trial whose objective returns `NaN` is failed and the search moves on. `n_jobs=-1` spreads the trials over every core, and the cost is reproducibility: a parallel search asks for trials before earlier ones have reported, so the sampler follows a different path each run. Pin `n_jobs=1` when a result has to reproduce from its seed.
 
 `tune` needs optuna and cloudpickle, which the `tune` extra installs ([Install](#install)); the [Python API](.Documentation/Python_API.md#tuning) covers the search space, objective, and result in full.
 

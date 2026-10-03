@@ -121,7 +121,7 @@ const mountHead = function () {
 
 // the caller's own table, under the fills. Built with textContent rather than
 // markup for the same reason the head row is: a cell carrying angle brackets is
-// a cell, and not a decision anybody has to think about (ADR 0113)
+// a cell, and not a decision anybody has to think about
 const mountNotes = function () {
   if (!SPEC.notes) return;
   const head = document.getElementById("nhead");

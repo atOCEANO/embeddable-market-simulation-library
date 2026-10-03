@@ -54,7 +54,7 @@ COPY tests /tests
 COPY .Documentation /docs
 COPY README.md /README.md
 # the Dockerfile, so the pages can be checked against the stages they name, and
-# the tools, so a page has to explain each one (ADR 0084). /devtools rather than
+# the tools, so a page has to explain each one. /devtools rather than
 # /dev, which is the device filesystem on any linux box
 COPY Dockerfile /Dockerfile
 COPY dev /devtools
@@ -154,7 +154,7 @@ RUN pip install --no-cache-dir /wheels/*.whl numpy pandas pytest playwright==1.4
     && pytest -q -p no:cacheprovider /tests/test_render.py
 
 # Every chart image in the documentation, rebuilt from the frozen sample data and
-# screenshotted (ADR 0085). Opt-in, because it needs the published dataset
+# screenshotted. Opt-in, because it needs the published dataset
 # mounted and it writes into the tree rather than asserting anything:
 #   docker build --target charts -t emsl-charts .
 #   docker run --rm -v "<sample-market-data>/data:/data:ro" \
@@ -175,7 +175,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends fonts-dejavu-co
 RUN pip install --no-cache-dir /wheels/*.whl numpy pandas pyarrow playwright==1.47.0
 CMD ["sh", "-c", "python /charts/build.py && python /charts/shoot.py"]
 
-# The hand-made diagrams, rendered from their mermaid sources (ADR 0087). The
+# The hand-made diagrams, rendered from their mermaid sources. The
 # other half of the same idea as `charts`: every picture in the documentation is
 # produced by something committed here, so none of them is a file nobody can
 # remake. Opt-in, and it writes into the tree rather than asserting anything:
@@ -184,7 +184,7 @@ CMD ["sh", "-c", "python /charts/build.py && python /charts/shoot.py"]
 #     -v "${PWD}/.Documentation/imgs:/out" emsl-diagrams
 # The sources are mounted rather than copied in, so a rerun draws what is on disk.
 # Baked in at build time they made the second command alone redraw the previous
-# build's sources and print the same success lines doing it (ADR 0117).
+# build's sources and print the same success lines doing it.
 # The bundled headless-shell in this image is broken with an ENOENT, which is why
 # puppeteer.json points executablePath at the chromium the image also ships.
 FROM minlag/mermaid-cli:11.17.1@sha256:062edb08dcc7f95841c15620241b6934af93aa75c27f223ebe2e81fd0b4da4c9 AS diagrams

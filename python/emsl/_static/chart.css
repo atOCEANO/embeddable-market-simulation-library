@@ -84,7 +84,7 @@ body {
      band. Below it, every A / L / % button on a chart with more than two panes
      was covered and did nothing when clicked: the flagship call, a frame plus a
      run, has four. The separator is still draggable everywhere except the 96px
-     these occupy at the right edge (ADR 0077) */
+     these occupy at the right edge */
   position: absolute; z-index: 60;
   display: flex; align-items: flex-end; justify-content: center; gap: 1px;
   padding-bottom: calc(4px * var(--ui));

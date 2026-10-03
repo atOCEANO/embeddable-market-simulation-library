@@ -194,7 +194,7 @@ def place_reference(ref, action, live, reached=None):
             # never taken back out of it, so counting a non-empty list counted the
             # cases where the id died bars ago and BOTH sides did nothing. That
             # reads afterwards as "the case was exercised and agreed", which is
-            # the one thing a coverage guard exists to prevent (ADR 0107)
+            # the one thing a coverage guard exists to prevent
             reached[kind] += 1
         elif kind == "cancel_all" and any(o is not None for o in ref.resting):
             reached[kind] += 1

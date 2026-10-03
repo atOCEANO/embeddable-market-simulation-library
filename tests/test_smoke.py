@@ -476,7 +476,7 @@ def test_non_finite_config_scalars_are_rejected():
 
 def test_out_of_range_per_env_costs_are_rejected_like_the_scalars():
     # the per-env arrays were checked for contiguity and length and nothing else,
-    # so they were the one way past every guard below (ADR 0086). A fee of -2.0
+    # so they were the one way past every guard below. A fee of -2.0
     # reached an env: on a perp, four buys of five units took equity from 10,000
     # to 14,000, minted out of a rebate larger than the notional
     for name, bad in (
@@ -730,7 +730,7 @@ def test_a_per_env_slippage_lands_on_slippage_and_not_on_impact():
     # np.std(rewards) > 0.0, a property, and crossing the two assignments still
     # spreads the rewards: a slippage draw landing on impact moves the price by
     # size/volume times the number instead of by basis points, which is wrong by
-    # orders of magnitude and reads identical to a property (ADR 0108)
+    # orders of magnitude and reads identical to a property
     b = emsl.Batch(
         costed_bars(), num_envs=2, market="spot", fee_taker=0.0, fee_maker=0.0,
         slippage_bps_per_env=np.array([0.0, 50.0], dtype=np.float64),

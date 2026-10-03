@@ -100,14 +100,13 @@ _DEFAULTS = {"theme": "dark", "height": 660, "palette": None, "drawdown": "under
 
 # "auto" is not a third palette, it is a deferral: both of them ship in every
 # document already, so the answer is read in the browser, where Python is not
-# standing when a saved chart is opened a month later (ADR 0109)
+# standing when a saved chart is opened a month later
 _THEMES = ("dark", "light", "auto")
 
 # A background nobody gave a fill. Flat alpha at full height with a hard edge
 # either side is the banding recipe, so this runs strongest at the floor and is
 # gone before the ceiling: ground under the candles rather than a pane they sit
 # inside. The edges stay hard, since a span covers exactly the bars it names
-# (ADRs 0101, 0112)
 _BACKGROUND_FILL = ["rgba(139,151,165,0.20)", "rgba(139,151,165,0.02)"]
 
 
@@ -430,7 +429,7 @@ def _spans(values, fill, num_bars, label, ahead=0):
         fills = []
         # the names, in the order the fills are in, so a named background can say
         # which region the crosshair is over. A mask has no names to send, and
-        # sends none rather than a list of nulls (ADR 0110)
+        # sends none rather than a list of nulls
         keys = []
         for key, stops in fill.items():
             # a label mapped to nothing shades nothing, which is what an absent
@@ -842,7 +841,7 @@ def _trades(result, num_bars):
             "bars": int(trade["bars_held"]),
         })
         # only when it is set, so an ordinary run spends no bytes on it. A forced
-        # close is the one row a reader must not mistake for a decision (ADR 0091)
+        # close is the one row a reader must not mistake for a decision
         if trade.get("liquidated"):
             out[-1]["liq"] = True
     return out
@@ -880,7 +879,7 @@ def _notes(notes):
     A pandas DataFrame, or a list of rows whose first row is the header. A
     DataFrame's index is not drawn: drawing it whenever it looked meaningful
     would be a rule nobody could predict, and ``reset_index()`` says so at the
-    call site instead (ADR 0113).
+    call site instead.
     """
     if type(notes).__module__.split(".")[0] == "pandas":
         head = [_cell(c) for c in notes.columns]
@@ -1275,7 +1274,7 @@ def chart(
         # started reported +25.00% in both places while the headline above the
         # chart, which reads the engine, correctly said +0.0%. The account before
         # its first advance is a real datum, not a pad, which is why ADR 0042
-        # already seeds the drawdown peak from it (ADR 0098)
+        # already seeds the drawdown peak from it
         if start is not None:
             equity = np.concatenate(([float(start)], equity))
             dd = np.concatenate(([0.0], dd))
@@ -1454,15 +1453,15 @@ def chart(
     mode = _theme_mode(theme) if theme is not None else _DEFAULTS["theme"]
     # the call's palette replaces the session's rather than merging into it, the
     # same way its theme does, so one call site reads as one appearance instead of
-    # as the difference between two (ADR 0109)
+    # as the difference between two
     tint = _palette(palette) if palette is not None else _DEFAULTS["palette"]
 
     spec = {
         # 2 adds stats.funding_paid, which arrives because the spec mirrors the
         # whole stats dict and the engine now reports the funding a perp run paid.
         # 4 adds series.keys on a named background, the region names its legend
-        # row reads back (ADR 0110). 5 adds notes, the caller's own table under
-        # the plot (ADR 0113)
+        # row reads back. 5 adds notes, the caller's own table under
+        # the plot
         "schema": 6,
         "n": num_bars,
         # numpy's own tolist() here and on the candles below, never a comprehension

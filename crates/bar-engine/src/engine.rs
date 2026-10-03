@@ -114,7 +114,7 @@ pub struct Engine {
     open_fee: f64,
     /// Fills applied since the last reset. A run whose orders never filled, on a
     /// series with no volume say, is otherwise indistinguishable from one that never
-    /// placed an order (ADR 0031).
+    /// placed an order.
     fills: usize,
     /// Funding paid since the last reset, in quote, positive when paid away. The
     /// account returned each payment and this is what keeps it (ADR 0017).
@@ -727,7 +727,7 @@ impl Engine {
         // because the position refuses anything at or below it: a size in between
         // moved no cash and no position, but still counted a fill and banked a fee,
         // which shows up as a phantom fill in the dead-feed canary and as drift in
-        // the round-trip fee identity (ADRs 0030, 0031)
+        // the round-trip fee identity (ADR 0030)
         let clamped = fill.size.get();
         if clamped.is_nan() || clamped <= CLOSE_EPS {
             fill.size = Qty(0.0);
@@ -883,7 +883,7 @@ impl Engine {
     /// close the position on the account directly and reach none of it, so the
     /// forced close appeared in no trade row, counted toward no fill, and left the
     /// dead position's entry fee standing to be charged against the NEXT trade
-    /// (ADRs 0030, 0031).
+    /// (ADR 0030).
     ///
     /// Twelve boundary mutants survive here and ALL TWELVE are equivalent or sit
     /// on an unreachable branch. Measured, not argued: probes asserting the three
@@ -1145,7 +1145,7 @@ impl Engine {
     }
 
     /// Fills applied since the last reset, whatever the reporter is set to. Zero
-    /// beside orders you placed means none of them ever filled (ADR 0031).
+    /// beside orders you placed means none of them ever filled.
     pub fn num_fills(&self) -> usize {
         self.fills
     }
@@ -1605,7 +1605,7 @@ mod tests {
         // this replaces a stop that is reduce_only against a FLAT position, so the
         // flipped order triggers, gets zeroed by the clamp, and rests on with the
         // id and trigger the assertions read. Here the replacement has to FILL, and
-        // a buy and a sell move the position opposite ways (ADR 0108)
+        // a buy and a sell move the position opposite ways
         let candles = Candles::new(vec![
             ohlc(100.0, 101.0, 99.0, 100.0, 1_000_000.0),
             ohlc(100.0, 101.0, 99.0, 100.0, 1_000_000.0),
@@ -1633,7 +1633,7 @@ mod tests {
         // above cannot reach it. NOT reduce_only, deliberately: that flag is what
         // let the existing fixture survive a flipped side, because the wrong-way
         // order was zeroed by the clamp before it could move anything, so nothing
-        // downstream could tell it apart from an order that never fired (ADR 0108)
+        // downstream could tell it apart from an order that never fired
         let candles = Candles::new(vec![
             ohlc(100.0, 101.0, 99.0, 100.0, 1_000_000.0),
             ohlc(100.0, 101.0, 99.0, 100.0, 1_000_000.0),
@@ -1666,7 +1666,7 @@ mod tests {
         // implementations reproduce them exactly: a hard-coded tenth, and the
         // REQUESTED size over the volume rather than the filled one, which are the
         // same number whenever max_fill_fraction does not bind. Here it binds, so
-        // requested, capped and a tenth are three different fractions (ADR 0108)
+        // requested, capped and a tenth are three different fractions
         let wide = Candles::new(vec![
             ohlc(100.0, 200.0, 90.0, 100.0, 1000.0),
             ohlc(100.0, 200.0, 90.0, 100.0, 1000.0),
@@ -1702,7 +1702,7 @@ mod tests {
         // before any clamp is consulted, so the case the decision actually names,
         // where the bar HAS the liquidity and a clamp shrinks the fill, was never
         // reached on a limit. Comparing the pre-clamp size here books the five
-        // units the quote affords out of the twenty asked (ADR 0108)
+        // units the quote affords out of the twenty asked
         let mut config = cfg();
         config.quote = 1_000.0;
         config.report = true;
@@ -2269,7 +2269,7 @@ mod tests {
     #[test]
     fn num_fills_separates_a_dead_feed_from_a_quiet_strategy() {
         // a zero-volume series fills nothing, and without a counter the result is
-        // identical to a strategy that never placed an order (ADR 0031)
+        // identical to a strategy that never placed an order
         let dead = Candles::new(vec![ohlc(100.0, 100.0, 100.0, 100.0, 0.0); 6]);
         let mut config = cfg();
         config.report = true;
@@ -2408,7 +2408,7 @@ mod tests {
         // which for a position bought with nothing behind it IS the entry, so the
         // realized pnl is zero, the account ends flat, and equity lands on exactly
         // the same dead zero. Only the fill count and the trade log differ, and
-        // the fixture had reporting off (ADR 0108)
+        // the fixture had reporting off
         assert_eq!(e.num_fills(), 2, "the refused fill was applied anyway");
         let trades = e.reporter().expect("reporting is on").trades();
         assert_eq!(trades.len(), 1, "a phantom position was opened and closed");
@@ -2726,7 +2726,7 @@ mod tests {
         // the forced close ran on the account directly and reached none of the
         // engine's bookkeeping: it appeared in no trade row, counted toward no
         // fill, and left the dead position's entry fee standing to be charged
-        // against the NEXT position (ADRs 0030, 0031)
+        // against the NEXT position (ADR 0030)
         let config = EngineConfig {
             market: Market::Perp,
             quote: 100.0,

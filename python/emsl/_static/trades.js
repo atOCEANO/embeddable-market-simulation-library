@@ -95,7 +95,7 @@ const selectTrade = function (n, opts) {
   // half open, like every span the same primitive paints: this pair is inclusive
   // of the exit bar, so under the shifted geometry it has to name the bar AFTER
   // it. The highlight now covers the entry and the exit bars whole, which it did
-  // not before either (ADR 0101)
+  // not before either
   selection = [hit.in, hit.out + 1, 0];
   document.querySelectorAll("tr.sel").forEach(function (r) { r.classList.remove("sel"); });
   const row = document.querySelector('tr[data-n="' + n + '"]');
@@ -157,7 +157,7 @@ const mountTrades = function () {
   // Setting each bar to one trade meant the later one overwrote the earlier and
   // clicking that bar could never reach the trade that ENDED there. Keeping the
   // first claim is the useful half: an exit is the bar you are looking at when
-  // you ask what just happened (ADR 0077).
+  // you ask what just happened.
   tradeByTime = new Map();
   const claim = function (time, tr) {
     if (!tradeByTime.has(time)) tradeByTime.set(time, tr);

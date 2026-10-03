@@ -284,7 +284,7 @@ class Line(_Mark):
             # two together were accepted and drew a flat line while the legend
             # swatch reported a different colour at every bar, which is the one
             # thing the legend exists not to do. Neither half can be picked
-            # without lying about the other, so the pair is refused (ADR 0076)
+            # without lying about the other, so the pair is refused
             raise TypeError(
                 f"{where} takes a per-bar colour or a fill, not both: an area "
                 f"carries one line colour and the ramp would be dropped while "
@@ -477,7 +477,7 @@ class Background(_Mark):
 
     ``name`` puts the shading in the legend, where it reports the region the
     crosshair is over. Without one it draws and says nothing, which is right for a
-    shading that is scene rather than subject (ADR 0110).
+    shading that is scene rather than subject.
     """
 
     kind = "background"

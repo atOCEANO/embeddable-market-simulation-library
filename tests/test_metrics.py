@@ -82,7 +82,7 @@ def test_a_result_built_by_hand_says_what_it_is_missing():
 
 def test_every_unit_of_quote_a_flat_run_moved_is_accounted_for():
     # the four pieces summed against the net cannot fail, because `unrealized` is
-    # defined as whatever the other three leave over (ADR 0106). What has content
+    # defined as whatever the other three leave over. What has content
     # is that a run ending flat leaves nothing over at all, so a residual absorbing
     # a mistake in the gross, the fees or the funding shows up here as a non-zero
     result = run()
@@ -584,7 +584,7 @@ def test_a_run_ending_a_bar_into_a_month_still_accounts_for_that_bar():
     # statistic and was a hole in the one thing the function promises. A year of
     # hourly candles ending just into a month is the ordinary shape of real data,
     # and those bars vanished: the table stopped adding up to the headline above
-    # it, quietly (ADRs 0062, 0081)
+    # it, quietly
     pd = pytest.importorskip("pandas")
     hours = 24 * 59 + 1        # two whole months, then a single bar of the third
     raw = series(n=hours)
@@ -608,7 +608,7 @@ def test_the_calendar_periods_compound_back_to_the_whole_run():
     # so the periods multiply back to the run. A period seeded from a fresh
     # balance passes every other check here: the labels are the same, the bars
     # still add up, and only the compounding identity says that a bad January
-    # shrank the size February had to trade with (ADR 0062).
+    # shrank the size February had to trade with.
     #
     # All three groupings are read, over daily bars running into a third calendar
     # year so that each one has several rows. On the hourly run this used to use,
@@ -1024,8 +1024,8 @@ def test_a_drawdown_episode_counts_the_bars_it_actually_covers():
     episode = metrics.drawdown_table(result)[0]
     falls = metrics.drawdown(result)
     assert episode["depth_pct"] == pytest.approx(falls.min())
-    # the fall array holds one entry per equity point, so bar b is falls[b - 1]
-    # (ADR 0102). The durations either side are differences and both ends moved
+    # the fall array holds one entry per equity point, so bar b is falls[b - 1].
+    # The durations either side are differences and both ends moved
     assert falls[episode["trough_bar"] - 1] == pytest.approx(falls.min())
     assert episode["bars_under"] == episode["recovered_bar"] - episode["start_bar"]
     assert all(falls[b - 1] < 0.0 for b in range(episode["start_bar"],
@@ -1035,7 +1035,7 @@ def test_a_drawdown_episode_counts_the_bars_it_actually_covers():
 def test_a_drawdown_episode_names_the_bar_the_fall_actually_bottomed_on():
     # an assertion indexed back into the array the answer came from cannot see an
     # offset in that array, so this one leaves it entirely: the account is the
-    # candles, so the bar the equity bottomed on is visible in the frame (ADR 0102)
+    # candles, so the bar the equity bottomed on is visible in the frame
     close = np.array([100.0, 100.0, 90.0, 80.0, 95.0, 105.0, 110.0])
     data = np.column_stack(
         [close, close + 1.0, close - 1.0, close, np.full(close.size, 1e6)]
@@ -1125,7 +1125,7 @@ def test_turnover_is_both_sides_of_every_trade_over_the_opening_balance():
     # whichever comes back as the same sentence. Two trades, hand priced: 2 at 50
     # out at 55, and 1 at 20 out at 15, so both sides move 245 against an opening
     # 100. The entry side alone reads 1.20, the exit side 1.25, and both sides
-    # over the closing balance 2.35 (ADR 0062)
+    # over the closing balance 2.35
     trades = [
         {"net_pnl": 9.5, "pnl": 10.0, "fees": 0.5, "side": "buy", "bars_held": 3,
          "size": 2.0, "entry_price": 50.0, "exit_price": 55.0, "entry_tick": 0,
@@ -1170,7 +1170,6 @@ def test_the_return_per_exposure_is_the_return_over_the_time_at_risk():
     # this, and only presence of the key was ever checked. The ratio the other way
     # up reads 125 and 400, which ranks the two backwards: it would call the run
     # that sat in the market four times as long the better use of the risk
-    # (ADR 0062)
     curve = np.array([105.0, 110.0, 115.0, 120.0])
     lazy = BacktestResult(
         stats={"total_return_pct": 20.0, "exposure_pct": 25.0}, equity_curve=curve,
@@ -1228,7 +1227,7 @@ class Tunable(Strategy):
 def test_a_sweep_names_the_strategy_it_cannot_build():
     # a sweep rebuilds the strategy per run, so it needs one it can build with no
     # arguments. Python's own message names neither the sweep nor the fix, and it
-    # is the failure every documented example walked into (ADR 0092)
+    # is the failure every documented example walked into
     with pytest.raises(TypeError) as excinfo:
         metrics.breakeven_bps(Tunable, series())
     said = str(excinfo.value)
@@ -1250,7 +1249,7 @@ def test_a_growth_rate_saturates_in_python_where_the_engine_saturates_it():
     # a float power RAISES where the f64 it mirrors returns an infinity, so the
     # ceiling on the next line was unreachable in the one case it exists for.
     # 1.2 ** 8760 leaves the float range; the threshold at that exponent is a
-    # ratio of about 1.0843 (ADR 0093)
+    # ratio of about 1.0843
     hourly = metrics.segment(climbed([120.0], 8760.0))
     assert math.isfinite(hourly["cagr_pct"])
     assert hourly["cagr_pct"] == pytest.approx(metrics._CAGR_CEILING * 100.0)
@@ -1268,7 +1267,7 @@ def test_a_growth_rate_that_fits_is_left_alone():
 
 
 def test_every_calendar_period_of_hourly_candles_reports_a_growth_rate():
-    # ADR 0081 keeps a one-bar calendar period rather than dropping it, and one
+    # period_returns keeps a one-bar calendar period rather than dropping it, and one
     # bar puts the whole annualization in the exponent. A year of hourly candles
     # ending a bar into the next month is the shape that crashed period_returns
     # the account is small enough that the one position dominates it, because the
@@ -1415,8 +1414,8 @@ def test_the_expected_shortfall_is_unchanged_where_nothing_ties_at_the_cutoff():
 
 
 class Capped(Strategy):
-    # a budget set in __init__ rather than in init, which is the one construction
-    # the documented examples never show and the one ADR 0092 steered callers into
+    # a budget set in __init__ rather than in init, which the documented examples
+    # never show and which passing a configured instance invites
     def __init__(self, budget):
         self.budget = int(budget)
         self.taken = 0
@@ -1460,7 +1459,7 @@ def test_a_breakeven_search_is_not_biased_by_what_the_last_probe_left():
 
 def test_a_venue_hands_out_an_engine_that_takes_what_its_siblings_take():
     # of the four surfaces a Market hands out, this was the only one that did not
-    # convert, so it refused a frame with PyO3 naming a Rust type (ADR 0105)
+    # convert, so it refused a frame with PyO3 naming a Rust type
     pd = pytest.importorskip("pandas")
     close = 100.0 + np.arange(12, dtype=np.float64)
     frame = pd.DataFrame({"open": close, "high": close + 1.0, "low": close - 1.0,
@@ -1486,7 +1485,7 @@ def test_the_python_mirror_agrees_with_the_engine_on_a_losing_run():
     # test_a_segment_of_the_whole_run_is_the_run already pins the two
     # implementations key by key, and it reaches the losing branch of calmar only
     # because its fixture happens to end down. This makes that explicit, so the
-    # coverage cannot leave with a fixture change nobody connects to it (ADR 0108)
+    # coverage cannot leave with a fixture change nobody connects to it
     result = Backtester(falling(), periods_per_year=365.0,
                         fee_taker=0.0, fee_maker=0.0).run(Hold())
     assert result.stats["total_return_pct"] < 0.0

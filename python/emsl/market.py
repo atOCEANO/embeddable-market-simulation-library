@@ -97,7 +97,7 @@ class Market:
         # straight to the extension, so of the four a venue hands out it was the
         # only one that refused a DataFrame, and refused it with PyO3 naming a
         # Rust type rather than to_ohlcv naming the column that is missing. The
-        # bare Engine stays float64 only, as its own page says (ADR 0105)
+        # bare Engine stays float64 only, as its own page says
         from ._data import to_ohlcv
         from ._emsl import Engine
 

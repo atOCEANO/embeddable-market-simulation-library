@@ -105,7 +105,7 @@ jobs:
           # the change list is derived rather than written out here: the
           # hand-written one went out unchanged on eleven tags, still describing a
           # release three minor versions back. This repo commits straight to main,
-          # so what lands is the compare link against the previous tag (ADR 0114)
+          # so what lands is the compare link against the previous tag
           generate_release_notes: true
           body: |
             `emsl` is a bar-level crypto market simulator: a Rust core with a small

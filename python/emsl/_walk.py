@@ -87,7 +87,7 @@ class WalkForward:
     ``span`` is the first and last bar any window traded, which is where the flat
     stretch before the first fit ends. ``stats`` is ``result.stats``, out of sample
     by construction, and ``direction`` is which way the searches were pointed,
-    which is what orients ``decay`` and ``consistency`` (ADR 0090).
+    which is what orients ``decay`` and ``consistency``.
     """
 
     def __init__(self, result, windows, span, direction="maximize"):
@@ -108,7 +108,7 @@ class WalkForward:
 
         Positive means degraded in both directions. Under ``minimize`` the raw
         subtraction says the opposite, because there a smaller traded score is the
-        better one, so the gap is turned over before it is averaged (ADR 0090).
+        better one, so the gap is turned over before it is averaged.
         """
         # the sign, not the operands: taking traded less fitted instead would read
         # the same here and diverge the moment a window reports one of them None
@@ -127,7 +127,7 @@ class WalkForward:
 
         Not a number under ``minimize``, where zero is not a break-even but a floor
         the objective never goes under, so the share would be a constant rather
-        than a reading (ADR 0090).
+        than a reading.
         """
         if self.direction == "minimize":
             return float("nan")

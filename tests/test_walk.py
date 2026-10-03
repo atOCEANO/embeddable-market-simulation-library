@@ -302,7 +302,7 @@ def test_each_window_trades_the_account_the_last_one_left_it():
     # it, so it holds exactly as well for windows run independently from the
     # opening balance and concatenated. What separates a continuous account from a
     # stitched one is the LEVEL a window starts at, and only the first window
-    # starts at the balance the run opened with (ADR 0108)
+    # starts at the balance the run opened with
     out = forward(windows=3)
     curve = np.concatenate(([out.result.initial], out.result.equity_curve))
     starts = [curve[w["traded_on"][0]] for w in out.windows]

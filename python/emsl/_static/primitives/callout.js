@@ -70,7 +70,7 @@ const calloutPrimitive = function (anchor, spec) {
                   // number the caller wrote down: it is documented in pixels, and
                   // multiplying it put a stated 16 anywhere from 13 to 21 depending
                   // on the size of the cell, so the same call framed differently in
-                  // a notebook and in a saved file (ADR 0077)
+                  // a notebook and in a saved file
                   const cy = y - spec.offset;
 
                   // the leader line only earns its place when the glyph has been
@@ -105,7 +105,7 @@ const calloutPrimitive = function (anchor, spec) {
                     // near the top of the data printed straight through the OHLC
                     // row. Flipped to the other side of its own glyph rather than
                     // clamped down to the line, because a clamped caption lands
-                    // on the arrow it is there to label (ADR 0112)
+                    // on the arrow it is there to label
                     if (ty - h / 2 < legendRoom) ty = cy + side * away;
 
                     ctx.beginPath();

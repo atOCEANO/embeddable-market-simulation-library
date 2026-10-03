@@ -446,7 +446,7 @@ A `Background` mask is guarded for you too: a NaN or a `pandas.NA` shades nothin
 
 A value that does not exist stops the line ([ADR 0038](Decisions.md)). It is never dropped, because dropping it makes the two neighbours adjacent: a trailing stop that existed on bars 0 to 40 and again on bars 900 to 940 would appear as a smooth line through 860 bars where there was no stop at all. Pine users know this as `plot.style_linebr` rather than `plot()`, which joins across `na`.
 
-Not dropping the row is necessary and it is not sufficient, which took a browser to find out ([ADR 0073](Decisions.md)). The document carries a null for every missing bar, exactly as it should, and lightweight-charts joins straight across that too, on both the line and the area series. So the hole is cut rather than merely marked: a gapped series is drawn as one renderer series per contiguous run. The cost is one of those per hole, so a mask that alternates every few bars is a real payload rather than a cosmetic one, and a rolling warm-up still costs nothing, because a leading run of non-finite values is carried as an offset rather than as data.
+Not dropping the row is necessary and it is not sufficient, which took a browser to find out. The document carries a null for every missing bar, exactly as it should, and lightweight-charts joins straight across that too, on both the line and the area series. So the hole is cut rather than merely marked: a gapped series is drawn as one renderer series per contiguous run. The cost is one of those per hole, so a mask that alternates every few bars is a real payload rather than a cosmetic one, and a rolling warm-up still costs nothing, because a leading run of non-finite values is carried as an offset rather than as data.
 
 Infinities are gaps too.
 
@@ -762,7 +762,7 @@ emsl.chart(
   <p style="margin: 0;"><i>What produced the picture, under the picture, in the file rather than in the cell that made it</i></p>
 </div>
 
-This is what stops a saved file carrying a claim and not the evidence for it. A walk-forward chart asserts that each stretch traded on parameters fitted only on the bars before it, and the windows that say so were printed by the cell rather than by the chart, so `save` dropped them and the first person to forward the file is looking at an assertion ([ADR 0113](Decisions.md)).
+This is what stops a saved file carrying a claim and not the evidence for it. A walk-forward chart asserts that each stretch traded on parameters fitted only on the bars before it, and the windows that say so were printed by the cell rather than by the chart, so `save` dropped them and the first person to forward the file is looking at an assertion.
 
 A DataFrame's index is **not** drawn, so `reset_index()` if you want it as a column. Nothing caps the length, the same as the trade log, and this is meant for context rather than for data: a few rows saying what produced the picture, not a second copy of the picture's inputs. Cells are written as text, so one carrying angle brackets is a cell.
 
@@ -821,7 +821,7 @@ chart.save(path="run.html")       # fills whatever window opens it
 
 There is no width, anywhere. A chart fills whatever contains it. A notebook cell is a container of unknown size, so a pinned width is how a chart ends up cut off on one screen and short of the edge on another, and it is the one place the layout would stop holding at any size. Panels are sized with `weight`, a stretch factor, for the same reason.
 
-A year of hourly candles is 8760 bars, and a notebook cell gives each of them about a fifth of a pixel. Every bar is still fitted, because framing a quarter of the data and saying nothing is worse than a crowded one, and below one device pixel of bar spacing the candles are **aggregated to the column**: one drawn candle per pixel, opening at the first of its group and closing at the last, reaching the extremes of all of them ([ADR 0111](Decisions.md)). Zooming in un-aggregates as the spacing grows. The legend reads a real bar rather than the aggregate, so nothing you hover is a summary of several; under conflation the bar it reports can be a neighbour of the drawn column rather than the group's own first bar, which the render test holds to within two percent of where the pointer is. The time axis holds one grain at a time for the same reason: at a year it names months, and a lone day number between two of them is noise rather than detail.
+A year of hourly candles is 8760 bars, and a notebook cell gives each of them about a fifth of a pixel. Every bar is still fitted, because framing a quarter of the data and saying nothing is worse than a crowded one, and below one device pixel of bar spacing the candles are **aggregated to the column**: one drawn candle per pixel, opening at the first of its group and closing at the last, reaching the extremes of all of them. Zooming in un-aggregates as the spacing grows. The legend reads a real bar rather than the aggregate, so nothing you hover is a summary of several; under conflation the bar it reports can be a neighbour of the drawn column rather than the group's own first bar, which the render test holds to within two percent of where the pointer is. The time axis holds one grain at a time for the same reason: at a year it names months, and a lone day number between two of them is noise rather than detail.
 
 <br>
 

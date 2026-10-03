@@ -90,7 +90,7 @@ def everything():
         [
             # the ramp and the fill are mutually exclusive: an area carries one
             # line colour and would drop the ramp while the legend went on
-            # reporting it, so the pair is refused (ADR 0076). Both halves still
+            # reporting it, so the pair is refused. Both halves still
             # appear in the golden, on two marks
             Line(fast, "sma 5", color=ramp(close, "#000000", "#ffffff")),
             Line(fast - 2.0, "sma 5 band", fill="#11223344"),
@@ -104,7 +104,7 @@ def everything():
             Background(held, fill="#11223344"),
             # named and labelled, which is the only shape that ships `keys`: the
             # mask above covers the unnamed one, and "out" maps to nothing so the
-            # absent-label path is in here too (ADR 0110)
+            # absent-label path is in here too
             Background(np.where(held, "in", "out"), "regime", fill={"in": "#2fe0a822"}),
         ],
         result,
@@ -201,7 +201,7 @@ def test_the_equity_panel_is_drawn_from_the_balance_the_run_opened_with():
     # this asserted i0 == 1 and a length of T-1, which was the curve's own shape
     # read straight onto the chart. The curve holds a point per advance, so its
     # first entry is the account AFTER the first bar, and everything that divided
-    # by it was reporting a return from the wrong base (ADR 0098)
+    # by it was reporting a return from the wrong base
     result = run()
     spec = emsl.chart(frame(8), result).spec()
     assert spec["equity"]["i0"] == 0
@@ -756,7 +756,7 @@ def test_a_background_with_no_fill_of_its_own_is_ground_rather_than_a_band():
     # full height at one flat alpha with a hard edge either side is the banding
     # recipe, and a run of shaded stretches then reads as a rendering artifact
     # rather than as regions that mean something. Stops run bottom to top, so the
-    # default is strongest at the floor and gone before the ceiling (ADR 0112)
+    # default is strongest at the floor and gone before the ceiling
     mask = np.array([False, True, True, True, False, False, True, False])
     spec = emsl.chart(frame(8), Background(mask)).spec()
     entry = [s for s in spec["series"] if s["kind"] == "background"][0]
@@ -781,7 +781,7 @@ def test_a_named_background_ships_the_names_of_the_regions_it_shaded():
     entry = [s for s in spec["series"] if s["kind"] == "background"][0]
     assert entry["name"] == "regime"
     # in fill order and only the ones that shade, because the index in a span
-    # points into `fills` and the two lists have to stay parallel (ADR 0110)
+    # points into `fills` and the two lists have to stay parallel
     assert entry["keys"] == ["wild"]
 
 
@@ -978,7 +978,7 @@ def test_both_palettes_travel_so_the_theme_toggle_works_offline():
 
 def test_auto_reaches_the_document_undecided():
     # the choice is made in the browser, because the author of a chart is not its
-    # reader and Python is not there when a saved file is opened (ADR 0109)
+    # reader and Python is not there when a saved file is opened
     theme = emsl.chart(frame(8), theme="auto").spec()["theme"]
     assert theme["mode"] == "auto"
     assert set(theme["dark"]) == set(theme["light"])
@@ -1009,7 +1009,7 @@ def test_a_palette_on_the_call_replaces_the_session_one_rather_than_merging():
         theme = emsl.chart(frame(8), palette={"dark": {"s1": "#333333"}}).spec()["theme"]
         # s1 is the call's and s2 is the base rather than the session's, because
         # one call site has to read as one appearance and not as the difference
-        # between two of them (ADR 0109)
+        # between two of them
         assert theme["dark"]["s1"] == "#333333"
         assert theme["dark"]["s2"] != "#222222"
     finally:
@@ -1617,7 +1617,7 @@ def test_the_document_carries_exactly_the_keys_the_renderer_reads():
 def test_a_marker_and_a_markers_carry_the_same_keywords_into_the_document():
     # one primitive draws both, so a keyword one branch writes and the other drops
     # is a difference with no cause. The golden could not catch this: it records
-    # the keys that were there, so an absent one reads as the contract (ADR 0089)
+    # the keys that were there, so an absent one reads as the contract
     mask = np.zeros(8, dtype=bool)
     mask[3] = True
     spec = emsl.chart(frame(8), [
@@ -1639,7 +1639,7 @@ def test_a_marker_given_neither_keyword_spends_no_bytes_on_them():
 def test_a_forced_close_is_marked_in_the_trade_payload():
     # the golden covers everything() and everything() never dies, so this key is
     # conditional and has to be asserted here instead. A forced close reads as an
-    # ordinary exit otherwise, and the leverage that caused it goes unread (0091)
+    # ordinary exit otherwise, and the leverage that caused it goes unread
     data = sank()
     dead = emsl.backtest.Backtester(
         data, market="perp", quote=100.0, leverage=10.0,
@@ -1659,7 +1659,7 @@ def test_the_drawdown_panel_falls_from_the_running_peak_not_from_the_balance():
     # the engine does. The fixture behind that never makes a new high before its
     # worst bar, so the peak IS the opening balance throughout and a plain anchor
     # on `initial` returns the identical number. A run that doubles and then gives
-    # it all back is the shape that separates them (ADR 0108)
+    # it all back is the shape that separates them
     close = np.array([100.0, 100.0, 200.0, 100.0])
     data = pd.DataFrame(
         {"open": close, "high": close + 1.0, "low": close - 1.0, "close": close,
@@ -1685,7 +1685,7 @@ def test_a_line_ships_the_values_it_was_handed_not_the_panels_rounding():
     # candle to 0.0. A line rounded to the PANEL's digits instead of its own extent
     # is that same defect one mark over, and across the whole file the only value
     # ever asserted on a series' v is a single 2.0, an integer that survives
-    # rounding to any number of places (ADR 0108)
+    # rounding to any number of places
     feature = np.full(8, 1.2345e-05)
     spec = emsl.chart(frame(8), Line(feature, "tiny", panel="price")).spec()
     line = next(s for s in spec["series"] if s.get("name") == "tiny")

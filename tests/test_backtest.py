@@ -155,7 +155,7 @@ def test_a_warmup_that_is_not_a_count_of_bars_is_refused():
 def test_a_run_that_ended_at_zero_says_so_on_the_result():
     # a forced close books a row carrying liquidated, but an account drained by
     # fees or funding books nothing at all, so the trade log cannot always say
-    # it happened and the run-level flag is the only place that can (ADR 0091)
+    # it happened and the run-level flag is the only place that can
     bars = np.array([
         [100.0, 100.0, 100.0, 100.0, 1_000.0],
         [100.0, 100.0, 100.0, 100.0, 1_100.0],
@@ -188,7 +188,7 @@ def test_a_run_that_ended_at_zero_says_so_on_the_result():
 def test_editing_the_array_after_handing_it_over_cannot_change_a_run():
     # ascontiguousarray hands back the caller's own object when it is already
     # contiguous float64, and run() builds a fresh Engine off it every call, so a
-    # second run read bars the fingerprint no longer described (ADR 0104)
+    # second run read bars the fingerprint no longer described
     data = series()
     bt = Backtester(data, market="spot", fee_taker=0.0, fee_maker=0.0)
     first = bt.run(BuyThenClose())
@@ -218,7 +218,7 @@ def test_a_warmup_computed_inside_init_is_the_one_that_is_honoured():
     # attribute, which is already set before init runs, so reading it early passes
     # that one; the fixtures that do compute it inside init fall back to the class
     # default of zero and take empty-slice means, which are NaN and make every
-    # comparison false, so nothing there notices either (ADR 0108)
+    # comparison false, so nothing there notices either
     seen = []
 
     class Computed(Strategy):

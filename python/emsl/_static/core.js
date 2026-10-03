@@ -39,7 +39,7 @@ const T = function () {
 // the choice is between two palettes Python already shipped, on an input Python
 // was not in the room to see. The limit is worth knowing, because it reads the
 // operating system and not JupyterLab: a light machine running a dark notebook
-// still opens light (ADR 0109)
+// still opens light
 const resolveMode = function (mode) {
   if (mode !== "auto") return mode;
   const ask = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)");
@@ -91,11 +91,11 @@ const stamp = function (i) {
 // thresholds, so a strip 1920 wide read 9, 17, 12:00, Sept, 9, 17, Oct: one
 // intraday tick between two day numbers, which is noise rather than detail. What
 // is drawn here is only which ticks to drop; answering null keeps the renderer's
-// own label, and it holds every one this file has no argument with (ADR 0111).
+// own label, and it holds every one this file has no argument with.
 
 const DAY = 86400;
 
-// generous, because one tick at a time cannot tell a lone fine tick from a sub-grid (ADR 0111)
+// generous, because one tick at a time cannot tell a lone fine tick from a sub-grid
 const coarsestTick = function (seconds) {
   if (seconds > DAY * 100) return 1;       // months and years
   if (seconds > DAY * 21) return 2;        // and days
@@ -113,7 +113,7 @@ const tickMark = function (time, kind) {
   // come out of the gutter and nothing here can buy it: rightOffset is priced in
   // bars, which narrows every candle to pay for one label. Dropping it is the
   // trade, since the date is on the crosshair and in the legend either way, and
-  // both ends because they are one defect seen twice (ADR 0111)
+  // both ends because they are one defect seen twice
   if (axisEdge !== null && time > axisEdge) return "";
   if (axisFrom !== null && time < axisFrom) return "";
   return null;
@@ -162,7 +162,7 @@ const remeasureAxis = function () {
 // with no value, rather than a dropped row, because dropping would make the
 // neighbours adjacent. That is necessary and it is not sufficient: the renderer
 // joins straight across whitespace too, so the hole is cut in `paint` by splitting
-// the track into one series per run (ADRs 0038, 0073)
+// the track into one series per run (ADR 0038)
 const track = function (tr) {
   if (!tr) return [];
   const out = new Array(tr.v.length);
@@ -233,7 +233,7 @@ const addCandles = function (panel, index) {
     // the omission it was. It covers an axis label rather than replacing one,
     // because the last price does not land on a gridline, and it says nothing
     // new: at rest the cursor is the last bar, so the legend's own C is that
-    // number already (ADR 0112)
+    // number already
     borderVisible: true, priceLineVisible: false, lastValueVisible: false,
     priceFormat: priceFormat(panel.digits),
   }, pinned(panel)), index);
@@ -254,7 +254,7 @@ const addLine = function (spec, panel, index) {
   // first sits on the panel floor and the last touches the line. An area carries
   // one lineColor and ignores a per-point colour entirely, so a ramp here was
   // painted flat while the legend went on reporting a colour per bar; that pair is
-  // refused at construction rather than resolved in favour of one half (ADR 0076)
+  // refused at construction rather than resolved in favour of one half
   if (spec.fill) {
     const stops = spec.fill;
     return chart.addSeries(LWC.AreaSeries, Object.assign({
@@ -269,7 +269,7 @@ const addLine = function (spec, panel, index) {
   // a bar the ramp left uncoloured is painted in it while the legend reports it
   // grey. That is the colour rule of ADR 0043 leaking out through a hole the
   // asset grep cannot see, since the literal lives in the vendored bundle rather
-  // than in ours (ADR 0076)
+  // than in ours
   return chart.addSeries(LWC.LineSeries, Object.assign({
     color: isRamp(spec.color) ? T().muted : slotColor(spec),
   }, shared), index);
@@ -310,7 +310,7 @@ const runsOf = function (rows) {
 //
 // The one series per contiguous run below is not in the spec because the spec
 // was never wrong: it is what it takes to paint a gap the renderer would
-// otherwise join straight across (ADR 0073)
+// otherwise join straight across
 const paint = function (entry) {
   const spec = entry.spec;
   const rows = track(spec);
@@ -428,7 +428,6 @@ const frameFor = function (index) {
 // give a panel's anchor the extent of whatever is drawn on it, when nothing else
 // on that panel carries values, which is the panel that used to mount clean and
 // paint nothing. The anchor is fully transparent, so seeding it costs no pixels
-// (ADR 0075)
 const seedAnchors = function () {
   SPEC.panels.forEach(function (panel, index) {
     if (panel.candles || panel.volume) return;
@@ -530,7 +529,7 @@ const mount = function (spec, root) {
     // hazard is worth naming, because it is not visible from here: legend.js
     // reads SPEC by logical index while the candle under the pointer is now a
     // group of bars, so a render test walks the pointer across a 4000 bar chart
-    // and holds the two to each other (ADR 0111)
+    // and holds the two to each other
     timeScale: {
       borderColor: t.axis, timeVisible: true, secondsVisible: false,
       minBarSpacing: 0.04,
@@ -590,7 +589,7 @@ const mount = function (spec, root) {
   // the engine's own two curves. They carry a `make` like any other line, because
   // the gap split in `paint` only runs for an entry that has one: both are dense
   // by construction today, so this is a guard rather than a fix, and the reason to
-  // write it is that the next curve added here will not be (ADR 0073)
+  // write it is that the next curve added here will not be
   const addCurve = function (name, label, track, options) {
     const index = panelIndex(name);
     const panel = spec.panels[index];
@@ -630,12 +629,9 @@ const mount = function (spec, root) {
     });
   }
 
-  // after the two curves above, not before them. ADR 0075 moved this off a
-  // line-or-histogram carrier and onto frameFor so a Level could hang on the
-  // candles, and that left one hole: the engine's own panels have a series to
-  // scale by and it does not exist yet this early, so a Level on equity or on
-  // drawdown fell through to the whitespace anchor and drew nothing at all,
-  // which is the same silence ADR 0075 exists to remove (ADR 0097)
+  // after the two curves above, not before them: the engine's own panels get
+  // their series only there, and a Level placed before them fell through to the
+  // whitespace anchor and drew nothing
   spec.series.forEach(function (s) {
     if (s.kind !== "level") return;
     const index = panelIndex(s.panel);
@@ -696,7 +692,7 @@ const mount = function (spec, root) {
     // real bar and left the projection off the right edge with nothing on screen
     // saying it existed. The condition is whether a NATIVE series reaches those
     // times, not which mark drew them, so a T-long line beside a projected band
-    // reproduces it too (ADR 0099)
+    // reproduces it too
     const ahead = spec.t.length - spec.n;
     if (ahead > 0) chart.timeScale().applyOptions({ rightOffset: ahead });
     chart.timeScale().fitContent();

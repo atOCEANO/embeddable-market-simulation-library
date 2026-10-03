@@ -405,7 +405,7 @@ def test_a_resize_leaves_the_chart_drawing_and_the_axis_measured(tmp_path):
 def test_notes_reach_the_panel_under_the_plot_and_survive_angle_brackets(tmp_path):
     # what stops a saved file carrying a claim and not the evidence for it. Every
     # cell is written with textContent, so the second row here is a cell rather
-    # than a decision anybody has to think about (ADR 0113)
+    # than a decision anybody has to think about
     candles = frame()
     built = emsl.chart(candles, run(candles), notes=[
         ["window", "traded", "sharpe"],
@@ -669,7 +669,7 @@ def test_the_axis_drops_a_grain_the_span_does_not_deserve_and_keeps_one_it_does(
     # Both directions, because suppressing is the easy half and the expensive
     # mistake is taking away detail that was doing its job. Three days of hourly
     # candles want their hours, and an empty label is how a tick is dropped, so
-    # its presence is what says the formatter is engaged at all (ADR 0111)
+    # its presence is what says the formatter is engaged at all
     def labels(candles, name):
         path = emsl.chart(candles).save(str(tmp_path / name))
         page = browser.new_page(viewport={"width": 1280, "height": 700})
@@ -700,7 +700,7 @@ def test_the_axis_drops_a_grain_the_span_does_not_deserve_and_keeps_one_it_does(
 
 def test_auto_opens_on_the_scheme_the_reader_asked_for(tmp_path):
     # one saved file, opened twice by readers whose machines disagree. The palette
-    # for both has always been in the document; nothing was asking (ADR 0109).
+    # for both has always been in the document; nothing was asking.
     #
     # The button is checked in the same breath because it names the mode it will
     # switch TO, and it was named once in the markup and then only on a click, so
@@ -730,7 +730,7 @@ def test_auto_opens_on_the_scheme_the_reader_asked_for(tmp_path):
 def test_a_named_background_names_the_region_under_the_crosshair(tmp_path):
     # a three-regime shading was three washes and a guess, and the workaround in
     # the wild was stacked Level calls, which draws a horizontal line to label a
-    # vertical region (ADR 0110)
+    # vertical region
     candles = frame()
     labels = np.where(np.arange(len(candles)) % 20 < 10, "calm", "wild")
     built = emsl.chart(
@@ -862,7 +862,7 @@ def test_a_level_alone_on_the_price_panel_is_actually_drawn(tmp_path):
     # the price line hung on whichever line or histogram reached the panel first,
     # and the candles were never a candidate, so the simplest call on the page drew
     # the level onto a whitespace anchor whose first value is null and the renderer
-    # painted nothing at all (ADR 0075)
+    # painted nothing at all
     candles = frame()
     built = emsl.chart(candles, Level(float(candles["close"].mean()), "mid", color="#ff00ff"))
     assert drawn_colours(built, tmp_path, "level.html", [255, 0, 255]) > 50
@@ -871,7 +871,7 @@ def test_a_level_alone_on_the_price_panel_is_actually_drawn(tmp_path):
 def test_a_band_alone_on_its_own_panel_is_actually_drawn(tmp_path):
     # a primitive converts prices through a series, and a panel drawn only by
     # primitives has none carrying values, so it mounted cleanly and painted
-    # nothing. The anchor now takes the panel's own extent (ADR 0075)
+    # nothing. The anchor now takes the panel's own extent
     candles = frame()
     close = candles["close"].to_numpy()
     built = emsl.chart(
@@ -888,7 +888,7 @@ def test_a_ramped_line_never_shows_the_vendored_default_colour(tmp_path):
     # undefined key, so lightweight-charts' own #2196f3 survived: a bar the ramp
     # left uncoloured was painted library blue while the legend reported it grey.
     # The asset grep for colours cannot see that, because the literal is in the
-    # vendored bundle rather than in ours (ADRs 0043, 0076)
+    # vendored bundle rather than in ours (ADR 0043)
     candles = frame()
     close = candles["close"].to_numpy()
     tint = np.where(np.arange(len(close)) % 2 == 0, "#ff00ff", None).astype(object)
@@ -968,10 +968,9 @@ def test_a_gap_is_drawn_as_whitespace_rather_than_bridged(tmp_path):
 
 
 def test_a_level_on_the_engines_own_panels_is_actually_drawn(tmp_path):
-    # ADR 0075 moved a Level onto frameFor so it could hang on the candles, and
-    # left the engine's two panels behind: the equity and drawdown curves are
-    # pushed into SERIES after the level loop ran, so a Level there found no
-    # series to scale by and painted nothing at all (ADR 0097)
+    # the equity and drawdown curves are pushed into SERIES after the level loop
+    # used to run, so a Level on those panels found no series to scale by and
+    # painted nothing
     candles = frame()
     result = run(candles)
     built = emsl.chart(
@@ -1000,7 +999,7 @@ def test_a_level_on_the_drawdown_panel_is_actually_drawn(tmp_path):
 
 def test_an_equity_panel_asked_for_as_a_percent_mounts_clean(tmp_path):
     # the percent axis bases itself on the track's first value, which is the
-    # opening balance now rather than the first advance (ADR 0098). The labels are
+    # opening balance now rather than the first advance. The labels are
     # painted into a canvas and cannot be read back, so what a browser can add
     # here is that the documented composition still mounts and paints
     candles = frame()
@@ -1018,7 +1017,7 @@ def test_an_equity_panel_asked_for_as_a_percent_mounts_clean(tmp_path):
 def test_the_room_asked_for_with_future_is_on_screen_on_first_paint(tmp_path):
     # fitContent fits to the data, and the projected times carry whitespace, so a
     # projection drawn by a primitive framed to the last real bar and sat off the
-    # right edge with nothing on screen saying it was there (ADR 0099). The band
+    # right edge with nothing on screen saying it was there. The band
     # here exists ONLY past the last candle, so any pixel of it is proof the
     # viewport reached that far
     candles = frame(40)
@@ -1050,7 +1049,7 @@ def test_a_background_span_covers_the_bars_its_mask_is_true_on(tmp_path):
     # logicalToCoordinate returns the CENTRE of a bar and a span is half open over
     # whole bars, so painting centre to centre put the shading half a candle right
     # of the bars it belongs to. The width was always correct, which is why it
-    # read as right until someone looked at an edge (ADR 0101)
+    # read as right until someone looked at an edge
     n = 40
     candles = frame(n)
     mask = np.zeros(n, dtype=bool)

@@ -5,7 +5,7 @@ this is where those snippets run for real. No simulation logic lives here and
 nothing is drawn by hand: it loads a frozen parquet, works the features out the
 way a reader would, and calls ``emsl.chart``.
 
-The frozen part is the point (ADR 0085). The chart on the front page of the
+The frozen part is the point. The chart on the front page of the
 README used to come from a year of live candles pulled off the router, so a
 rerun drew a different year and the picture nobody could reproduce was the one
 nearly everybody sees. Every chart here reads the same published five-minute

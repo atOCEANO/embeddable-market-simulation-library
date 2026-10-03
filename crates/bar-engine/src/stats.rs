@@ -34,7 +34,7 @@ pub struct Stats {
     pub avg_trade_pct: f64,
     /// Fills applied over the run. Zero beside orders you know you placed means they
     /// never filled, which a zero-volume series does silently; without this a dead
-    /// feed and a strategy that never triggered look identical (ADR 0031).
+    /// feed and a strategy that never triggered look identical.
     pub num_fills: usize,
     /// Funding paid over the run, in quote: positive is paid away, negative is
     /// received. Zero on spot. It is the one cost unique to a perp, and until it
@@ -448,7 +448,7 @@ mod tests {
         // including an incomplete one that keeps the caller's rate: 2% a YEAR is
         // then charged as 2% a BAR, which moves sharpe and sortino and nothing
         // above notices. The fallback is no annualization AND no rate, so it has
-        // to be the same number as an honest call at one period and zero (ADR 0108)
+        // to be the same number as an honest call at one period and zero
         let curve = [110.0, 99.0, 121.0];
         let honest = compute(100.0, &curve, &[], 1.0, 0.0, 3);
         for ppy in [0.0, -1.0, f64::NAN, f64::INFINITY] {
@@ -518,7 +518,7 @@ mod tests {
         // and the only zero-deviation one is a constant LOSER, so special-casing
         // sharpe to 0.0 when the deviation is zero passes the whole suite. The
         // returns here double exactly, so the deviation is zero in binary rather
-        // than nearly zero (ADR 0108)
+        // than nearly zero
         let steady = compute(100.0, &[200.0, 400.0, 800.0], &[], 1.0, 0.0, 3);
         assert_eq!(steady.volatility_pct, 0.0);
         assert!(
@@ -550,7 +550,7 @@ mod tests {
         // alone orders its pair the same way and dropping the drawdown factor
         // entirely still passes it. Here both runs end at 900 from 1000 over ten
         // periods, so both have a CAGR of exactly -10%, and the ONLY thing that can
-        // separate them is the depth they went through to get there (ADR 0108)
+        // separate them is the depth they went through to get there
         let mild = [
             1000.0, 900.0, 800.0, 820.0, 840.0, 860.0, 880.0, 890.0, 895.0, 900.0,
         ];

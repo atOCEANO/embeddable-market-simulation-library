@@ -239,7 +239,7 @@ def drawdown_table(result, top=5):
     The three positions are BAR indices, the same numbering as a trade's
     ``entry_tick`` and every other position this module reports, so one goes
     straight to the candle or onto a chart. ``recovered_bar`` is ``None`` for a
-    fall the run never came back from (ADR 0102).
+    fall the run never came back from.
     """
     falls = drawdown(result)
     episodes = []
@@ -263,7 +263,7 @@ def _episode(falls, start, recovered):
     # the fall series holds one entry per equity point rather than one per bar, so
     # entry i is bar i + 1 (ADR 0037) and a raw loop offset names the candle
     # BEFORE the one that made it. The two durations below are differences of two
-    # positions and are already in bars (ADR 0102)
+    # positions and are already in bars
     return {
         "start_bar": start + 1,
         "trough_bar": trough + 1,
@@ -306,8 +306,8 @@ def decompose(result):
 
     Gross price PnL less fees less funding plus what is still open is the change
     in equity. The two costs are reported as POSITIVE amounts paid away, the
-    convention ``funding_paid`` already uses, so they subtract rather than add
-    (ADR 0106). On a perp this is the first thing to look at, because a large
+    convention ``funding_paid`` already uses, so they subtract rather than add.
+    On a perp this is the first thing to look at, because a large
     share of what looks like alpha in crypto is a funding carry wearing a costume,
     and a larger share of dead strategies died on the fee line rather than on the
     idea.
@@ -489,11 +489,11 @@ def period_returns(result, frame, by="month"):
         # a short period is still a period. Dropping the ones under two bars
         # looked like tidying away a degenerate statistic and was a hole in the
         # only thing this function promises: the periods compound back to the
-        # whole run (ADR 0062). A year of hourly candles ending a bar or two into
+        # whole run. A year of hourly candles ending a bar or two into
         # a month, which is the ordinary shape of real data rather than a corner,
         # lost those bars entirely, and the monthly table then did not add up to
         # the headline it sits under. A one-bar month reads oddly; a missing one
-        # reads as arithmetic (ADR 0081)
+        # reads as arithmetic
         if last <= int(first):
             continue
         block = segment(result, int(first), last)
@@ -644,7 +644,7 @@ def _stats(series, trades, ppy, rate):
         # a float power RAISES where the f64 this mirrors saturates, so the ceiling
         # on the next line was unreachable in the one case it exists for and a
         # month of hourly candles ending a bar into the next one crashed instead
-        # of reporting the number the engine already reports (ADR 0093)
+        # of reporting the number the engine already reports
         try:
             cagr = (final / opening) ** (ppy / n_returns) - 1.0 if final > 0.0 else -1.0
         except OverflowError:
@@ -1149,7 +1149,7 @@ def _built(strategy):
         # the tunables are constructor arguments in every example the docs give,
         # so the class that gets passed here is usually the one that cannot be
         # built without them, and Python's own message names neither the sweep
-        # nor the fix (ADR 0092)
+        # nor the fix
         raise TypeError(
             f"{strategy.__name__} takes arguments to build, and a sweep rebuilds "
             f"the strategy for each run, so it needs one it can build with none; "

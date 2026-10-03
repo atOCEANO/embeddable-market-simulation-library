@@ -205,7 +205,7 @@ def test_a_cost_range_that_reaches_below_its_floor_is_refused():
     # the scalar handed to the engine's guard is the HIGH end (ADR 0014), so a
     # range straddling the floor passed it and handed the negative draws to the
     # per-env array, which checked nothing. VectorEnv(fee_taker=(-2.0, 0.0)) built
-    # happily and paid its envs to trade (ADR 0086)
+    # happily and paid its envs to trade
     for knob, bad in (
         ("fee_taker", (-2.0, 0.0)),
         ("fee_maker", (-2.0, 0.0)),

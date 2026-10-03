@@ -558,7 +558,7 @@ def test_a_search_over_a_frame_reads_its_annualization_from_the_candles():
     # tested it: every tune and walk_forward fixture passes periods_per_year
     # explicitly, so deleting the line leaves the whole suite green and a search
     # over hourly candles silently scores every trial as though each bar were a
-    # day (ADR 0108)
+    # day
     pd = pytest.importorskip("pandas")
     bars = series(300)
     frame = pd.DataFrame(bars, columns=["open", "high", "low", "close", "volume"],

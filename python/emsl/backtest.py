@@ -101,7 +101,7 @@ class BacktestResult:
     the reason ``periods_per_year`` is: ``metrics.sharpe`` reads it off the result
     unless a call passes its own. ``bust`` says the account reached zero, which a
     trade row cannot always say: a forced close books one carrying ``liquidated``,
-    and an account drained by fees or funding books nothing at all (ADR 0091).
+    and an account drained by fees or funding books nothing at all.
     """
 
     def __init__(self, stats, equity_curve, trades, initial=None,
@@ -186,7 +186,7 @@ class Backtester:
         # Engine off this buffer every call, so editing the array in place between
         # two runs changed the second one while the fingerprint below, taken once,
         # went on saying they saw the same bars. That field exists to answer
-        # exactly the question it was getting wrong (ADRs 0051, 0104)
+        # exactly the question it was getting wrong (ADR 0051)
         if isinstance(candles, np.ndarray) and np.shares_memory(self._candles, candles):
             self._candles = self._candles.copy()
         self._config = dict(

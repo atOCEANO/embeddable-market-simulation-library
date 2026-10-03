@@ -188,7 +188,7 @@ fn at_least(name: &str, value: f64, low: f64) -> PyResult<f64> {
 /// spot cash clamp's `1 + rate` divisor non-positive and mints equity out of a
 /// fill that never happened. Its own function because the per-env arrays need the
 /// identical rule, and a rule written twice is a rule two paths will disagree
-/// about, which is exactly what happened (ADR 0086).
+/// about, which is exactly what happened.
 fn a_rebate(name: &str, rate: f64) -> PyResult<f64> {
     if finite(name, rate)? <= -1.0 {
         return Err(PyValueError::new_err(format!(
@@ -268,7 +268,7 @@ fn per_env_vec(
                     slice.len()
                 )));
             }
-            // the same rule the scalar gets, one entry at a time (ADR 0086). This
+            // the same rule the scalar gets, one entry at a time. This
             // checked contiguity and length and nothing else, so a per-env array
             // was the one way past every range guard in `build_config`: a fee of
             // -2.0 reached an env and minted equity the scalar path refuses
@@ -292,7 +292,7 @@ fn order_to_dict<'py>(py: Python<'py>, order: &Order) -> PyResult<Bound<'py, PyD
     d.set_item("filled", order.filled.get())?;
     d.set_item("remaining", order.remaining().get())?;
     // only resting orders are ever handed out, so this is a constant; the key stays
-    // because the API documents it (ADR 0033)
+    // because the API documents it
     d.set_item("status", "resting")?;
     d.set_item("reduce_only", order.reduce_only)?;
     d.set_item("post_only", order.post_only)?;
@@ -687,7 +687,7 @@ impl Engine {
     }
 
     /// Fills applied since the last reset. Zero beside orders you placed means none
-    /// of them ever filled, which a series with no volume does silently (ADR 0031).
+    /// of them ever filled, which a series with no volume does silently.
     fn num_fills(&self) -> usize {
         self.inner.num_fills()
     }

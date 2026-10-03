@@ -67,11 +67,11 @@ Python-facing work (anything in `emsl-py` or `python/emsl`) is validated on the 
 
 ### The dev directory
 
-`dev/` holds the tools that check the library rather than any part of it ([ADR 0084](Decisions.md)). Nothing there is packaged into the wheel and nothing under `python/emsl` imports it. The line between it and `tests/` is that a test asserts and a tool produces: the gate runs a test and fails a build, while a tool here is run by hand and writes a file you then read and commit. There are four, and each is explained in this documentation set rather than beside itself, which is the same rule every other folder follows.
+`dev/` holds the tools that check the library rather than any part of it. Nothing there is packaged into the wheel and nothing under `python/emsl` imports it. The line between it and `tests/` is that a test asserts and a tool produces: the gate runs a test and fails a build, while a tool here is run by hand and writes a file you then read and commit. There are four, and each is explained in this documentation set rather than beside itself, which is the same rule every other folder follows.
 
 `dev/differential/` is the second simulator and the two harnesses that drive it, `differential.py` over `Engine` and `batch_differential.py` over `Batch`, plus `trace.py` for shrinking a failure. It is the one part of `dev/` the gate runs, as its own stage, and the [Validation Guide](Validation_Guide.md) is where it is explained.
 
-`dev/charts/` produces every chart image the documentation shows. `build.py` runs the documented examples for real against a frozen parquet and saves each one as a chart, and `shoot.py` points a headless browser at what it saved and screenshots it at the size it was drawn ([ADR 0085](Decisions.md)). Nothing is cropped or retouched, so what a reader sees is what the library drew, and the snippet printed beside a picture is the snippet that produced it. Both run in one opt-in stage, which needs the published [sample dataset](https://github.com/atOCEANO/sample-market-data) mounted because a picture built from live candles cannot be regenerated, only redrawn differently:
+`dev/charts/` produces every chart image the documentation shows. `build.py` runs the documented examples for real against a frozen parquet and saves each one as a chart, and `shoot.py` points a headless browser at what it saved and screenshots it at the size it was drawn. Nothing is cropped or retouched, so what a reader sees is what the library drew, and the snippet printed beside a picture is the snippet that produced it. Both run in one opt-in stage, which needs the published [sample dataset](https://github.com/atOCEANO/sample-market-data) mounted because a picture built from live candles cannot be regenerated, only redrawn differently:
 
 ```bash
 docker build --target charts -t emsl-charts .
@@ -83,7 +83,7 @@ Regenerating should change nothing unless the drawing changed, and that is the c
 
 `dev/golden.py` rewrites `tests/chart_schema.json`, the key-path golden for the chart spec. The renderer is JavaScript and the gate has no browser, so the contract between the two halves is the one thing a Python test cannot reach directly: a key renamed in `_chart.py` passes every test in the suite and draws a blank chart. Recording every key path the spec carries turns that rename into a one-line diff instead. Run it whenever the spec gains, loses or renames a key, and bump `schema` in `_chart.py` in the same commit. It imports the test module rather than rebuilding the fixture itself, so the golden cannot be recorded against a different chart from the one the test checks.
 
-`dev/diagrams/` holds the mermaid source for every hand-made diagram in `.Documentation/imgs/`, one `.mmd` per image, and its own stage renders all of them ([ADR 0087](Decisions.md)):
+`dev/diagrams/` holds the mermaid source for every hand-made diagram in `.Documentation/imgs/`, one `.mmd` per image, and its own stage renders all of them:
 
 ```bash
 docker build --target diagrams -t emsl-diagrams .
@@ -93,7 +93,7 @@ docker run --rm --shm-size=1g \
   emsl-diagrams
 ```
 
-The sources are mounted rather than built into the image, so editing one and rerunning draws what is on disk ([ADR 0117](Decisions.md)). The router renders its set with the same two mounts and the same flags against the same digest, so the recipes differ only in that this one names a stage and that one names the image.
+The sources are mounted rather than built into the image, so editing one and rerunning draws what is on disk. The router renders its set with the same two mounts and the same flags against the same digest, so the recipes differ only in that this one names a stage and that one names the image.
 
 The images are numbered rather than named and the descriptive name survives only in their alt text: 205310 is the README hero, 205312 the crate layering, 205314 the step lifecycle, 205316 no-lookahead, 205318 the RL loop. Four of the five were reconstructed by reading the rendered PNG, because the originals were never kept, so a rerun redraws them rather than reproducing them byte for byte; 205314 is the one whose source survived and it still renders identical, which is what says the pipeline is faithful rather than merely working.
 

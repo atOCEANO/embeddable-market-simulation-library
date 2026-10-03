@@ -52,7 +52,7 @@ shipping a live one across the boundary (ADR 0021). Only ``n_jobs=1`` is
 reproducible from ``seed``: a parallel run asks for trials before earlier ones have
 reported, so the order results reach the sampler depends on which worker finishes
 first and the search follows a different path each time. Pin ``n_jobs=1`` when a
-result has to be reproducible (ADR 0036).
+result has to be reproducible.
 
 ``optuna`` drives the search and ``cloudpickle`` carries the strategy and objective
 to the workers; both install with ``pip install 'emsl[tune]'``.

@@ -177,8 +177,8 @@ class VectorEnv(gym.vector.VectorEnv):
                     f"(low, high) pair"
                 )
             low, high = float(value[0]), float(value[1])
-            # the engine holds this rule too and now applies it to the drawn array
-            # (ADR 0086), but it can only name `fee_taker_per_env[0]`, and a range
+            # the engine holds this rule too and applies it to the drawn array, but
+            # it can only name `fee_taker_per_env[0]`, and a range
             # is what the caller typed. Checked on the LOW end because the scalar
             # handed to the engine is the high one, so a range straddling the
             # floor used to pass the guard and hand the negatives to the envs

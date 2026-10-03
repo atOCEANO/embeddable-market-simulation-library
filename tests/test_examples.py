@@ -4,7 +4,7 @@
 real parameter, and says in its own docstring that it does not execute them,
 because most stand on a frame and a strategy the prose describes. That line is
 reasonable and it has a cost that came due twice: a flagship ``deflated_sharpe``
-example composed two calls that could never work together (ADR 0066), and the
+example composed two calls that could never work together, and the
 plotting guide's longest block read an attribute off a ``BacktestResult`` that
 has never existed, so it raised on the first copy-paste and no amount of parsing
 could see it.

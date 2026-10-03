@@ -247,7 +247,7 @@ def test_a_deflation_refuses_a_search_that_minimized_its_objective():
     # the deflation asks how high the best of many looks would reach on luck, so
     # the threshold it compares against is the top of the spread. A deliberately
     # minimized winner sits at the other end, and it answered anyway before this,
-    # because it could see the objective and not the direction (ADR 0090)
+    # because it could see the objective and not the direction
     study = emsl.tune(SmaCross, SPACE, series(), n_trials=8, seed=0,
                       sampler="random", direction="minimize",
                       periods_per_year=365.0, fee_taker=0.0, fee_maker=0.0)
@@ -268,7 +268,7 @@ def shaped(study, null):
     # pytest.warns would make these fail for its absence rather than for the count.
     # min(study, null) silences the warning as a side effect, since the count it
     # produces can never be above the null's own size, so a test that leans on the
-    # warning cannot say which of the two it caught (ADR 0108)
+    # warning cannot say which of the two it caught
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         return metrics._null_shape(study, null)
